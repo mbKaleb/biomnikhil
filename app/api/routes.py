@@ -75,5 +75,5 @@ def stream_task(task_id: str):
     return Response(
         generate(),
         mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={"Cache-Control": "no-cache"},
     )
