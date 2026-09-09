@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bionikhil</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 2rem 1rem; background: #0d1526; color: #dbe4f3;
+      font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+      display: flex; justify-content: center;
+    }
+    main { width: min(760px, 100%); }
+    h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+    .sub { color: #7c90b4; font-size: .85rem; margin-bottom: 1.25rem; }
+    textarea {
+      width: 100%; min-height: 90px; box-sizing: border-box; resize: vertical;
+      background: #131f38; color: inherit; border: 1px solid #2c3f63;
+      border-radius: 8px; padding: .7rem .8rem; font: inherit;
+    }
+    button {
+      margin-top: .6rem; padding: .55rem 1.2rem; border: 0; border-radius: 8px;
+      background: #3b5bdb; color: #fff; font: inherit; cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: wait; }
+    #steps {
+      margin-top: 1.25rem; padding: .8rem; background: #0a1020;
+      border: 1px solid #1d2b48; border-radius: 8px; white-space: pre-wrap;
+      font-family: ui-monospace, Consolas, monospace; font-size: .8rem;
+      color: #93a6c4; max-height: 45vh; overflow-y: auto; display: none;
+    }
+    #answer {
+      margin-top: 1rem; padding: .9rem 1rem; background: #12233c;
+      border: 1px solid #2c4a74; border-radius: 8px; white-space: pre-wrap;
+      display: none;
+    }
+    #answer.error { background: #2c1420; border-color: #6e2438; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>bionikhil</h1>
+    <div class="sub">Biomni agent · provider: {{ provider }}</div>
+    <textarea id="prompt" placeholder="Ask the agent something…"></textarea>
+    <button id="run">Run task</button>
+    <div id="steps"></div>
+    <div id="answer"></div>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
