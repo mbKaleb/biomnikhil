@@ -1,4 +1,9 @@
 biomni
+# biomni's pip package under-declares runtime deps (assumes its conda env):
+pandas
+tqdm
+langchain-openai
+langchain-anthropic
 flask>=3.0
 waitress>=3.0
 python-dotenv>=1.0
