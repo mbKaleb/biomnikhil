@@ -76,9 +76,28 @@ def resolve(provider_name: str | None, model_override: str | None = None) -> dic
     kwargs: dict = {"source": p.source, "llm": model_override or p.default_model}
 
     if p.api_key_env:
-        api_key = os.getenv(p.api_key_env)
+        api_key = (os.getenv(p.api_key_env) or "").strip()
+        # biomni ignores the api_key kwarg for OpenAI/Anthropic and relies on
+        # the env var, so a missing/blank key would otherwise surface as an
+        # opaque 401 from the provider. Fail fast with the actual fix instead.
+        if not api_key:
+            if p.source == "Custom":  # local/self-hosted endpoints may be keyless
+                api_key = None
+            else:
+                raise RuntimeError(
+                    f"{p.api_key_env} is not set. Add it to .env and restart "
+                    "the server (env vars are read once at startup)."
+                )
         if api_key:
+            if any(ch.isspace() for ch in api_key):
+                raise RuntimeError(
+                    f"{p.api_key_env} contains whitespace — likely a line "
+                    "break from pasting. Fix it in .env and restart the server."
+                )
             kwargs["api_key"] = api_key
+            # Belt and braces: make sure the env var the underlying client
+            # reads matches what we resolved (strip stray whitespace).
+            os.environ[p.api_key_env] = api_key
 
     base_url = None
     if p.base_url_env:

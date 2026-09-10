@@ -103,6 +103,11 @@ def rename_chat(chat_id: str):
     return jsonify(ok=True)
 
 
+@bp.get("/chats/<chat_id>/active")
+def chat_active_task(chat_id: str):
+    return jsonify(task_id=registry.active_for_chat(chat_id))
+
+
 @bp.delete("/chats/<chat_id>")
 def delete_chat(chat_id: str):
     if not chat_store.delete_chat(chat_id):
@@ -142,12 +147,29 @@ def upload_files():
     return jsonify(saved=saved), 201
 
 
+@bp.delete("/files/<name>")
+def delete_file(name: str):
+    safe = secure_filename(name)
+    path = Config.UPLOAD_PATH / safe
+    if not safe or not path.is_file():
+        return jsonify(error="unknown file"), 404
+    path.unlink()
+    return jsonify(ok=True)
+
+
 @bp.get("/tasks/<task_id>")
 def get_task(task_id: str):
     snap = registry.get(task_id)
     if snap is None:
         return jsonify(error="unknown task"), 404
     return jsonify(snap)
+
+
+@bp.post("/tasks/<task_id>/cancel")
+def cancel_task(task_id: str):
+    if not registry.request_cancel(task_id):
+        return jsonify(error="unknown or finished task"), 404
+    return jsonify(ok=True), 202
 
 
 @bp.get("/tasks/<task_id>/stream")

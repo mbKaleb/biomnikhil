@@ -14,8 +14,10 @@ done
 if [ ! -d .venv ]; then
   "$PY" -m venv .venv
   ./.venv/bin/pip install --upgrade pip
-  ./.venv/bin/pip install -r requirements.txt
 fi
+
+# idempotent + fast when everything is already satisfied (mirrors run.ps1)
+./.venv/bin/pip install -q -r requirements.txt
 
 if [ ! -f .env ]; then
   /bin/cp .env.example .env

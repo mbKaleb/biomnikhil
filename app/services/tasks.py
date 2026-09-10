@@ -18,6 +18,8 @@ class Task:
     result: str | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
+    cancel_requested: bool = False
+    chat_id: str | None = None
 
     def snapshot(self) -> dict:
         return {
@@ -36,11 +38,20 @@ class TaskRegistry:
         self._tasks: dict[str, Task] = {}
         self._lock = threading.Lock()
 
-    def create(self, prompt: str) -> Task:
-        task = Task(id=uuid.uuid4().hex[:12], prompt=prompt)
+    def create(self, prompt: str, chat_id: str | None = None) -> Task:
+        task = Task(id=uuid.uuid4().hex[:12], prompt=prompt, chat_id=chat_id)
         with self._lock:
             self._tasks[task.id] = task
         return task
+
+    def active_for_chat(self, chat_id: str) -> str | None:
+        """Id of the queued/running task attached to this chat, if any —
+        lets a reloaded page re-attach to an in-flight run."""
+        with self._lock:
+            for task in reversed(list(self._tasks.values())):
+                if task.chat_id == chat_id and task.status in ("queued", "running"):
+                    return task.id
+        return None
 
     def get(self, task_id: str) -> dict | None:
         with self._lock:
@@ -65,6 +76,21 @@ class TaskRegistry:
             if task:
                 task.status = "done"
                 task.result = result
+
+    def request_cancel(self, task_id: str) -> bool:
+        """Flag a queued/running task for cancellation; the worker checks the
+        flag between steps. Returns False for unknown or finished tasks."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status in ("done", "error"):
+                return False
+            task.cancel_requested = True
+            return True
+
+    def is_cancel_requested(self, task_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            return bool(task and task.cancel_requested)
 
     def fail(self, task_id: str, error: str) -> None:
         with self._lock:

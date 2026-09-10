@@ -69,4 +69,6 @@ if ($portLine) { $Port = [int]$portLine.Matches[0].Groups[1].Value }
 
 Write-Host ""
 Write-Host "biomnikhil -> http://127.0.0.1:$Port   (Ctrl+C to stop)"
-waitress-serve --listen=127.0.0.1:$Port wsgi:app
+# --threads: each open SSE trace stream pins a worker thread for the life of
+# its task, so the default of 4 would stall the app with a few open tabs.
+waitress-serve --listen=127.0.0.1:$Port --threads=16 wsgi:app

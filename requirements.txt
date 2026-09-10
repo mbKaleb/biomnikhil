@@ -1,7 +1,29 @@
 biomni
 # biomni's pip package under-declares runtime deps (assumes its conda env):
 pandas
+pyarrow  # parquet engine — the data lake ships .parquet files
 tqdm
+# deps biomni's tools import at runtime (agent otherwise pip-installs them
+# mid-task or fails). Audited against biomni 0.0.8's imports; the heavy ML
+# stacks (torch, transformers, scvi, cellpose, ...) are deliberately left
+# out — those tools fail with a clear install message if ever invoked.
+openpyxl        # Excel files
+beautifulsoup4  # literature / web tools
+lxml
+PyPDF2          # PDF reading in literature tools
+requests
+matplotlib      # plotting, used across most tool modules
+scipy
+scikit-learn
+statsmodels     # pharmacology (dose-response etc.)
+rdkit           # pharmacology: compound structures / MoA
+networkx        # cancer biology pathway tools
+biopython       # sequence/database tools (imports as Bio)
+gseapy          # enrichment analysis
+pymed           # PubMed search
+arxiv           # literature search
+markdown        # report generation in biomni.utils
+nest_asyncio    # agent internals
 langchain-openai
 langchain-anthropic
 flask>=3.0

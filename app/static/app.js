@@ -14,6 +14,180 @@ const newChatBtn = document.getElementById("new-chat");
 const chatListEl = document.getElementById("chat-list");
 
 const chatNameEl = document.getElementById("chat-name");
+const traceEl = document.getElementById("trace");
+
+// ---- terminal-style trace panel ----
+const traceCursor = document.createElement("span");
+traceCursor.className = "cursor";
+
+// Resizable trace panel: drag the left edge; width persists across reloads.
+{
+  const saved = localStorage.getItem("traceWidth");
+  if (saved) traceEl.style.width = `min(${saved}px, 85vw)`;
+  const resizer = document.getElementById("trace-resizer");
+  resizer.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    resizer.setPointerCapture(e.pointerId);
+    traceEl.classList.add("resizing");
+    const onMove = (ev) => {
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 260), window.innerWidth * 0.85);
+      traceEl.style.width = `${w}px`;
+    };
+    const onUp = () => {
+      traceEl.classList.remove("resizing");
+      localStorage.setItem("traceWidth", parseInt(traceEl.style.width, 10) || 400);
+      resizer.removeEventListener("pointermove", onMove);
+      resizer.removeEventListener("pointerup", onUp);
+    };
+    resizer.addEventListener("pointermove", onMove);
+    resizer.addEventListener("pointerup", onUp);
+  });
+}
+
+function traceOpen() {
+  traceEl.classList.add("open");
+}
+function traceStart() {
+  // Append to the chat's existing trace history (it persists per chat)
+  // rather than wiping it — matches what a reload would show.
+  traceCursor.remove();
+  stepsEl.appendChild(traceCursor);
+  traceEl.classList.add("open", "running");
+  stepsEl.scrollTop = stepsEl.scrollHeight;
+}
+// Strip biomni's log noise before showing a step in the terminal panel.
+function cleanTrace(text) {
+  // The retry nag biomni sends itself when the model misformats — noise.
+  if (text.includes("Each response must include thinking process")) return null;
+  const out = text
+    .split("\n")
+    .filter((line) => {
+      const t = line.trim();
+      if (/^=+ (Ai|Human|System) Message =+$/.test(t)) return false; // banners
+      if (t === "parsing error...") return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return out || null;
+}
+
+// Split a cleaned agent message on its <execute>/<observation>/<solution>
+// tags into typed segments, so each renders as its own block.
+function parseSegments(text) {
+  const segs = [];
+  const re = /<(execute|observation|solution)>([\s\S]*?)(?:<\/\1>|$)/g;
+  let cursor = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(cursor, m.index).trim();
+    if (before) segs.push({ type: "thought", text: before });
+    const inner = m[2].trim();
+    if (inner) segs.push({ type: m[1], text: inner });
+    cursor = re.lastIndex;
+  }
+  const tail = text.slice(cursor).trim();
+  if (tail) segs.push({ type: "thought", text: tail });
+  return segs;
+}
+
+const SEG_LABELS = { execute: "code", observation: "output", solution: "answer" };
+
+// DataFrame/table-shaped output: several lines whose columns are separated
+// by runs of 2+ spaces. Wrapping such lines destroys the alignment, so
+// these render with preserved whitespace and a horizontal scrollbar.
+function isTabular(text) {
+  const lines = text.split("\n");
+  if (lines.length < 3) return false;
+  const columnish = lines.filter((l) => /\S {2,}\S/.test(l)).length;
+  return columnish >= Math.min(3, lines.length - 1) && columnish >= lines.length / 2;
+}
+
+function traceLine(kind, text) {
+  const cleaned = kind === "agent" ? cleanTrace(text) : text;
+  if (cleaned === null) return;
+  const ln = document.createElement("div");
+  ln.className = `ln ${kind}`;
+  if (kind !== "agent") {
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = `[${kind}] `;
+    ln.append(k, document.createTextNode(cleaned));
+  } else {
+    // Only tagged content earns a place in the terminal; untagged
+    // prose between the tags is chatter — drop it.
+    for (const seg of parseSegments(cleaned).filter((s) => s.type !== "thought")) {
+      const el = document.createElement("div");
+      el.className = `seg seg-${seg.type}`;
+      if (seg.type === "observation" && isTabular(seg.text)) {
+        el.classList.add("tabular");
+      }
+      const isObs = seg.type === "observation";
+      if (SEG_LABELS[seg.type]) {
+        const label = document.createElement("span");
+        label.className = "seg-label";
+        label.textContent = SEG_LABELS[seg.type];
+        el.appendChild(label);
+      }
+      const body = document.createElement("div");
+      body.className = "seg-body";
+      if (isObs && /\b(NaN|None|nan|<NA>)\b/.test(seg.text)) {
+        // Dim missing-value tokens so real data stands out in tables.
+        for (const part of seg.text.split(/(\bNaN\b|\bNone\b|\bnan\b|<NA>)/)) {
+          if (/^(NaN|None|nan|<NA>)$/.test(part)) {
+            const dim = document.createElement("span");
+            dim.className = "nan";
+            dim.textContent = part;
+            body.appendChild(dim);
+          } else if (part) {
+            body.appendChild(document.createTextNode(part));
+          }
+        }
+      } else {
+        body.appendChild(document.createTextNode(seg.text));
+      }
+      el.appendChild(body);
+      // Giant outputs (raw API JSON, molfiles) drown the trace — clamp
+      // them behind an expander.
+      if (seg.text.length > 1200 || seg.text.split("\n").length > 25) {
+        el.classList.add("clamped");
+        const toggle = document.createElement("button");
+        toggle.className = "seg-toggle";
+        const size =
+          seg.text.length > 1024
+            ? `${(seg.text.length / 1024).toFixed(1)} KB`
+            : `${seg.text.length} chars`;
+        toggle.textContent = `▾ show all (${size})`;
+        toggle.addEventListener("click", () => {
+          const clamped = el.classList.toggle("clamped");
+          toggle.textContent = clamped ? `▾ show all (${size})` : "▴ collapse";
+        });
+        el.appendChild(toggle);
+      }
+      ln.appendChild(el);
+    }
+    if (!ln.childNodes.length) return;
+  }
+  // Follow the tail only if the user is already at (or near) the bottom;
+  // if they've scrolled up to read something, don't yank them back down.
+  const nearBottom =
+    stepsEl.scrollHeight - stepsEl.scrollTop - stepsEl.clientHeight < 60;
+  // The cursor is only in the DOM during a live run; replayed history
+  // (loaded from a chat) appends at the end.
+  stepsEl.insertBefore(ln, traceCursor.parentNode === stepsEl ? traceCursor : null);
+  if (nearBottom) stepsEl.scrollTop = stepsEl.scrollHeight;
+}
+function traceEnd() {
+  traceEl.classList.remove("running");
+  traceCursor.remove();
+}
+document.getElementById("trace-btn").addEventListener("click", () =>
+  traceEl.classList.toggle("open")
+);
+document.getElementById("close-trace").addEventListener("click", () =>
+  traceEl.classList.remove("open")
+);
 
 let currentChatId = null;
 
@@ -73,10 +247,6 @@ function chatRow(chat) {
   const li = document.createElement("li");
   if (chat.id === currentChatId) li.classList.add("active");
 
-  const bubble = document.createElement("span");
-  bubble.className = "chat-bubble";
-  bubble.textContent = "\u{1F4AC}";
-
   const meta = document.createElement("span");
   meta.className = "chat-meta";
   const title = document.createElement("span");
@@ -111,7 +281,7 @@ function chatRow(chat) {
   });
 
   actions.append(renameBtn, deleteBtn);
-  li.append(bubble, meta, actions);
+  li.append(meta, actions);
   li.addEventListener("click", () => selectChat(chat.id));
   return li;
 }
@@ -146,6 +316,14 @@ function addMessage(role, text, isError = false) {
   const div = document.createElement("div");
   div.className = `msg ${role}` + (isError ? " error" : "");
   div.textContent = text;
+  if (role === "user") {
+    const retry = document.createElement("button");
+    retry.className = "retry-btn";
+    retry.title = "Retry this prompt";
+    retry.textContent = "↻";
+    retry.addEventListener("click", () => runTask(text));
+    div.appendChild(retry);
+  }
   messagesEl.appendChild(div);
   div.scrollIntoView({ block: "end" });
   return div;
@@ -157,11 +335,31 @@ async function selectChat(chatId) {
     if (!res.ok) throw new Error("unknown chat");
     const chat = await res.json();
     currentChatId = chatId;
+    localStorage.setItem("lastChatId", chatId);
     setChatName(chat.title);
     messagesEl.innerHTML = "";
-    stepsEl.style.display = "none";
+    stepsEl.innerHTML = "";
     for (const m of chat.messages) {
-      addMessage(m.role, m.content, m.content.startsWith("[error]"));
+      if (m.role === "trace") {
+        traceLine("agent", m.content); // replay into the terminal panel
+      } else {
+        addMessage(m.role, m.content, m.content.startsWith("[error]"));
+      }
+    }
+    // Re-attach to an in-flight run (e.g. after a page refresh) so the
+    // running indicator, stop button, and live trace come back.
+    try {
+      const { task_id } = await fetch(`/api/chats/${chatId}/active`).then((r) => r.json());
+      if (task_id && task_id !== currentTaskId) {
+        // The SSE stream replays the run's steps from the start, and this
+        // chat's persisted trace already contains them — reset the panel
+        // so the run isn't shown twice.
+        stepsEl.innerHTML = "";
+        traceStart();
+        attachStream(task_id);
+      }
+    } catch {
+      /* active-task lookup is best-effort */
     }
     document.querySelector('.tabs button[data-tab="task"]').click();
     closeSidebar();
@@ -175,8 +373,7 @@ function startNewChat() {
   currentChatId = null;
   setChatName("");
   messagesEl.innerHTML = "";
-  stepsEl.style.display = "none";
-  stepsEl.textContent = "";
+  stepsEl.innerHTML = "";
   promptEl.focus();
 }
 newChatBtn.addEventListener("click", () => {
@@ -262,7 +459,24 @@ async function refreshFiles() {
       });
       render();
 
-      li.append(icon, meta, toggle);
+      const remove = document.createElement("button");
+      remove.className = "file-remove";
+      remove.textContent = "✕";
+      remove.title = `Remove ${f.name}`;
+      remove.addEventListener("click", async () => {
+        remove.disabled = true;
+        try {
+          const res = await fetch(`/api/files/${encodeURIComponent(f.name)}`, { method: "DELETE" });
+          if (!res.ok) throw new Error();
+          attached.delete(f.name);
+          updateAttachHint();
+          await refreshFiles();
+        } catch {
+          remove.disabled = false;
+        }
+      });
+
+      li.append(icon, meta, toggle, remove);
       fileList.appendChild(li);
     }
     if (!files || files.length === 0) {
@@ -311,15 +525,39 @@ fileInput.addEventListener("change", () => {
 dropzone.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
 // ---- task run ----
-runBtn.addEventListener("click", async () => {
+runBtn.addEventListener("click", () => {
   const prompt = promptEl.value.trim();
   if (!prompt) return;
-
-  runBtn.disabled = true;
-  addMessage("user", prompt);
   promptEl.value = "";
-  stepsEl.style.display = "block";
-  stepsEl.textContent = "";
+  runTask(prompt);
+});
+
+const stopBtn = document.getElementById("stop");
+let currentTaskId = null;
+
+stopBtn.addEventListener("click", async () => {
+  if (!currentTaskId) return;
+  stopBtn.disabled = true;
+  try {
+    await fetch(`/api/tasks/${currentTaskId}/cancel`, { method: "POST" });
+  } catch {
+    /* the SSE stream will surface the outcome either way */
+  }
+});
+
+function setRunning(running) {
+  runBtn.disabled = running;
+  stopBtn.hidden = !running;
+  stopBtn.disabled = false;
+  if (!running) currentTaskId = null;
+}
+
+async function runTask(prompt) {
+  if (runBtn.disabled) return; // one task at a time
+
+  setRunning(true);
+  addMessage("user", prompt);
+  traceStart();
 
   try {
     const res = await fetch("/api/chat", {
@@ -330,39 +568,51 @@ runBtn.addEventListener("click", async () => {
     const { task_id, chat_id, error } = await res.json();
     if (error) throw new Error(error);
     currentChatId = chat_id;
+    localStorage.setItem("lastChatId", chat_id);
     refreshChats();
-
-    const source = new EventSource(`/api/tasks/${task_id}/stream`);
-    source.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.step) {
-        stepsEl.textContent += `[${msg.step.kind}] ${msg.step.text}\n`;
-        stepsEl.scrollTop = stepsEl.scrollHeight;
-      }
-      if (msg.status) {
-        source.close();
-        runBtn.disabled = false;
-        stepsEl.style.display = "none";
-        if (msg.status === "done") {
-          addMessage("assistant", msg.result);
-        } else {
-          addMessage("assistant", msg.error || "task failed", true);
-        }
-      }
-      if (msg.error && !msg.status) {
-        source.close();
-        runBtn.disabled = false;
-      }
-    };
-    source.onerror = () => {
-      source.close();
-      runBtn.disabled = false;
-    };
+    attachStream(task_id);
   } catch (err) {
-    runBtn.disabled = false;
+    setRunning(false);
+    traceEnd();
     addMessage("assistant", String(err), true);
   }
-});
+}
+
+// Subscribe to a task's SSE stream and drive the running UI (trace lines,
+// stop button, live indicator). Used for fresh runs and for re-attaching
+// to an in-flight task after a page refresh or chat switch.
+function attachStream(taskId) {
+  currentTaskId = taskId;
+  setRunning(true);
+  const source = new EventSource(`/api/tasks/${taskId}/stream`);
+  source.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.step) {
+      traceLine(msg.step.kind, msg.step.text);
+    }
+    if (msg.status) {
+      source.close();
+      setRunning(false);
+      traceEnd();
+      if (msg.status === "done") {
+        addMessage("assistant", msg.result);
+        traceEl.classList.remove("open");
+      } else {
+        addMessage("assistant", msg.error || "task failed", true);
+      }
+    }
+    if (msg.error && !msg.status) {
+      source.close();
+      setRunning(false);
+      traceEnd();
+    }
+  };
+  source.onerror = () => {
+    source.close();
+    setRunning(false);
+    traceEnd();
+  };
+}
 
 // ---- data lake first-run modal ----
 const dlModal = document.getElementById("dl-modal");
@@ -462,3 +712,10 @@ document.getElementById("dl-later").addEventListener("click", () => {
 
 refreshFiles();
 refreshChats();
+
+// Restore the chat that was open before the last refresh (which also
+// re-attaches to its in-flight run, if one is still going).
+{
+  const last = localStorage.getItem("lastChatId");
+  if (last) selectChat(last);
+}
