@@ -36,16 +36,92 @@
       display: none;
     }
     #answer.error { background: #2c1420; border-color: #6e2438; }
+    .tabs {
+      display: flex; gap: .25rem; margin-bottom: 1rem;
+      border-bottom: 1px solid #2c3f63;
+    }
+    .tabs button {
+      margin: 0; padding: .5rem 1rem; background: none; color: #7c90b4;
+      border-radius: 8px 8px 0 0; cursor: pointer;
+    }
+    .tabs button.active { background: #131f38; color: #dbe4f3; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    #dropzone {
+      border: 1.5px dashed #35507f; border-radius: 12px; padding: 2rem 1rem;
+      text-align: center; color: #7c90b4; cursor: pointer;
+      background: linear-gradient(180deg, #111c33, #0e1729);
+      transition: border-color .15s, background .15s, transform .1s;
+    }
+    #dropzone:hover, #dropzone.dragover {
+      border-color: #5b7fe8; color: #a9bce0; background: #14213d;
+    }
+    #dropzone .dz-icon { font-size: 1.6rem; display: block; margin-bottom: .35rem; }
+    #dropzone .dz-hint { font-size: .78rem; opacity: .75; }
+    #file-list { list-style: none; margin: 1.1rem 0 0; padding: 0; }
+    #file-list li {
+      display: flex; align-items: center; gap: .7rem; padding: .6rem .8rem;
+      background: #131f38; border: 1px solid #24365a; border-radius: 10px;
+      margin-bottom: .45rem; font-size: .86rem;
+      transition: border-color .15s, background .15s;
+    }
+    #file-list li:hover { border-color: #3a5590; background: #162442; }
+    #file-list li.empty {
+      justify-content: center; color: #56688c; border-style: dashed;
+      background: transparent;
+    }
+    #file-list .file-icon {
+      width: 30px; height: 30px; border-radius: 8px; flex: none;
+      display: grid; place-items: center; font-size: .9rem;
+      background: #1d2f55; border: 1px solid #2c4a74;
+    }
+    #file-list .meta { min-width: 0; }
+    #file-list .name {
+      display: block; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #file-list .size { display: block; color: #7c90b4; font-size: .74rem; }
+    .attach-toggle {
+      margin-left: auto; flex: none; padding: .28rem .75rem; font-size: .74rem;
+      border-radius: 999px; border: 1px solid #35507f; background: transparent;
+      color: #7c90b4; cursor: pointer; margin-top: 0;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .attach-toggle.on {
+      background: #3b5bdb; border-color: #3b5bdb; color: #fff;
+    }
+    #upload-status { margin-top: .6rem; font-size: .85rem; color: #7c90b4; min-height: 1.2em; }
+    .attach-hint { margin-top: .5rem; font-size: .8rem; color: #7c90b4; }
   </style>
 </head>
 <body>
   <main>
     <h1>bionikhil</h1>
     <div class="sub">Biomni agent · provider: {{ provider }}</div>
-    <textarea id="prompt" placeholder="Ask the agent something…"></textarea>
-    <button id="run">Run task</button>
-    <div id="steps"></div>
-    <div id="answer"></div>
+
+    <nav class="tabs">
+      <button class="active" data-tab="task">Task</button>
+      <button data-tab="files">Files</button>
+    </nav>
+
+    <section id="tab-task" class="panel active">
+      <textarea id="prompt" placeholder="Ask the agent something…"></textarea>
+      <button id="run">Run task</button>
+      <div class="attach-hint" id="attach-hint" hidden></div>
+      <div id="steps"></div>
+      <div id="answer"></div>
+    </section>
+
+    <section id="tab-files" class="panel">
+      <div id="dropzone">
+        <span class="dz-icon">&#128193;</span>
+        <strong>Drop files here</strong> or click to browse
+        <div class="dz-hint">Uploads are attached to your next task automatically</div>
+      </div>
+      <input type="file" id="file-input" multiple hidden>
+      <div id="upload-status"></div>
+      <ul id="file-list"></ul>
+    </section>
   </main>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

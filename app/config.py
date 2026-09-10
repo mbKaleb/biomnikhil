@@ -22,5 +22,11 @@ class Config:
         os.getenv("BIOMNI_DATA_PATH", str(REPO_ROOT.parent / "data"))
     ).resolve()
 
+    # User-uploaded files the agent can read; lives in the box like the data lake.
+    UPLOAD_PATH: Path = Path(
+        os.getenv("BIOMNI_UPLOAD_PATH", str(REPO_ROOT.parent / "uploads"))
+    ).resolve()
+    MAX_CONTENT_LENGTH: int = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
+
     HOST: str = os.getenv("HOST", "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8000"))
