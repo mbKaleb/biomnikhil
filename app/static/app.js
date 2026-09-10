@@ -17,8 +17,19 @@ const chatNameEl = document.getElementById("chat-name");
 const traceEl = document.getElementById("trace");
 
 // ---- terminal-style trace panel ----
+// The live footer sits below the last step during a run: a one-line status
+// ("running code…") plus the blinking cursor.
+const traceLive = document.createElement("div");
+traceLive.className = "trace-live";
+const traceStatusEl = document.createElement("span");
+traceStatusEl.className = "status";
 const traceCursor = document.createElement("span");
 traceCursor.className = "cursor";
+traceLive.append(traceCursor, traceStatusEl);
+
+function setTraceStatus(text) {
+  traceStatusEl.textContent = text;
+}
 
 // Resizable trace panel: drag the left edge; width persists across reloads.
 {
@@ -50,8 +61,9 @@ function traceOpen() {
 function traceStart() {
   // Append to the chat's existing trace history (it persists per chat)
   // rather than wiping it — matches what a reload would show.
-  traceCursor.remove();
-  stepsEl.appendChild(traceCursor);
+  traceLive.remove();
+  setTraceStatus("waiting on model…");
+  stepsEl.appendChild(traceLive);
   traceEl.classList.add("open", "running");
   stepsEl.scrollTop = stepsEl.scrollHeight;
 }
@@ -94,6 +106,57 @@ function parseSegments(text) {
 
 const SEG_LABELS = { execute: "code", observation: "output", solution: "answer" };
 
+// What the agent is doing next, inferred from the segment it just emitted.
+const NEXT_STATUS = {
+  execute: "running code…",
+  observation: "waiting on model…",
+  thought: "thinking…",
+  solution: "finishing up…",
+};
+
+function fmtTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+// Minimal Python tokenizer for the code segments: comments, strings,
+// keywords, and numbers get a colored span; everything else is plain text.
+// Built with DOM nodes, never innerHTML, so agent output can't inject markup.
+const PY_TOKEN = new RegExp(
+  [
+    '#[^\\n]*', // comment
+    '"""[\\s\\S]*?"""|\'\'\'[\\s\\S]*?\'\'\'', // triple-quoted string
+    '"(?:\\\\.|[^"\\\\\\n])*"|\'(?:\\\\.|[^\'\\\\\\n])*\'', // string
+    '\\b(?:def|class|import|from|return|if|elif|else|for|while|in|is|not|and|or|try|except|finally|with|as|lambda|yield|pass|break|continue|raise|global|del|assert|None|True|False)\\b', // keyword
+    '\\b\\d+(?:\\.\\d+)?(?:e[+-]?\\d+)?\\b', // number
+  ].join("|"),
+  "g"
+);
+
+function highlightCode(text, target) {
+  let cursor = 0;
+  let m;
+  PY_TOKEN.lastIndex = 0;
+  while ((m = PY_TOKEN.exec(text)) !== null) {
+    if (m.index > cursor) target.appendChild(document.createTextNode(text.slice(cursor, m.index)));
+    const tok = m[0];
+    const span = document.createElement("span");
+    span.className =
+      tok[0] === "#" ? "tok-c"
+      : tok[0] === '"' || tok[0] === "'" ? "tok-s"
+      : /^\d/.test(tok) ? "tok-n"
+      : "tok-k";
+    span.textContent = tok;
+    target.appendChild(span);
+    cursor = PY_TOKEN.lastIndex;
+  }
+  if (cursor < text.length) target.appendChild(document.createTextNode(text.slice(cursor)));
+}
+
 // DataFrame/table-shaped output: several lines whose columns are separated
 // by runs of 2+ spaces. Wrapping such lines destroys the alignment, so
 // these render with preserved whitespace and a horizontal scrollbar.
@@ -104,20 +167,35 @@ function isTabular(text) {
   return columnish >= Math.min(3, lines.length - 1) && columnish >= lines.length / 2;
 }
 
-function traceLine(kind, text) {
+function traceLine(kind, text, ts) {
   const cleaned = kind === "agent" ? cleanTrace(text) : text;
   if (cleaned === null) return;
   const ln = document.createElement("div");
   ln.className = `ln ${kind}`;
+  let lastSegType = null;
   if (kind !== "agent") {
     const k = document.createElement("span");
     k.className = "k";
-    k.textContent = `[${kind}] `;
+    k.textContent = (ts ? `${fmtTime(ts)} ` : "") + `[${kind}] `;
     ln.append(k, document.createTextNode(cleaned));
   } else {
-    // Only tagged content earns a place in the terminal; untagged
-    // prose between the tags is chatter — drop it.
-    for (const seg of parseSegments(cleaned).filter((s) => s.type !== "thought")) {
+    // Each agent message is one numbered step; the header carries the
+    // step count and the time the step arrived.
+    const head = document.createElement("div");
+    head.className = "ln-head";
+    const stepN = document.createElement("span");
+    stepN.className = "step-n";
+    stepN.textContent = `step ${stepsEl.querySelectorAll(".ln.agent").length + 1}`;
+    head.appendChild(stepN);
+    if (ts) {
+      const time = document.createElement("span");
+      time.className = "ts";
+      time.textContent = fmtTime(ts);
+      head.appendChild(time);
+    }
+    ln.appendChild(head);
+    for (const seg of parseSegments(cleaned)) {
+      lastSegType = seg.type;
       const el = document.createElement("div");
       el.className = `seg seg-${seg.type}`;
       if (seg.type === "observation" && isTabular(seg.text)) {
@@ -144,6 +222,8 @@ function traceLine(kind, text) {
             body.appendChild(document.createTextNode(part));
           }
         }
+      } else if (seg.type === "execute") {
+        highlightCode(seg.text, body);
       } else {
         body.appendChild(document.createTextNode(seg.text));
       }
@@ -167,20 +247,22 @@ function traceLine(kind, text) {
       }
       ln.appendChild(el);
     }
-    if (!ln.childNodes.length) return;
+    if (!ln.querySelector(".seg")) return; // header alone isn't worth a line
   }
   // Follow the tail only if the user is already at (or near) the bottom;
   // if they've scrolled up to read something, don't yank them back down.
   const nearBottom =
     stepsEl.scrollHeight - stepsEl.scrollTop - stepsEl.clientHeight < 60;
-  // The cursor is only in the DOM during a live run; replayed history
+  // The live footer is only in the DOM during a run; replayed history
   // (loaded from a chat) appends at the end.
-  stepsEl.insertBefore(ln, traceCursor.parentNode === stepsEl ? traceCursor : null);
+  const live = traceLive.parentNode === stepsEl;
+  stepsEl.insertBefore(ln, live ? traceLive : null);
+  if (live && lastSegType) setTraceStatus(NEXT_STATUS[lastSegType] || "thinking…");
   if (nearBottom) stepsEl.scrollTop = stepsEl.scrollHeight;
 }
 function traceEnd() {
   traceEl.classList.remove("running");
-  traceCursor.remove();
+  traceLive.remove();
 }
 document.getElementById("trace-btn").addEventListener("click", () =>
   traceEl.classList.toggle("open")
@@ -341,7 +423,7 @@ async function selectChat(chatId) {
     stepsEl.innerHTML = "";
     for (const m of chat.messages) {
       if (m.role === "trace") {
-        traceLine("agent", m.content); // replay into the terminal panel
+        traceLine("agent", m.content, m.created); // replay into the terminal panel
       } else {
         addMessage(m.role, m.content, m.content.startsWith("[error]"));
       }
@@ -588,7 +670,7 @@ function attachStream(taskId) {
   source.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.step) {
-      traceLine(msg.step.kind, msg.step.text);
+      traceLine(msg.step.kind, msg.step.text, msg.step.t);
     }
     if (msg.status) {
       source.close();

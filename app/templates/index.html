@@ -89,9 +89,30 @@
     #steps .ln { display: block; margin-bottom: .7rem; }
     #steps .ln .k { color: #4a6b5c; user-select: none; }
     #steps .ln.system { color: #6b93b8; }
+    #steps .ln-head {
+      display: flex; align-items: baseline; gap: .5rem;
+      margin-bottom: .3rem; user-select: none;
+    }
+    #steps .ln-head .step-n {
+      font-size: .62rem; text-transform: uppercase; letter-spacing: .12em;
+      color: #5c7a6e;
+    }
+    #steps .ln-head::after {
+      content: ""; flex: 1; border-top: 1px solid #16222c;
+      align-self: center;
+    }
+    #steps .ln-head .ts { font-size: .62rem; color: #33473d; order: 1; }
     #steps .seg { display: block; margin-top: .45rem; }
     #steps .seg:first-child { margin-top: 0; }
-    #steps .seg-thought { color: #9db1cc; }
+    #steps .seg-thought { color: #9db1cc; font-style: italic; opacity: .8; }
+    #steps .tok-k { color: #c792ea; }
+    #steps .tok-s { color: #ecc48d; }
+    #steps .tok-c { color: #4a6b8a; font-style: italic; }
+    #steps .tok-n { color: #f78c6c; }
+    #steps .trace-live {
+      display: flex; align-items: center; gap: .5rem; color: #5c7a6e;
+    }
+    #steps .trace-live .status { font-style: italic; }
     #steps .seg-execute {
       background: #0a1420; border: 1px solid #16283c;
       border-left: 2px solid #3b82f6; border-radius: 6px;
