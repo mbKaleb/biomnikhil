@@ -68,5 +68,5 @@ $portLine = Select-String -Path "$Repo\.env" -Pattern '^\s*PORT\s*=\s*(\d+)' |
 if ($portLine) { $Port = [int]$portLine.Matches[0].Groups[1].Value }
 
 Write-Host ""
-Write-Host "bionikhil -> http://127.0.0.1:$Port   (Ctrl+C to stop)"
+Write-Host "biomnikhil -> http://127.0.0.1:$Port   (Ctrl+C to stop)"
 waitress-serve --listen=127.0.0.1:$Port wsgi:app

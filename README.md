@@ -1,4 +1,4 @@
-# bionikhil
+# biomnikhil
 
 Flask wrapper around [Stanford Biomni](https://github.com/snap-stanford/Biomni)
 with a swappable AI-provider layer. Built to run **fully native on Windows 11**
@@ -18,8 +18,8 @@ with a single env var.
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
 mkdir $env:USERPROFILE\biomni-box; cd $env:USERPROFILE\biomni-box
-git clone <repo-url> bionikhil
-cd bionikhil
+git clone <repo-url> biomnikhil
+cd biomnikhil
 powershell -ExecutionPolicy Bypass -File scripts\setup-box.ps1
 # open .env, add your API key, then:
 .\run.ps1

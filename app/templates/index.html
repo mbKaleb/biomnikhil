@@ -3,19 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>bionikhil</title>
+  <title>biomnikhil</title>
   <style>
     :root { color-scheme: dark; }
     body {
-      margin: 0; padding: 2rem 1rem; background: #0d1526; color: #dbe4f3;
+      margin: 0; background: #0d1526; color: #dbe4f3;
       font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
-      display: flex; justify-content: center;
     }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: .8rem;
+      padding: .6rem 1rem; background: rgba(10, 17, 34, .85);
+      backdrop-filter: blur(8px); border-bottom: 1px solid #1d2b48;
+    }
+    header h1 { font-size: 1.05rem; margin: 0; }
+    #chat-name {
+      font-size: .85rem; color: #7c90b4; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+      padding-left: .8rem; border-left: 1px solid #2c3f63;
+    }
+    #chat-name:empty { display: none; }
+    header .provider-badge {
+      margin-left: auto; font-size: .74rem; color: #7c90b4;
+      padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
+      background: #131f38;
+    }
+    .content { display: flex; justify-content: center; padding: 1.5rem 1rem; }
     main { width: min(760px, 100%); }
-    h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
-    .sub { color: #7c90b4; font-size: .85rem; margin-bottom: 1.25rem; }
     textarea {
-      width: 100%; min-height: 90px; box-sizing: border-box; resize: vertical;
+      margin-top: 1rem; width: 100%; min-height: 90px; box-sizing: border-box; resize: vertical;
       background: #131f38; color: inherit; border: 1px solid #2c3f63;
       border-radius: 8px; padding: .7rem .8rem; font: inherit;
     }
@@ -30,12 +46,177 @@
       font-family: ui-monospace, Consolas, monospace; font-size: .8rem;
       color: #93a6c4; max-height: 45vh; overflow-y: auto; display: none;
     }
-    #answer {
-      margin-top: 1rem; padding: .9rem 1rem; background: #12233c;
-      border: 1px solid #2c4a74; border-radius: 8px; white-space: pre-wrap;
-      display: none;
+    /* ---- sidebar ---- */
+    #sidebar {
+      position: fixed; inset: 0 auto 0 0; width: 288px; z-index: 20;
+      background: linear-gradient(170deg, #0c1428 0%, #090f1f 100%);
+      border-right: 1px solid #22335a;
+      box-shadow: 8px 0 32px rgba(0, 0, 0, .45);
+      transform: translateX(-100%);
+      transition: transform .25s cubic-bezier(.32, .72, .28, 1);
+      display: flex; flex-direction: column;
+      box-sizing: border-box;
     }
-    #answer.error { background: #2c1420; border-color: #6e2438; }
+    #sidebar.open { transform: translateX(0); }
+    #backdrop {
+      position: fixed; inset: 0; z-index: 15;
+      background: rgba(4, 8, 18, .55); backdrop-filter: blur(2px);
+      opacity: 0; pointer-events: none; transition: opacity .25s ease;
+    }
+    #backdrop.show { opacity: 1; pointer-events: auto; }
+    .sidebar-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .95rem 1rem .85rem; border-bottom: 1px solid #182747;
+    }
+    .sidebar-head h2 {
+      font-size: .95rem; margin: 0; font-weight: 600; letter-spacing: .01em;
+    }
+    #close-sidebar {
+      margin: 0; padding: .25rem .5rem; background: transparent;
+      color: #7c90b4; font-size: .95rem; line-height: 1; border-radius: 6px;
+    }
+    #close-sidebar:hover { background: #1a2a4c; color: #dbe4f3; }
+    .sidebar-body {
+      display: flex; flex-direction: column; flex: 1; min-height: 0;
+      padding: .9rem .8rem;
+    }
+    #new-chat {
+      margin: 0 0 .9rem; width: 100%; padding: .6rem; border-radius: 10px;
+      background: linear-gradient(180deg, #4265e6, #3554cf);
+      box-shadow: 0 2px 10px rgba(59, 91, 219, .35);
+      text-align: center; font-weight: 600;
+      transition: filter .15s, transform .1s;
+    }
+    #new-chat:hover { filter: brightness(1.1); }
+    #new-chat:active { transform: translateY(1px); }
+    .sidebar-label {
+      font-size: .7rem; text-transform: uppercase; letter-spacing: .1em;
+      color: #4d5f84; margin: 0 .35rem .45rem; font-weight: 600;
+    }
+    #chat-list {
+      list-style: none; margin: 0; padding: 0 .1rem 0 0;
+      overflow-y: auto; flex: 1; scrollbar-width: thin;
+      scrollbar-color: #22335a transparent;
+    }
+    #chat-list::-webkit-scrollbar { width: 6px; }
+    #chat-list::-webkit-scrollbar-thumb { background: #22335a; border-radius: 3px; }
+    #chat-list li {
+      display: flex; align-items: center; gap: .55rem; padding: .5rem .6rem;
+      border-radius: 9px; cursor: pointer; font-size: .85rem; color: #b9c8e4;
+      margin-bottom: .2rem; border: 1px solid transparent;
+      transition: background .12s, border-color .12s;
+    }
+    #chat-list li:hover { background: #131f3a; }
+    #chat-list li.active {
+      background: linear-gradient(90deg, #1c2c52, #172444);
+      border-color: #2d4479; color: #fff;
+    }
+    #chat-list li.active::before {
+      content: ""; width: 3px; height: 1.1rem; border-radius: 2px;
+      background: #4d6ff0; margin-left: -.3rem; flex: none;
+    }
+    #chat-list .chat-bubble {
+      flex: none; font-size: .8rem; opacity: .8;
+    }
+    #chat-list .chat-meta { flex: 1; min-width: 0; }
+    #chat-list .chat-title {
+      display: block; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; line-height: 1.3;
+    }
+    #chat-list .chat-time {
+      display: block; font-size: .68rem; color: #56688c; line-height: 1.3;
+    }
+    #chat-list li.active .chat-time { color: #7c90b4; }
+    #chat-list .chat-actions { display: none; gap: .1rem; flex: none; }
+    #chat-list li:hover .chat-actions,
+    #chat-list li.active .chat-actions { display: flex; }
+    #chat-list .chat-actions button {
+      margin: 0; padding: .2rem .35rem; background: none; color: #7c90b4;
+      font-size: .78rem; border-radius: 6px;
+    }
+    #chat-list .chat-actions button:hover { background: #263a63; color: #dbe4f3; }
+    #chat-list input {
+      flex: 1; min-width: 0; background: #0d1526; color: inherit; font: inherit;
+      font-size: .85rem; border: 1px solid #3b5bdb; border-radius: 6px;
+      padding: .2rem .45rem;
+    }
+    #chat-list .empty {
+      color: #56688c; cursor: default; justify-content: center;
+      border: 1px dashed #22335a; padding: 1rem;
+    }
+    #chat-list .empty:hover { background: none; }
+    #menu-btn {
+      margin: 0; padding: .4rem .6rem; background: transparent;
+      border: 1px solid transparent; border-radius: 8px;
+      color: #b9c8e4; font-size: 1rem; line-height: 1;
+    }
+    #menu-btn:hover { background: #1a2a4c; border-color: #2c3f63; }
+
+    /* ---- chat messages ---- */
+    #messages { margin-top: .25rem; }
+    .msg {
+      margin-top: .8rem; padding: .8rem 1rem; border-radius: 12px;
+      white-space: pre-wrap; font-size: .92rem; max-width: 92%;
+      box-sizing: border-box; overflow-wrap: break-word;
+    }
+    .msg.user {
+      background: #23345e; border: 1px solid #33487c; margin-left: auto;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant {
+      background: #12233c; border: 1px solid #2c4a74; margin-right: auto;
+      border-bottom-left-radius: 4px;
+    }
+    .msg.error { background: #2c1420; border-color: #6e2438; }
+
+    /* ---- data lake modal ---- */
+    #dl-modal {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(4, 8, 18, .65); backdrop-filter: blur(3px);
+    }
+    #dl-modal.show { display: flex; }
+    .dl-card {
+      width: min(440px, calc(100% - 2rem)); box-sizing: border-box;
+      background: linear-gradient(170deg, #101b33, #0b1324);
+      border: 1px solid #263a63; border-radius: 16px;
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+      padding: 1.5rem 1.6rem 1.4rem;
+    }
+    .dl-card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
+    .dl-card .dl-icon { font-size: 1.9rem; display: block; margin-bottom: .6rem; }
+    .dl-card p { margin: 0 0 1rem; color: #93a6c4; font-size: .86rem; }
+    .dl-bar {
+      height: 10px; border-radius: 999px; background: #0a1020;
+      border: 1px solid #22335a; overflow: hidden;
+    }
+    .dl-bar .fill {
+      height: 100%; width: 0%; border-radius: 999px;
+      background: linear-gradient(90deg, #3b5bdb, #6b8cff);
+      transition: width .6s ease;
+    }
+    .dl-bar .fill.indeterminate {
+      width: 30%;
+      animation: dl-slide 1.4s ease-in-out infinite;
+    }
+    @keyframes dl-slide {
+      0% { margin-left: -30%; }
+      100% { margin-left: 100%; }
+    }
+    .dl-stats {
+      display: flex; justify-content: space-between; margin-top: .45rem;
+      font-size: .76rem; color: #7c90b4;
+      font-variant-numeric: tabular-nums;
+    }
+    .dl-progress { display: none; margin-bottom: 1rem; }
+    #dl-modal.downloading .dl-progress { display: block; }
+    #dl-modal.downloading .dl-choices { display: none; }
+    .dl-choices { display: flex; gap: .6rem; justify-content: flex-end; }
+    .dl-choices .secondary {
+      background: transparent; border: 1px solid #2c3f63; color: #93a6c4;
+    }
+    .dl-choices .secondary:hover { background: #131f38; }
+    .dl-note { font-size: .74rem; color: #56688c; margin-top: .9rem; }
     .tabs {
       display: flex; gap: .25rem; margin-bottom: 1rem;
       border-bottom: 1px solid #2c3f63;
@@ -95,9 +276,51 @@
   </style>
 </head>
 <body>
+  <header>
+    <button id="menu-btn" title="Chats">&#9776;</button>
+    <h1>biomnikhil</h1>
+    <span id="chat-name"></span>
+    <span class="provider-badge">Biomni agent · {{ provider }}</span>
+  </header>
+
+  <div id="dl-modal">
+    <div class="dl-card">
+      <span class="dl-icon">&#128452;&#65039;</span>
+      <h3>Download the Biomni data lake</h3>
+      <p>The agent needs its reference data (~11&nbsp;GB) before it can run
+        tasks. You can download it now, or it will download automatically on
+        your first task.</p>
+      <div class="dl-progress">
+        <div class="dl-bar"><div class="fill" id="dl-fill"></div></div>
+        <div class="dl-stats">
+          <span id="dl-bytes">0 B</span>
+          <span id="dl-percent">0%</span>
+        </div>
+        <div class="dl-stats"><span id="dl-files"></span><span id="dl-eta"></span></div>
+      </div>
+      <div class="dl-choices">
+        <button class="secondary" id="dl-later">Later</button>
+        <button id="dl-start">Download now</button>
+      </div>
+      <div class="dl-note" id="dl-note"></div>
+    </div>
+  </div>
+
+  <div id="backdrop"></div>
+  <aside id="sidebar">
+    <div class="sidebar-head">
+      <h2>biomnikhil</h2>
+      <button id="close-sidebar" title="Close">&#10005;</button>
+    </div>
+    <div class="sidebar-body">
+      <button id="new-chat">+ New chat</button>
+      <div class="sidebar-label">Recent chats</div>
+      <ul id="chat-list"></ul>
+    </div>
+  </aside>
+
+  <div class="content">
   <main>
-    <h1>bionikhil</h1>
-    <div class="sub">Biomni agent · provider: {{ provider }}</div>
 
     <nav class="tabs">
       <button class="active" data-tab="task">Task</button>
@@ -105,11 +328,11 @@
     </nav>
 
     <section id="tab-task" class="panel active">
+      <div id="messages"></div>
+      <div id="steps"></div>
       <textarea id="prompt" placeholder="Ask the agent something…"></textarea>
       <button id="run">Run task</button>
       <div class="attach-hint" id="attach-hint" hidden></div>
-      <div id="steps"></div>
-      <div id="answer"></div>
     </section>
 
     <section id="tab-files" class="panel">
@@ -123,6 +346,7 @@
       <ul id="file-list"></ul>
     </section>
   </main>
+  </div>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

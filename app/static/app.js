@@ -1,12 +1,189 @@
 const promptEl = document.getElementById("prompt");
 const runBtn = document.getElementById("run");
 const stepsEl = document.getElementById("steps");
-const answerEl = document.getElementById("answer");
+const messagesEl = document.getElementById("messages");
 const attachHint = document.getElementById("attach-hint");
 const fileInput = document.getElementById("file-input");
 const dropzone = document.getElementById("dropzone");
 const uploadStatus = document.getElementById("upload-status");
 const fileList = document.getElementById("file-list");
+const sidebar = document.getElementById("sidebar");
+const backdrop = document.getElementById("backdrop");
+const menuBtn = document.getElementById("menu-btn");
+const newChatBtn = document.getElementById("new-chat");
+const chatListEl = document.getElementById("chat-list");
+
+const chatNameEl = document.getElementById("chat-name");
+
+let currentChatId = null;
+
+function setChatName(name) {
+  chatNameEl.textContent = name || "";
+  chatNameEl.title = name || "";
+}
+
+// ---- sidebar open/close ----
+function openSidebar() {
+  sidebar.classList.add("open");
+  backdrop.classList.add("show");
+  refreshChats();
+}
+function closeSidebar() {
+  sidebar.classList.remove("open");
+  backdrop.classList.remove("show");
+}
+menuBtn.addEventListener("click", () =>
+  sidebar.classList.contains("open") ? closeSidebar() : openSidebar()
+);
+backdrop.addEventListener("click", closeSidebar);
+document.getElementById("close-sidebar").addEventListener("click", closeSidebar);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSidebar();
+});
+
+// ---- chat list ----
+async function refreshChats() {
+  try {
+    const res = await fetch("/api/chats");
+    const { chats } = await res.json();
+    chatListEl.innerHTML = "";
+    if (!chats || chats.length === 0) {
+      chatListEl.innerHTML = '<li class="empty">No chats yet</li>';
+      return;
+    }
+    for (const chat of chats) {
+      chatListEl.appendChild(chatRow(chat));
+      if (chat.id === currentChatId) setChatName(chat.title);
+    }
+  } catch {
+    chatListEl.innerHTML = '<li class="empty">Could not load chats</li>';
+  }
+}
+
+function relativeTime(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
+
+function chatRow(chat) {
+  const li = document.createElement("li");
+  if (chat.id === currentChatId) li.classList.add("active");
+
+  const bubble = document.createElement("span");
+  bubble.className = "chat-bubble";
+  bubble.textContent = "\u{1F4AC}";
+
+  const meta = document.createElement("span");
+  meta.className = "chat-meta";
+  const title = document.createElement("span");
+  title.className = "chat-title";
+  title.textContent = chat.title;
+  title.title = chat.title;
+  const time = document.createElement("span");
+  time.className = "chat-time";
+  time.textContent = relativeTime(chat.updated);
+  meta.append(title, time);
+
+  const actions = document.createElement("span");
+  actions.className = "chat-actions";
+
+  const renameBtn = document.createElement("button");
+  renameBtn.textContent = "✎";
+  renameBtn.title = "Rename";
+  renameBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    startRename(li, chat, meta);
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.textContent = "\u{1F5D1}️";
+  deleteBtn.title = "Delete";
+  deleteBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Delete "${chat.title}"?`)) return;
+    await fetch(`/api/chats/${chat.id}`, { method: "DELETE" });
+    if (chat.id === currentChatId) startNewChat();
+    refreshChats();
+  });
+
+  actions.append(renameBtn, deleteBtn);
+  li.append(bubble, meta, actions);
+  li.addEventListener("click", () => selectChat(chat.id));
+  return li;
+}
+
+function startRename(li, chat, metaEl) {
+  const input = document.createElement("input");
+  input.value = chat.title;
+  li.replaceChild(input, metaEl);
+  input.focus();
+  input.select();
+  const done = async (save) => {
+    const title = input.value.trim();
+    if (save && title && title !== chat.title) {
+      await fetch(`/api/chats/${chat.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+    }
+    refreshChats();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") done(true);
+    if (e.key === "Escape") done(false);
+  });
+  input.addEventListener("blur", () => done(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+
+// ---- messages ----
+function addMessage(role, text, isError = false) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}` + (isError ? " error" : "");
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  div.scrollIntoView({ block: "end" });
+  return div;
+}
+
+async function selectChat(chatId) {
+  try {
+    const res = await fetch(`/api/chats/${chatId}`);
+    if (!res.ok) throw new Error("unknown chat");
+    const chat = await res.json();
+    currentChatId = chatId;
+    setChatName(chat.title);
+    messagesEl.innerHTML = "";
+    stepsEl.style.display = "none";
+    for (const m of chat.messages) {
+      addMessage(m.role, m.content, m.content.startsWith("[error]"));
+    }
+    document.querySelector('.tabs button[data-tab="task"]').click();
+    closeSidebar();
+    refreshChats();
+  } catch {
+    refreshChats();
+  }
+}
+
+function startNewChat() {
+  currentChatId = null;
+  setChatName("");
+  messagesEl.innerHTML = "";
+  stepsEl.style.display = "none";
+  stepsEl.textContent = "";
+  promptEl.focus();
+}
+newChatBtn.addEventListener("click", () => {
+  startNewChat();
+  closeSidebar();
+  document.querySelector('.tabs button[data-tab="task"]').click();
+});
 
 // ---- tabs ----
 document.querySelectorAll(".tabs button").forEach((btn) => {
@@ -133,27 +310,27 @@ fileInput.addEventListener("change", () => {
 );
 dropzone.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
-refreshFiles();
-
 // ---- task run ----
 runBtn.addEventListener("click", async () => {
   const prompt = promptEl.value.trim();
   if (!prompt) return;
 
   runBtn.disabled = true;
+  addMessage("user", prompt);
+  promptEl.value = "";
   stepsEl.style.display = "block";
   stepsEl.textContent = "";
-  answerEl.style.display = "none";
-  answerEl.classList.remove("error");
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, files: [...attached] }),
+      body: JSON.stringify({ prompt, files: [...attached], chat_id: currentChatId }),
     });
-    const { task_id, error } = await res.json();
+    const { task_id, chat_id, error } = await res.json();
     if (error) throw new Error(error);
+    currentChatId = chat_id;
+    refreshChats();
 
     const source = new EventSource(`/api/tasks/${task_id}/stream`);
     source.onmessage = (event) => {
@@ -165,12 +342,11 @@ runBtn.addEventListener("click", async () => {
       if (msg.status) {
         source.close();
         runBtn.disabled = false;
-        answerEl.style.display = "block";
+        stepsEl.style.display = "none";
         if (msg.status === "done") {
-          answerEl.textContent = msg.result;
+          addMessage("assistant", msg.result);
         } else {
-          answerEl.classList.add("error");
-          answerEl.textContent = msg.error || "task failed";
+          addMessage("assistant", msg.error || "task failed", true);
         }
       }
       if (msg.error && !msg.status) {
@@ -184,8 +360,105 @@ runBtn.addEventListener("click", async () => {
     };
   } catch (err) {
     runBtn.disabled = false;
-    answerEl.style.display = "block";
-    answerEl.classList.add("error");
-    answerEl.textContent = String(err);
+    addMessage("assistant", String(err), true);
   }
 });
+
+// ---- data lake first-run modal ----
+const dlModal = document.getElementById("dl-modal");
+const dlFill = document.getElementById("dl-fill");
+const dlBytes = document.getElementById("dl-bytes");
+const dlPercent = document.getElementById("dl-percent");
+const dlFiles = document.getElementById("dl-files");
+const dlEta = document.getElementById("dl-eta");
+const dlNote = document.getElementById("dl-note");
+let dlTimer = null;
+let dlLastSample = null; // {t, bytes} for the transfer-rate estimate
+
+function formatBytes(n) {
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function renderDl(status) {
+  const pct = status.percent;
+  if (status.bytes > 0) {
+    dlFill.classList.remove("indeterminate");
+    dlFill.style.width = `${Math.max(pct, 1.5)}%`;
+  } else {
+    dlFill.classList.add("indeterminate");
+  }
+  dlBytes.textContent = `${formatBytes(status.bytes)} / ${formatBytes(status.expected_bytes)}`;
+  dlPercent.textContent = `${pct}%`;
+  dlFiles.textContent = `${status.files} files`;
+
+  const now = Date.now();
+  if (dlLastSample && status.bytes > dlLastSample.bytes) {
+    const rate = ((status.bytes - dlLastSample.bytes) / (now - dlLastSample.t)) * 1000;
+    const remaining = (status.expected_bytes - status.bytes) / rate;
+    if (rate > 0 && remaining > 0 && remaining < 86400) {
+      const m = Math.floor(remaining / 60);
+      dlEta.textContent = m >= 1 ? `~${m}m left` : "almost done";
+    }
+  }
+  dlLastSample = { t: now, bytes: status.bytes };
+}
+
+function stopDlPolling() {
+  if (dlTimer) clearInterval(dlTimer);
+  dlTimer = null;
+}
+
+function pollDl() {
+  stopDlPolling();
+  dlModal.classList.add("show", "downloading");
+  dlTimer = setInterval(async () => {
+    try {
+      const status = await fetch("/api/datalake").then((r) => r.json());
+      renderDl(status);
+      if (status.state === "ready") {
+        stopDlPolling();
+        dlFill.style.width = "100%";
+        dlPercent.textContent = "100%";
+        dlNote.textContent = "Data lake ready — you're all set.";
+        setTimeout(() => dlModal.classList.remove("show", "downloading"), 1600);
+      } else if (status.state === "error") {
+        stopDlPolling();
+        dlModal.classList.remove("downloading");
+        dlNote.textContent = `Download failed: ${status.error}`;
+      }
+    } catch {
+      /* transient poll failure — keep trying */
+    }
+  }, 1500);
+}
+
+document.getElementById("dl-start").addEventListener("click", async () => {
+  dlNote.textContent = "";
+  await fetch("/api/datalake/download", { method: "POST" });
+  pollDl();
+});
+document.getElementById("dl-later").addEventListener("click", () => {
+  dlModal.classList.remove("show");
+});
+
+(async function checkDatalake() {
+  try {
+    const status = await fetch("/api/datalake").then((r) => r.json());
+    if (status.state === "downloading") {
+      renderDl(status);
+      pollDl();
+    } else if (status.state === "missing" || status.state === "partial") {
+      if (status.state === "partial") {
+        dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — it will resume.`;
+      }
+      dlModal.classList.add("show");
+    }
+  } catch {
+    /* health endpoint down — nothing to do */
+  }
+})();
+
+refreshFiles();
+refreshChats();

@@ -8,7 +8,7 @@ from flask import Blueprint, Response, jsonify, request
 from werkzeug.utils import secure_filename
 
 from ..config import Config
-from ..services import biomni_runner
+from ..services import biomni_runner, chat_store, datalake
 from ..services.tasks import registry
 
 bp = Blueprint("api", __name__)
@@ -42,12 +42,72 @@ def chat():
         path = Config.UPLOAD_PATH / safe
         if safe and path.is_file():
             attached.append(str(path))
+    display_prompt = prompt
     if attached:
         listing = "\n".join(f"- {p}" for p in attached)
         prompt = f"{prompt}\n\nThe user attached these files (local paths):\n{listing}"
 
-    task_id = biomni_runner.submit(prompt)
-    return jsonify(task_id=task_id), 202
+    # Attach the run to a chat: use the given one, or start a new chat titled
+    # from the prompt so history always has a home.
+    chat_id = (body.get("chat_id") or "").strip() or None
+    if chat_id and chat_store.get_chat(chat_id) is None:
+        return jsonify(error="unknown chat"), 404
+    if chat_id is None:
+        title = display_prompt[:60] + ("…" if len(display_prompt) > 60 else "")
+        chat_id = chat_store.create_chat(title)["id"]
+    chat_store.add_message(chat_id, "user", display_prompt)
+
+    task_id = biomni_runner.submit(prompt, chat_id=chat_id)
+    return jsonify(task_id=task_id, chat_id=chat_id), 202
+
+
+@bp.get("/datalake")
+def datalake_status():
+    return jsonify(datalake.status())
+
+
+@bp.post("/datalake/download")
+def datalake_download():
+    started = datalake.start_download()
+    return jsonify(started=started, **datalake.status()), 202
+
+
+@bp.get("/chats")
+def list_chats():
+    return jsonify(chats=chat_store.list_chats())
+
+
+@bp.post("/chats")
+def create_chat():
+    body = request.get_json(silent=True) or {}
+    title = (body.get("title") or "New chat").strip() or "New chat"
+    return jsonify(chat=chat_store.create_chat(title)), 201
+
+
+@bp.get("/chats/<chat_id>")
+def get_chat(chat_id: str):
+    chat = chat_store.get_chat(chat_id)
+    if chat is None:
+        return jsonify(error="unknown chat"), 404
+    return jsonify(chat)
+
+
+@bp.patch("/chats/<chat_id>")
+def rename_chat(chat_id: str):
+    body = request.get_json(silent=True) or {}
+    title = (body.get("title") or "").strip()
+    if not title:
+        return jsonify(error="title is required"), 400
+    if not chat_store.rename_chat(chat_id, title):
+        return jsonify(error="unknown chat"), 404
+    return jsonify(ok=True)
+
+
+@bp.delete("/chats/<chat_id>")
+def delete_chat(chat_id: str):
+    if not chat_store.delete_chat(chat_id):
+        return jsonify(error="unknown chat"), 404
+    return jsonify(ok=True)
 
 
 @bp.get("/files")

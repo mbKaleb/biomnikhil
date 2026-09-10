@@ -11,4 +11,4 @@ $env:PYTHONUTF8 = "1"
 $env:PIP_CACHE_DIR = "$Box\pip-cache"
 $env:OLLAMA_MODELS = "$Box\ollama-models"
 
-Write-Host "bionikhil env active (box: $Box)"
+Write-Host "biomnikhil env active (box: $Box)"

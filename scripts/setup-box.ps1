@@ -6,7 +6,7 @@
 #     env\            conda env with biomni + flask
 #     pip-cache\      pip downloads
 #     data\           biomni data lake (~11 GB, downloads on first task)
-#     bionikhil\      this repo
+#     biomnikhil\      this repo
 #
 # Usage (once, after cloning):
 #   powershell -ExecutionPolicy Bypass -File scripts\setup-box.ps1

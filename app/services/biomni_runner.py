@@ -27,15 +27,19 @@ def _get_agent():
         return _agent
 
 
-def submit(prompt: str) -> str:
-    """Queue a prompt for the agent; returns a task id immediately."""
+def submit(prompt: str, chat_id: str | None = None) -> str:
+    """Queue a prompt for the agent; returns a task id immediately. When a
+    chat_id is given, the final answer (or error) is appended to that chat."""
     task = registry.create(prompt)
-    thread = threading.Thread(target=_run, args=(task.id, prompt), daemon=True)
+    thread = threading.Thread(
+        target=_run, args=(task.id, prompt, chat_id), daemon=True
+    )
     thread.start()
     return task.id
 
 
-def _run(task_id: str, prompt: str) -> None:
+def _run(task_id: str, prompt: str, chat_id: str | None = None) -> None:
+    from . import chat_store
     try:
         registry.append_step(
             task_id, "system",
@@ -58,6 +62,12 @@ def _run(task_id: str, prompt: str) -> None:
         for entry in log or []:
             registry.append_step(task_id, "agent", str(entry))
         registry.finish(task_id, str(answer))
+        if chat_id:
+            chat_store.add_message(chat_id, "assistant", str(answer))
     except Exception as exc:  # surface everything to the UI — tools that
         # shell out to Linux-only binaries will land here on Windows.
         registry.fail(task_id, f"{type(exc).__name__}: {exc}")
+        if chat_id:
+            chat_store.add_message(
+                chat_id, "assistant", f"[error] {type(exc).__name__}: {exc}"
+            )
