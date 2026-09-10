@@ -31,6 +31,52 @@ function setTraceStatus(text) {
   traceStatusEl.textContent = text;
 }
 
+// Elapsed-run ticker in the trace header. runT0 starts at "now" but gets
+// corrected backwards by the first replayed SSE step, so a re-attach after
+// a page refresh still shows time since the run actually began.
+const elapsedEl = document.getElementById("run-elapsed");
+let runT0 = null;
+let runTicker = null;
+
+function renderElapsed() {
+  if (!runT0) return;
+  const s = Math.max(0, Math.floor((Date.now() - runT0) / 1000));
+  elapsedEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function startElapsed() {
+  runT0 = Date.now();
+  clearInterval(runTicker);
+  runTicker = setInterval(renderElapsed, 1000);
+  renderElapsed();
+}
+
+function stopElapsed() {
+  clearInterval(runTicker);
+  runTicker = null;
+  runT0 = null;
+  elapsedEl.textContent = "";
+}
+
+// "New output below" pill: the panel deliberately stops auto-following
+// when the user scrolls up — this is the way back down.
+const jumpPill = document.createElement("button");
+jumpPill.id = "jump-pill";
+jumpPill.textContent = "↓ new output";
+jumpPill.hidden = true;
+jumpPill.addEventListener("click", () => {
+  stepsEl.scrollTop = stepsEl.scrollHeight;
+  jumpPill.hidden = true;
+});
+
+function nearBottomNow() {
+  return stepsEl.scrollHeight - stepsEl.scrollTop - stepsEl.clientHeight < 60;
+}
+traceEl.appendChild(jumpPill);
+stepsEl.addEventListener("scroll", () => {
+  if (nearBottomNow()) jumpPill.hidden = true;
+});
+
 // Resizable trace panel: drag the left edge; width persists across reloads.
 {
   const saved = localStorage.getItem("traceWidth");
@@ -65,6 +111,7 @@ function traceStart() {
   setTraceStatus("waiting on model…");
   stepsEl.appendChild(traceLive);
   traceEl.classList.add("open", "running");
+  startElapsed();
   stepsEl.scrollTop = stepsEl.scrollHeight;
 }
 // Strip biomni's log noise before showing a step in the terminal panel.
@@ -173,7 +220,28 @@ function traceLine(kind, text, ts) {
   const ln = document.createElement("div");
   ln.className = `ln ${kind}`;
   let lastSegType = null;
-  if (kind !== "agent") {
+  if (kind === "run_start" || kind === "run_end") {
+    // Run boundary divider: ▶ at start, outcome glyph at end.
+    const icons = { done: "■", failed: "✕", stopped: "⊘" };
+    const outcome = kind === "run_end" ? cleaned.split(" ", 1)[0] : null;
+    if (outcome) ln.classList.add(outcome);
+    const icon = document.createElement("span");
+    icon.className = "run-icon";
+    icon.textContent = kind === "run_start" ? "▶" : icons[outcome] || "■";
+    const label = document.createElement("span");
+    label.className = "run-label";
+    label.textContent =
+      kind === "run_start"
+        ? `run — "${cleaned.length > 80 ? cleaned.slice(0, 80) + "…" : cleaned}"`
+        : `run ${cleaned}`;
+    ln.append(icon, label);
+    if (ts) {
+      const time = document.createElement("span");
+      time.className = "ts";
+      time.textContent = fmtTime(ts);
+      ln.appendChild(time);
+    }
+  } else if (kind !== "agent") {
     const k = document.createElement("span");
     k.className = "k";
     k.textContent = (ts ? `${fmtTime(ts)} ` : "") + `[${kind}] `;
@@ -200,6 +268,13 @@ function traceLine(kind, text, ts) {
       el.className = `seg seg-${seg.type}`;
       if (seg.type === "observation" && isTabular(seg.text)) {
         el.classList.add("tabular");
+      }
+      if (
+        seg.type === "observation" &&
+        /Traceback \(most recent call last\)|(?:^|\n)\s*[\w.]*(?:Error|Exception):/.test(seg.text)
+      ) {
+        el.classList.add("err"); // failures should jump out mid-scroll
+        ln.classList.add("has-err");
       }
       const isObs = seg.type === "observation";
       if (SEG_LABELS[seg.type]) {
@@ -250,19 +325,36 @@ function traceLine(kind, text, ts) {
     if (!ln.querySelector(".seg")) return; // header alone isn't worth a line
   }
   // Follow the tail only if the user is already at (or near) the bottom;
-  // if they've scrolled up to read something, don't yank them back down.
-  const nearBottom =
-    stepsEl.scrollHeight - stepsEl.scrollTop - stepsEl.clientHeight < 60;
+  // if they've scrolled up to read something, don't yank them back down —
+  // offer the "new output" pill instead.
+  const nearBottom = nearBottomNow();
   // The live footer is only in the DOM during a run; replayed history
   // (loaded from a chat) appends at the end.
   const live = traceLive.parentNode === stepsEl;
   stepsEl.insertBefore(ln, live ? traceLive : null);
   if (live && lastSegType) setTraceStatus(NEXT_STATUS[lastSegType] || "thinking…");
   if (nearBottom) stepsEl.scrollTop = stepsEl.scrollHeight;
+  else jumpPill.hidden = false;
+  if (ln.classList.contains("has-err")) updateErrCount();
 }
+
+// ---- all/errors tabs under the terminal ----
+const errCountEl = document.getElementById("err-count");
+function updateErrCount() {
+  errCountEl.textContent = stepsEl.querySelectorAll(".ln.has-err").length;
+}
+document.querySelectorAll(".trace-tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".trace-tabs button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    traceEl.classList.toggle("filter-errors", btn.dataset.traceFilter === "errors");
+    stepsEl.scrollTop = stepsEl.scrollHeight;
+  });
+});
 function traceEnd() {
   traceEl.classList.remove("running");
   traceLive.remove();
+  stopElapsed();
 }
 document.getElementById("trace-btn").addEventListener("click", () =>
   traceEl.classList.toggle("open")
@@ -421,9 +513,12 @@ async function selectChat(chatId) {
     setChatName(chat.title);
     messagesEl.innerHTML = "";
     stepsEl.innerHTML = "";
+    updateErrCount();
     for (const m of chat.messages) {
       if (m.role === "trace") {
         traceLine("agent", m.content, m.created); // replay into the terminal panel
+      } else if (m.role === "run_start" || m.role === "run_end") {
+        traceLine(m.role, m.content, m.created); // run boundary markers
       } else {
         addMessage(m.role, m.content, m.content.startsWith("[error]"));
       }
@@ -437,6 +532,7 @@ async function selectChat(chatId) {
         // chat's persisted trace already contains them — reset the panel
         // so the run isn't shown twice.
         stepsEl.innerHTML = "";
+    updateErrCount();
         traceStart();
         attachStream(task_id);
       }
@@ -670,6 +766,10 @@ function attachStream(taskId) {
   source.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.step) {
+      // SSE replays a run's steps from the start, so the earliest step's
+      // timestamp is when the run truly began — sync the elapsed ticker.
+      const ms = msg.step.t * 1000;
+      if (runT0 && ms < runT0) runT0 = ms;
       traceLine(msg.step.kind, msg.step.text, msg.step.t);
     }
     if (msg.status) {

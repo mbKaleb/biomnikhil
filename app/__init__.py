@@ -17,4 +17,8 @@ def create_app() -> Flask:
     def index():
         return render_template("index.html", provider=Config.PROVIDER)
 
+    @app.get("/about")
+    def about():
+        return render_template("about.html", provider=Config.PROVIDER)
+
     return app

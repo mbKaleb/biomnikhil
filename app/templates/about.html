@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How biomnikhil works</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; background: #0d1526; color: #dbe4f3;
+      font: 15px/1.6 "Segoe UI", system-ui, sans-serif;
+    }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: .8rem;
+      padding: .6rem 1rem; background: rgba(10, 17, 34, .85);
+      backdrop-filter: blur(8px); border-bottom: 1px solid #1d2b48;
+    }
+    header h1 { font-size: 1.05rem; margin: 0; }
+    header a.back {
+      margin-left: auto; font-size: .8rem; color: #7c90b4; text-decoration: none;
+      padding: .25rem .7rem; border: 1px solid #2c3f63; border-radius: 999px;
+      background: #131f38;
+    }
+    header a.back:hover { color: #dbe4f3; border-color: #3b5bdb; }
+    .content { display: flex; justify-content: center; padding: 1.8rem 1rem 4rem; }
+    main { width: min(760px, 100%); }
+    h2 { font-size: 1.15rem; margin: 2.2rem 0 .6rem; color: #a9c0e8; }
+    h2:first-child { margin-top: 0; }
+    p { margin: .5rem 0 .9rem; color: #b9c6de; }
+    code {
+      font-family: ui-monospace, Consolas, monospace; font-size: .85em;
+      background: #131f38; border: 1px solid #2c3f63; border-radius: 4px;
+      padding: .08em .35em;
+    }
+    /* ---- the loop diagram ---- */
+    .flow { display: flex; flex-direction: column; gap: .4rem; margin: 1.2rem 0; }
+    .flow-row { display: flex; align-items: stretch; gap: .4rem; flex-wrap: wrap; }
+    .node {
+      flex: 1; min-width: 130px; padding: .6rem .8rem; border-radius: 8px;
+      background: #131f38; border: 1px solid #2c3f63;
+    }
+    .node b { display: block; font-size: .82rem; margin-bottom: .15rem; }
+    .node span { font-size: .76rem; color: #7c90b4; }
+    .node.you b { color: #dbe4f3; }
+    .node.think { border-left: 3px solid #9db1cc; }
+    .node.think b { color: #9db1cc; }
+    .node.code { border-left: 3px solid #3b82f6; }
+    .node.code b { color: #6ea8f8; }
+    .node.output { border-left: 3px solid #22553a; }
+    .node.output b { color: #8fd6a8; }
+    .node.answer { border-left: 3px solid #4ade80; }
+    .node.answer b { color: #4ade80; }
+    .arrow {
+      align-self: center; color: #46587e; font-size: 1rem; user-select: none;
+      padding: 0 .1rem;
+    }
+    .loop-note {
+      text-align: center; font-size: .74rem; color: #6b93b8;
+      font-family: ui-monospace, Consolas, monospace; margin-top: .1rem;
+    }
+    /* ---- trace legend ---- */
+    table.legend {
+      width: 100%; border-collapse: collapse; margin: .8rem 0 1.2rem;
+      font-size: .86rem;
+    }
+    table.legend td {
+      padding: .45rem .6rem; border-top: 1px solid #1d2b48; vertical-align: top;
+    }
+    table.legend td:first-child {
+      white-space: nowrap; font-family: ui-monospace, Consolas, monospace;
+      font-size: .78rem; width: 11rem;
+    }
+    .sw { display: inline-block; width: .7em; height: .7em; border-radius: 2px; margin-right: .4em; vertical-align: baseline; }
+    .c-code { color: #6ea8f8; }
+    .c-output { color: #8fd6a8; }
+    .c-answer { color: #4ade80; }
+    .c-thought { color: #9db1cc; font-style: italic; }
+    .c-run { color: #6b93b8; }
+    .c-err { color: #f87171; }
+    ol { color: #b9c6de; padding-left: 1.3rem; }
+    ol li { margin: .35rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>How biomnikhil works</h1>
+    <a class="back" href="/">&larr; back to the app</a>
+  </header>
+
+  <div class="content">
+    <main>
+      <h2>The short version</h2>
+      <p>
+        You describe a biomedical task in plain English. A
+        <a href="https://github.com/snap-stanford/biomni" style="color:#6ea8f8">Biomni</a>
+        agent (running on {{ provider }}) then works the problem the way an analyst
+        would: it thinks about what to do, writes real Python code, runs it, reads
+        the result, and repeats until it can give you an answer. The terminal-style
+        trace panel on the right shows every one of those moves as it happens.
+      </p>
+
+      <h2>The agentic loop</h2>
+      <div class="flow">
+        <div class="flow-row">
+          <div class="node you"><b>Your prompt</b><span>plus any attached files</span></div>
+          <span class="arrow">&rarr;</span>
+          <div class="node think"><b>Think</b><span>the agent plans its next move</span></div>
+          <span class="arrow">&rarr;</span>
+          <div class="node code"><b>Write code</b><span>real Python, using Biomni's tools &amp; data lake</span></div>
+        </div>
+        <div class="flow-row">
+          <div class="node answer"><b>Answer</b><span>the final solution lands in the chat</span></div>
+          <span class="arrow">&larr;</span>
+          <div class="node think"><b>Decide</b><span>solved? if not, loop again</span></div>
+          <span class="arrow">&larr;</span>
+          <div class="node output"><b>Observe</b><span>the code runs; its output feeds back in</span></div>
+        </div>
+        <div class="loop-note">think &rarr; code &rarr; observe &hellip; repeated until a solution emerges</div>
+      </div>
+      <p>
+        Each pass through that loop is one <strong>step</strong> in the trace panel.
+        Simple questions may finish in one step; a real analysis (load data, clean it,
+        run statistics, plot) usually takes several. Guardrails stop the run if the
+        agent loops without progress or exceeds the step budget.
+      </p>
+
+      <h2>Reading the trace panel</h2>
+      <p>Open it with the <code>&gt;_</code> button in the header. What you'll see:</p>
+      <table class="legend">
+        <tr>
+          <td class="c-run">&#9654; run — "&hellip;"</td>
+          <td>A run started. The matching footer shows how it ended:
+              <span class="c-answer">&#9632; done</span>,
+              <span class="c-err">&#10005; failed</span>, or
+              <span style="color:#fbbf24">&#8856; stopped</span> — with the total duration.</td>
+        </tr>
+        <tr>
+          <td>STEP N &nbsp;&middot;&nbsp; 15:40:42</td>
+          <td>One pass of the loop, numbered, with the time it arrived — gaps between
+              timestamps tell you where the agent spent its time.</td>
+        </tr>
+        <tr>
+          <td class="c-thought">italic text</td>
+          <td>The agent's reasoning — why it's about to do what it does next.</td>
+        </tr>
+        <tr>
+          <td><span class="sw" style="background:#3b82f6"></span><span class="c-code">code</span></td>
+          <td>Python the agent wrote and is about to execute, syntax-highlighted.</td>
+        </tr>
+        <tr>
+          <td><span class="sw" style="background:#22553a"></span><span class="c-output">output</span></td>
+          <td>What the code printed. Tables keep their alignment, missing values
+              (<code>NaN</code>) are dimmed, and long outputs collapse behind a
+              "show all" expander. <span class="c-err">Red-bordered output means the
+              code raised an error</span> — the agent sees it too and usually fixes
+              itself on the next step.</td>
+        </tr>
+        <tr>
+          <td><span class="sw" style="background:#4ade80"></span><span class="c-answer">answer</span></td>
+          <td>The final solution — the same text that appears in the chat.</td>
+        </tr>
+        <tr>
+          <td class="c-run">running code&hellip; &#9608;</td>
+          <td>The live status line: what the agent is doing <em>right now</em>. The
+              header shows a ticking elapsed time for the whole run, and a
+              "&darr; new output" pill appears if new steps arrive while you've
+              scrolled up to read something.</td>
+        </tr>
+      </table>
+
+      <h2>Where the data comes from</h2>
+      <p>
+        On first run the app downloads the <strong>Biomni data lake</strong> (~11&nbsp;GB
+        of curated biomedical reference data — genomes, drug databases, pathway maps)
+        that the agent's tools draw on. Files you upload on the <em>Files</em> tab and
+        attach to a prompt are placed where the agent's code can read them directly.
+      </p>
+
+      <h2>Good to know</h2>
+      <ol>
+        <li>Every chat keeps its full trace — reload the page or reopen a chat and the
+            whole history replays, and an in-flight run reattaches live.</li>
+        <li><strong>Stop</strong> cancels a run between steps; the trace marks it
+            <span style="color:#fbbf24">&#8856; stopped</span>.</li>
+        <li>One task runs at a time — the agent executes real code on this machine,
+            so runs are deliberately serialized.</li>
+        <li>Errors in red are normal mid-run: the agent reads its own tracebacks and
+            retries. A run only fails if it can't recover.</li>
+      </ol>
+    </main>
+  </div>
+</body>
+</html>

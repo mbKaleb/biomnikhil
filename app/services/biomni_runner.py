@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,36 @@ _EXECUTION_HINT = (
 def submit(prompt: str, chat_id: str | None = None) -> str:
     """Queue a prompt for the agent; returns a task id immediately. When a
     chat_id is given, the final answer (or error) is appended to that chat."""
+    user_prompt = prompt
     prompt = prompt + _EXECUTION_HINT
     task = registry.create(prompt, chat_id=chat_id)
     thread = threading.Thread(
-        target=_run, args=(task.id, prompt, chat_id), daemon=True
+        target=_run, args=(task.id, prompt, chat_id, user_prompt), daemon=True
     )
     thread.start()
     return task.id
 
 
-def _run(task_id: str, prompt: str, chat_id: str | None = None) -> None:
+def _fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
+
+
+def _run(
+    task_id: str, prompt: str, chat_id: str | None = None, user_prompt: str = ""
+) -> None:
     from . import chat_store
+
+    # Run boundary markers: the trace panel renders these as ▶/■ divider
+    # lines, both live (registry steps) and on replay (chat messages).
+    t0 = time.time()
+
+    def mark(kind: str, text: str) -> None:
+        registry.append_step(task_id, kind, text)
+        if chat_id:
+            chat_store.add_message(chat_id, kind, text)
+
+    mark("run_start", user_prompt or prompt)
     try:
         registry.append_step(
             task_id, "system",
@@ -123,6 +143,7 @@ def _run(task_id: str, prompt: str, chat_id: str | None = None) -> None:
                 registry.append_step(task_id, "agent", str(entry))
                 if chat_id:
                     chat_store.add_message(chat_id, "trace", str(entry))
+        mark("run_end", f"done in {_fmt_duration(time.time() - t0)}")
         registry.finish(task_id, str(answer))
         if chat_id:
             chat_store.add_message(chat_id, "assistant", str(answer))
@@ -130,6 +151,8 @@ def _run(task_id: str, prompt: str, chat_id: str | None = None) -> None:
         # shell out to Linux-only binaries will land here on Windows.
         logger.exception("task %s failed", task_id)
         message = _friendly_error(exc)
+        verb = "stopped" if "stopped by user" in str(exc) else "failed"
+        mark("run_end", f"{verb} after {_fmt_duration(time.time() - t0)}")
         registry.fail(task_id, message)
         if chat_id:
             chat_store.add_message(chat_id, "assistant", f"[error] {message}")
