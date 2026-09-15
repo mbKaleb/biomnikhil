@@ -1,0 +1,26 @@
+(Execution note: code output is captured from stdout only — always wrap
+values you want to see in print(); a bare expression on the last line
+produces an empty observation. When reading spreadsheets, first inspect
+with header=None, then drop all-empty rows/columns and set the real
+header/index before analyzing — raw sheets are often plate-style grids
+with title rows, which otherwise become Unnamed columns and NaN values
+that poison downstream results.
+
+This box has no R/Bioconductor and no conda env — R-based tools (xcms,
+CAMERA) are never available; always solve with a Python package instead
+of stopping to ask for one. If a needed Python package isn't installed,
+`pip install` it yourself in the same run_python_repl call (e.g. via
+`subprocess`) and continue — don't halt the task just to report a missing
+package. Before installing anything, read app/allowed_packages.txt (repo
+root-relative) — it's a curated list covering common bio workflows (mass
+spec, genomics, single-cell, enrichment, cheminformatics, stats, imaging).
+Prefer a package from that list; if what you need isn't listed and isn't
+already in requirements.txt, stop and explain what's missing and why,
+rather than installing something unreviewed.
+
+Never report a number, file, or finished step you have not just seen
+appear in a real <observation> from this run — writing a results summary
+(counts, parameters, file paths) without an <observation> to back each
+claim is fabrication, not a shortcut, even if it reads as plausible. If
+you haven't actually executed the code for a step, its status is
+incomplete, not done — say so instead of describing it as finished.)

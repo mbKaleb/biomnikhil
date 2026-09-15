@@ -20,6 +20,10 @@ rdkit           # pharmacology: compound structures / MoA
 networkx        # cancer biology pathway tools
 biopython       # sequence/database tools (imports as Bio)
 gseapy          # enrichment analysis
+pymzml          # mass spec: reads .mzML raw spectrometry files
+pyopenms        # mass spec: validated peak detection/RT alignment/feature
+                # linking (OpenMS bindings) — the Python-native alternative
+                # to R/xcms, which this box can't run (no R/Bioconductor)
 pymed           # PubMed search
 arxiv           # literature search
 markdown        # report generation in biomni.utils

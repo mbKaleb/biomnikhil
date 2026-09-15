@@ -3,6 +3,7 @@ task registry. Single connection guarded by a lock — plenty for one lab box.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -38,6 +39,11 @@ def _db() -> sqlite3.Connection:
             """
         )
         _conn.execute("PRAGMA foreign_keys = ON")
+        # Added after the initial schema — output files a run produced,
+        # stored as a JSON array. Migration-safe: no-op if it already exists.
+        cols = {row["name"] for row in _conn.execute("PRAGMA table_info(messages)")}
+        if "files" not in cols:
+            _conn.execute("ALTER TABLE messages ADD COLUMN files TEXT")
         _conn.commit()
     return _conn
 
@@ -70,12 +76,17 @@ def get_chat(chat_id: str) -> dict | None:
         if chat is None:
             return None
         msgs = _db().execute(
-            "SELECT role, content, created FROM messages"
+            "SELECT id, role, content, files, created FROM messages"
             " WHERE chat_id = ? ORDER BY id",
             (chat_id,),
         ).fetchall()
     out = dict(chat)
-    out["messages"] = [dict(m) for m in msgs]
+    out_msgs = []
+    for m in msgs:
+        d = dict(m)
+        d["files"] = json.loads(d["files"]) if d.get("files") else []
+        out_msgs.append(d)
+    out["messages"] = out_msgs
     return out
 
 
@@ -97,15 +108,37 @@ def delete_chat(chat_id: str) -> bool:
     return cur.rowcount > 0
 
 
-def add_message(chat_id: str, role: str, content: str) -> bool:
+def rewind_chat(chat_id: str, from_message_id: int) -> int:
+    """Delete a message and everything after it in the chat (by id order),
+    so the caller can resubmit that prompt as the new end of history.
+    Destructive and irreversible — the deleted messages (including any
+    trace/output-file references) are gone. Returns how many rows were
+    deleted."""
+    with _lock:
+        cur = _db().execute(
+            "DELETE FROM messages WHERE chat_id = ? AND id >= ?",
+            (chat_id, from_message_id),
+        )
+        _db().execute(
+            "UPDATE chats SET updated = ? WHERE id = ?", (time.time(), chat_id)
+        )
+        _db().commit()
+    return cur.rowcount
+
+
+def add_message(
+    chat_id: str, role: str, content: str, files: list[dict] | None = None
+) -> bool:
     now = time.time()
+    files_json = json.dumps(files) if files else None
     with _lock:
         chat = _db().execute("SELECT 1 FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if chat is None:
             return False
         _db().execute(
-            "INSERT INTO messages (chat_id, role, content, created) VALUES (?, ?, ?, ?)",
-            (chat_id, role, content, now),
+            "INSERT INTO messages (chat_id, role, content, files, created)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (chat_id, role, content, files_json, now),
         )
         _db().execute("UPDATE chats SET updated = ? WHERE id = ?", (now, chat_id))
         _db().commit()

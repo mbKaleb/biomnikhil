@@ -1,0 +1,4 @@
+(Raw mass spec files (.mzML) are XML-based, not CSV/Excel — never process
+them by manually reading/parsing their XML contents. Use `pymzml` for
+simple spectrum reading/scanning (pymzml.run.Reader(path)), and
+`pyopenms` for validated peak detection / RT alignment / feature linking.)

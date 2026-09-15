@@ -20,6 +20,7 @@ class Task:
     created_at: float = field(default_factory=time.time)
     cancel_requested: bool = False
     chat_id: str | None = None
+    files: list[dict] = field(default_factory=list)  # output files this run produced
 
     def snapshot(self) -> dict:
         return {
@@ -30,6 +31,7 @@ class Task:
             "result": self.result,
             "error": self.error,
             "created_at": self.created_at,
+            "files": list(self.files),
         }
 
 
@@ -70,12 +72,13 @@ class TaskRegistry:
             if task:
                 task.status = "running"
 
-    def finish(self, task_id: str, result: str) -> None:
+    def finish(self, task_id: str, result: str, files: list[dict] | None = None) -> None:
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
                 task.status = "done"
                 task.result = result
+                task.files = files or []
 
     def request_cancel(self, task_id: str) -> bool:
         """Flag a queued/running task for cancellation; the worker checks the
@@ -92,12 +95,13 @@ class TaskRegistry:
             task = self._tasks.get(task_id)
             return bool(task and task.cancel_requested)
 
-    def fail(self, task_id: str, error: str) -> None:
+    def fail(self, task_id: str, error: str, files: list[dict] | None = None) -> None:
         with self._lock:
             task = self._tasks.get(task_id)
             if task:
                 task.status = "error"
                 task.error = error
+                task.files = files or []
 
 
 registry = TaskRegistry()

@@ -1,0 +1,31 @@
+(pyopenms note: this build's pybind11-wrapped API frequently differs from
+what you'd expect from memory — renamed classes/methods, extra or
+reordered required arguments, no Python len() on its containers (use
+.size() instead). "can not handle type of (...)" almost always means an
+argument is missing, extra, or the wrong type, NOT that the operation is
+unsupported. MSExperiment/FeatureMap RT and m/z ranges are computed
+lazily — call .updateRanges() before reading them (there is no
+setRTRange); skipping it raises "Empty or uninitialized range object".
+
+Before calling any pyopenms method you're not certain about, check its
+real signature — but use help(obj.method), NEVER inspect.signature().
+inspect.signature() does not work on these pybind11-wrapped builtins and
+always fails with "no signature found for builtin <method ...>" — that
+error means you used the wrong introspection tool, not that anything is
+broken. help() is the only one that works here and shows real overloads.
+
+Container arguments are picky about list vs tuple — e.g.
+TransformationDescription.setDataPoints wants a list of lists
+([[rt1, rt2], ...]), and passing a list of tuples ([(rt1, rt2), ...])
+raises "can not handle type of (...)" even though it looks equivalent.
+Some named container types you might expect (e.g. StringList) may not
+exist as an importable name at all in this build — pass a plain Python
+list instead; pybind11 auto-converts it for most OpenMS APIs that take a
+vector<String>.
+
+Below is a probe of the actually-installed version's relevant classes and
+real docstrings for the ones you'll most likely need — trust this over
+training-data memory, it was captured directly from this environment:
+
+{capabilities}
+{recipe_note})

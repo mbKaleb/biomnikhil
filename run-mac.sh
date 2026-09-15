@@ -26,4 +26,10 @@ if [ ! -f .env ]; then
 fi
 
 source .venv/bin/activate
-exec flask --app wsgi run --port "${PORT:-8000}" --debug
+# waitress, not `flask run --debug` — the debug server's autoreloader
+# restarts the whole process (silently killing any in-flight background
+# task) on *any* source file edit, including packages the agent itself
+# pip-installs mid-run. Matches run.ps1's Windows path.
+# --threads: each open SSE trace stream pins a worker thread for the life
+# of its task, so the default of 4 would stall the app with a few open tabs.
+exec waitress-serve --listen=127.0.0.1:"${PORT:-8000}" --threads=16 wsgi:app

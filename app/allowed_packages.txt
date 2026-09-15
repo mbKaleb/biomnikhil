@@ -1,0 +1,66 @@
+# Allowlist of PyPI packages the agent may `pip install` on its own
+# initiative mid-task (see biomni_runner._EXECUTION_HINT). This file is
+# read-only (chmod 444) — the agent runs unsandboxed (plain exec()), so
+# this list is a policy line it's told to respect, not a hard sandbox
+# boundary. Treat any install outside this list as worth reviewing.
+#
+# Rule of thumb used to build this list: pure-Python or self-contained
+# compiled wheels only. Deliberately EXCLUDED, same rationale as
+# requirements.txt: torch, transformers, scvi-tools, cellpose, and
+# anything else that assumes a GPU or the biomni_e1 conda/bioconda env
+# (this box is Windows-native, no conda, no R/Bioconductor — see README
+# "Known seams"). If a workflow genuinely needs one of those, that's a
+# stop-and-ask case, not an auto-install case.
+
+# ---- already in requirements.txt (baseline, always present) ----
+# pandas, numpy, pyarrow, scipy, scikit-learn, statsmodels, matplotlib,
+# networkx, biopython, gseapy, rdkit, openpyxl, beautifulsoup4, lxml,
+# PyPDF2, requests, tqdm, markdown, nest_asyncio, pymed, arxiv, pymzml,
+# pyopenms
+
+# ---- mass spec / proteomics ----
+pyteomics       # alternate mzML/mzXML/mgf parser, mass-spec utilities
+matchms         # spectral library matching, MS2 comparison
+spectrum_utils  # spectrum plotting/annotation
+
+# ---- genomics / sequence analysis ----
+pysam           # BAM/SAM/VCF/BCF/FASTA — needs samtools headers, may fail on Windows
+cyvcf2          # fast VCF parsing
+pyfaidx         # indexed FASTA access
+gffutils        # GFF/GTF annotation parsing
+primer3-py      # primer design (qPCR primer checks)
+pyvcf3          # pure-python VCF fallback if cyvcf2's C deps fail
+
+# ---- transcriptomics / single-cell (non-deep-learning only) ----
+anndata         # single-cell data structure
+scanpy          # single-cell analysis — no torch dependency
+umap-learn      # dimensionality reduction, used across omics
+leidenalg       # clustering, pairs with scanpy
+python-igraph   # graph backend for leidenalg/scanpy
+
+# ---- enrichment / pathway analysis ----
+goatools        # GO enrichment
+mygene          # gene ID mapping/annotation lookups
+pypath-omnipath # pathway/interaction database queries
+
+# ---- cheminformatics / pharmacology (beyond rdkit) ----
+pubchempy       # PubChem compound lookups
+cirpy           # chemical identifier resolution
+
+# ---- statistics (classic, non-deep-learning) ----
+pingouin        # friendlier stats API (ANOVA, effect sizes, post-hoc)
+lifelines       # survival analysis — relevant for cancer/outcomes work
+scikit-posthocs # post-hoc tests for multi-group comparisons
+
+# ---- imaging / microscopy (non-deep-learning only) ----
+scikit-image    # classic image processing — NOT cellpose/deep segmentation
+tifffile        # read microscopy TIFF stacks
+opencv-python-headless  # general image ops, no GUI deps
+
+# ---- literature / text ----
+biopython       # Bio.Entrez for PubMed (already present, listed for clarity)
+habanero        # Crossref API — DOI/citation metadata
+
+# ---- plotting / reporting ----
+seaborn         # statistical plotting on top of matplotlib
+plotly          # interactive plots for HTML reports
