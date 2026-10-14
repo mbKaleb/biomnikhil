@@ -30,13 +30,21 @@ def create_app() -> Flask:
         )
         return response
 
-    from .api.routes import bp as api_bp
+    from .api.routes import bp as api_bp, models_payload
+    from .providers import refresh_models_in_background
 
     app.register_blueprint(api_bp, url_prefix="/api")
 
+    # Warm the model cache at startup so the first page load already has a
+    # discovered list (no-op if the on-disk cache is still fresh).
+    if Config.PROVIDER.strip().lower() == "anthropic":
+        refresh_models_in_background()
+
     @app.get("/")
     def index():
-        return render_template("index.html", provider=Config.PROVIDER)
+        return render_template(
+            "index.html", provider=Config.PROVIDER, models=models_payload(),
+        )
 
     @app.get("/about")
     def about():

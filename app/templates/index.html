@@ -38,6 +38,27 @@
       padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
       background: #131f38;
     }
+    header .model-select {
+      font: inherit; font-size: .74rem; color: #cdd6e4; background-color: #131f38;
+      border: 1px solid #2c3f63; border-radius: 999px;
+      padding: .2rem 1.6rem .2rem .65rem; max-width: 14rem;
+      text-overflow: ellipsis; cursor: pointer;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237c90b4' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+      background-repeat: no-repeat; background-position: right .6rem center;
+      transition: border-color .15s, color .15s;
+    }
+    #model-family { text-transform: capitalize; }
+    #model-version { margin-left: -.4rem; }
+    header .model-select:hover { border-color: #3a567f; color: #dbe4f3; }
+    header .model-select:focus { outline: none; border-color: #5b7fe8; }
+    /* Disabled = nothing to choose (one version, or no models): readable,
+       just inert. The wait cursor is only for an actual save in flight. */
+    header .model-select:disabled { opacity: .75; cursor: default; }
+    header .model-select:disabled:hover { border-color: #2c3f63; color: #cdd6e4; }
+    header .model-select.saving { opacity: .5; cursor: wait; }
+    header .model-select option,
+    #file-sort option { background: #0e1729; color: #dbe4f3; }
     .content { display: flex; justify-content: center; padding: 1.5rem 1rem; }
     main { width: min(760px, 100%); }
     textarea {
@@ -706,6 +727,12 @@
     <h1>biomnikhil</h1>
     <span id="chat-name"></span>
     <span class="provider-badge">Biomni agent · {{ provider }}</span>
+    <select id="model-family" class="model-select" title="Model for new runs" disabled>
+      <option value="">Models unavailable</option>
+    </select>
+    <select id="model-version" class="model-select" title="Model version" disabled>
+      <option value="">—</option>
+    </select>
     <a id="about-link" href="/about" title="How the agent works">?</a>
     <button id="trace-btn" title="Agent trace">&gt;_</button>
   </header>
@@ -835,6 +862,9 @@
     </div>
   </div>
 
+  <!-- Model list embedded at render time (served from the backend cache) so
+       the model selects fill instantly, without waiting on /api/models. -->
+  <script id="models-data" type="application/json">{{ models|tojson }}</script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

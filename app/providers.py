@@ -8,7 +8,11 @@ place provider details live.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
+import threading
+import time
 from dataclasses import dataclass
 
 
@@ -61,6 +65,259 @@ PROFILES: dict[str, ProviderProfile] = {
         base_url_env="CUSTOM_BASE_URL",
     ),
 }
+
+
+# Static catalog per provider — used when a live Models API query isn't
+# reachable (offline, endpoint without a /models route, missing key).
+# The live query in list_models() is authoritative when it works.
+STATIC_MODELS: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4o", "o3"),
+    "gemini": ("gemini-2.5-pro", "gemini-2.5-flash"),
+    "azure": ("azure-gpt-4o",),
+    "ollama": ("llama3.1:8b",),
+    "custom": (),
+}
+
+# Anthropic models are shown per family (two selects: family, version).
+# This order is the family order in the UI; families the endpoint lists
+# that aren't here go after these. The (major, minor) is the static
+# fallback shown only when the model list can't be fetched at all.
+ANTHROPIC_FAMILIES: dict[str, tuple[int, int]] = {
+    "opus": (5, 5),
+    "sonnet": (4, 5),
+    "haiku": (4, 5),
+    "fable": (5, 1),
+}
+
+# The fetched model objects are served from cache instantly — memory, then a
+# JSON file so restarts are instant too. Once an entry is older than this,
+# the next read still returns it but kicks off a background re-fetch that
+# replaces it (stale-while-revalidate).
+_DISCOVERY_TTL = 6 * 3600
+_discovery_cache: dict[str, tuple[float, list[dict]]] = {}
+_discovery_lock = threading.Lock()
+_refreshing: set[str] = set()
+
+
+def _cache_file():
+    from .config import Config
+
+    return Config.CHAT_DB.parent / "model_cache.json"
+
+
+def _load_disk_cache() -> None:
+    try:
+        raw = json.loads(_cache_file().read_text())
+        for key, entry in raw.items():
+            models = entry["models"]
+            # Entries from before model objects were cached held bare ids.
+            if models and all(isinstance(m, dict) and "id" in m for m in models):
+                _discovery_cache.setdefault(key, (float(entry["at"]), models))
+    except Exception:  # noqa: BLE001 — missing/corrupt file => start empty
+        pass
+
+
+def _save_disk_cache() -> None:
+    try:
+        path = _cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {k: {"at": at, "models": m} for k, (at, m) in _discovery_cache.items()},
+            indent=2,
+        ))
+        tmp.replace(path)
+    except Exception:  # noqa: BLE001 — cache is an optimisation only
+        pass
+
+
+def _is_bedrock_anthropic() -> bool:
+    """True when the Anthropic provider is pointed at a Bedrock endpoint,
+    where model ids must carry the 'anthropic.' prefix."""
+    return "bedrock" in (os.getenv("ANTHROPIC_BASE_URL") or "").lower()
+
+
+def _anthropic_id(family: str, major: int, minor: int) -> str:
+    prefix = "anthropic." if _is_bedrock_anthropic() else ""
+    return f"{prefix}claude-{family}-{major}-{minor}"
+
+
+_VERSION_RE = re.compile(r"claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:-(?P<minor>\d{1,2}))?(?:-|$)")
+
+
+def _parse_version(model_id: str) -> tuple[str, tuple[int, int], str] | None:
+    """('opus', (5, 5), '5.5') for 'anthropic.claude-opus-5-5' and
+    ('sonnet', (5, 0), '5') for 'claude-sonnet-5'; None if not a versioned
+    Claude id."""
+    m = _VERSION_RE.search(model_id)
+    if not m:
+        return None
+    major, minor = int(m["major"]), int(m["minor"] or 0)
+    label = f"{major}.{minor}" if m["minor"] is not None else str(major)
+    return m["family"], (major, minor), label
+
+
+def rejects_sampling_params(model_id: str) -> bool:
+    """True for Claude models that 400 on temperature/top_p/top_k: Opus 4.7+,
+    Sonnet 5+, and every Fable/Mythos. (Sonnet 5.5 accepts only the default
+    values, so dropping them is equivalent there.) Neither Models API object
+    says this, so it's keyed on the version."""
+    parsed = _parse_version(model_id)
+    if not parsed:
+        return False
+    family, version, _ = parsed
+    if family in ("fable", "mythos"):
+        return True
+    if family == "opus":
+        return version >= (4, 7)
+    if family == "sonnet":
+        return version >= (5, 0)
+    return False
+
+
+def _model_sort_key(model: dict):
+    """Known families first in ANTHROPIC_FAMILIES order, then the rest by
+    name; newest version first within a family, `created` breaking ties."""
+    order = list(ANTHROPIC_FAMILIES)
+    parsed = _parse_version(model["id"])
+    if not parsed:
+        return (len(order) + 1, model["id"], (0, 0), 0)
+    family, (major, minor), _ = parsed
+    rank = order.index(family) if family in order else len(order)
+    return (rank, family, (-major, -minor), -(model.get("created") or 0))
+
+
+def group_models(models: list[dict]) -> list[dict]:
+    """Split model objects into the family/version pair the UI shows as two
+    selects: [{"name": "opus", "versions": [{"id", "label", "available",
+    "status_reason", "model"}, ...]}, ...]. `model` is the full object as the
+    endpoint returned it. Ids that don't parse as a Claude family/version
+    become their own family with a single "default" version, so other
+    providers still fit."""
+    families: dict[str, list[dict]] = {}
+    for obj in models:
+        parsed = _parse_version(obj["id"])
+        family, label = (parsed[0], parsed[2]) if parsed else (obj["id"], "default")
+        families.setdefault(family, []).append({
+            "id": obj["id"],
+            "label": label,
+            # No status field (first-party API, static list) means usable.
+            "available": obj.get("status", "available") == "available",
+            "status_reason": obj.get("status_reason"),
+            "model": obj,
+        })
+    return [{"name": name, "versions": versions} for name, versions in families.items()]
+
+
+def _static_anthropic() -> list[dict]:
+    return [{"id": _anthropic_id(f, *v)} for f, v in ANTHROPIC_FAMILIES.items()]
+
+
+def _cache_key() -> str:
+    return os.getenv("ANTHROPIC_BASE_URL") or "default"
+
+
+def _fetch_anthropic_models() -> list[dict]:
+    """Every Claude model object the endpoint lists, kept whole. First-party
+    Anthropic: the SDK's Models API (display_name, max_input_tokens,
+    max_tokens, capabilities, …). Bedrock Mantle has no Models API under its
+    /anthropic base URL; its root /v1/models lists every provider's models
+    (id, created, status, status_reason, data_retention, …), filtered here to
+    Claude. Raises on failure so the caller keeps the previous cache."""
+    import httpx2 as httpx
+    from anthropic import Anthropic
+
+    if _is_bedrock_anthropic():
+        base = (os.getenv("ANTHROPIC_BASE_URL") or "").rstrip("/")
+        root = base[: -len("/anthropic")] if base.endswith("/anthropic") else base
+        r = httpx.get(
+            f"{root}/v1/models",
+            headers={"x-api-key": os.getenv("ANTHROPIC_API_KEY", "")},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json().get("data", [])
+    else:
+        # Picks up ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL from the env.
+        client = Anthropic(timeout=10, max_retries=0)
+        data = [m.to_dict() for m in client.models.list()]
+    return sorted(
+        (m for m in data if _parse_version(m.get("id", ""))),
+        key=_model_sort_key,
+    )
+
+
+def _refresh(key: str) -> None:
+    try:
+        models = _fetch_anthropic_models()
+    except Exception:  # noqa: BLE001 — outage, bad key, no SDK
+        models = []
+    with _discovery_lock:
+        _refreshing.discard(key)
+        # A failed fetch keeps the previous entry rather than caching an
+        # empty list; the next stale read retries.
+        if models:
+            _discovery_cache[key] = (time.time(), models)
+            _save_disk_cache()
+
+
+def refresh_models_in_background(force: bool = False) -> None:
+    """Start a background re-fetch unless one is running or the cache is
+    still fresh (force skips the freshness check)."""
+    key = _cache_key()
+    with _discovery_lock:
+        if not _discovery_cache:
+            _load_disk_cache()
+        cached = _discovery_cache.get(key)
+        fresh = cached and time.time() - cached[0] < _DISCOVERY_TTL
+        if key in _refreshing or (fresh and not force):
+            return
+        _refreshing.add(key)
+    threading.Thread(target=_refresh, args=(key,), daemon=True).start()
+
+
+def _list_anthropic() -> tuple[list[dict], str]:
+    """(model objects, source) for Anthropic, never blocking on the network:
+    the cached list if there is one, else the static fallback; a stale or
+    missing entry triggers a background refresh for later reads."""
+    refresh_models_in_background()
+    with _discovery_lock:
+        cached = _discovery_cache.get(_cache_key())
+    if cached:
+        return cached[1], "live"
+    return _static_anthropic(), "static"
+
+
+def _list_models_live(provider: str) -> list[str]:
+    """Best-effort live model list from the provider's own Models API. Reads
+    credentials/base URL from the env the same way the client does. Returns []
+    on any failure so the caller falls back to the static catalog — never
+    raises into the request."""
+    try:
+        if provider in ("openai", "azure"):
+            from openai import OpenAI
+
+            return [m.id for m in OpenAI().models.list().data]
+    except Exception:  # noqa: BLE001 — any failure => fall back to static
+        return []
+    return []
+
+
+def list_models(provider_name: str | None = None) -> dict:
+    """Available models for a provider, for the UI selector. Shape:
+    {"provider": str, "models": list[dict], "source": "live"|"static"} —
+    each model an object with at least "id"; for Anthropic, the full object
+    the endpoint's model list returned."""
+    provider = (provider_name or os.getenv("BIOMNI_PROVIDER", "anthropic")).strip().lower()
+    if provider == "anthropic":
+        models, source = _list_anthropic()
+        return {"provider": provider, "models": models, "source": source}
+    ids = _list_models_live(provider)
+    source = "live"
+    if not ids:
+        ids = list(STATIC_MODELS.get(provider, ()))
+        source = "static"
+    return {"provider": provider, "models": [{"id": i} for i in ids], "source": source}
 
 
 def resolve(provider_name: str | None, model_override: str | None = None) -> dict:

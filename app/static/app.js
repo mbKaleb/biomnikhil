@@ -1576,3 +1576,135 @@ refreshChats();
   const last = localStorage.getItem("lastChatId");
   if (last) selectChat(last);
 }
+
+// ---- model selection ----
+// Populated from GET /api/models on load (live provider list, else discovered
+// or static); changing either select POSTs the resolved id to /api/model,
+// which rebuilds the agent for the next run. Provider itself is fixed in
+// .env — only the model switches. Two selects: family (opus, haiku, …) and
+// that family's versions, newest first.
+const familySelect = document.getElementById("model-family");
+const versionSelect = document.getElementById("model-version");
+let modelFamilies = [];
+
+function option(value, text) {
+  const opt = document.createElement("option");
+  opt.value = value;
+  opt.textContent = text;
+  return opt;
+}
+
+// Always visible: while loading, or when no models are found, both selects
+// show a disabled placeholder instead of disappearing from the header.
+function showModelPlaceholder(text, title) {
+  familySelect.replaceChildren(option("", text));
+  versionSelect.replaceChildren(option("", "—"));
+  familySelect.disabled = versionSelect.disabled = true;
+  familySelect.title = title;
+}
+
+// Versions the endpoint lists as unavailable (e.g. not offered under the
+// account's data retention mode) stay visible but can't be picked; hovering
+// shows the endpoint's status_reason.
+function versionOption(v) {
+  const opt = option(v.id, v.available ? v.label : `${v.label} (unavailable)`);
+  opt.disabled = !v.available;
+  opt.title = v.status_reason || v.id;
+  return opt;
+}
+
+function fillVersions(familyName, selectedId) {
+  const family = modelFamilies.find((f) => f.name === familyName);
+  versionSelect.replaceChildren(...family.versions.map(versionOption));
+  const usable = family.versions.filter((v) => v.available);
+  // Default to the newest usable version (versions arrive newest first).
+  versionSelect.value =
+    usable.find((v) => v.id === selectedId)?.id ?? usable[0]?.id ?? "";
+  // Nothing to choose between: keep it visible, just inert.
+  versionSelect.disabled = usable.length < 2;
+  versionSelect.title = `Version — ${versionSelect.value || "none available"}`;
+}
+
+function renderModels(info) {
+  modelFamilies = info.families || [];
+  if (!modelFamilies.length) {
+    showModelPlaceholder(
+      "No models found",
+      `No models found for provider: ${info.provider}.`,
+    );
+    return;
+  }
+  const current =
+    modelFamilies.find((f) => f.versions.some((v) => v.id === info.current)) ||
+    modelFamilies.find((f) => f.versions.some((v) => v.available)) ||
+    modelFamilies[0];
+  familySelect.replaceChildren(
+    ...modelFamilies.map((f) => {
+      const usable = f.versions.some((v) => v.available);
+      const opt = option(f.name, usable ? f.name : `${f.name} (unavailable)`);
+      opt.disabled = !usable;
+      if (!usable) opt.title = f.versions[0].status_reason || "";
+      return opt;
+    }),
+  );
+  familySelect.value = current.name;
+  familySelect.disabled = false;
+  fillVersions(current.name, info.current);
+  familySelect.title =
+    `Model for new runs (provider: ${info.provider}` +
+    (info.source === "static" ? ", built-in list" : "") +
+    `). Switching applies to the next task.`;
+}
+
+// Render instantly from the list embedded in the page, then re-check the
+// API once in the background: the backend may have finished re-discovering
+// since render. Only re-render when the list actually changed.
+async function initModels() {
+  let embedded = null;
+  try {
+    embedded = JSON.parse(document.getElementById("models-data").textContent);
+    renderModels(embedded);
+  } catch {
+    showModelPlaceholder("Models unavailable", "Couldn't load the model list.");
+  }
+  try {
+    const info = await fetch("/api/models").then((r) => r.json());
+    const same =
+      embedded &&
+      JSON.stringify(info.families) === JSON.stringify(embedded.families) &&
+      info.current === embedded.current;
+    if (!same) renderModels(info);
+  } catch {
+    /* keep whatever rendered from the embedded list */
+  }
+}
+
+async function applyModel() {
+  const model = versionSelect.value;
+  familySelect.disabled = versionSelect.disabled = true;
+  familySelect.classList.add("saving");
+  versionSelect.classList.add("saving");
+  try {
+    await fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+  } catch {
+    /* leave the prior model in effect; the next run still works */
+  } finally {
+    familySelect.classList.remove("saving");
+    versionSelect.classList.remove("saving");
+    familySelect.disabled = false;
+    fillVersions(familySelect.value, model); // restores the version's state
+  }
+}
+
+// Switching family picks its newest version (first in the list).
+familySelect.addEventListener("change", () => {
+  fillVersions(familySelect.value);
+  applyModel();
+});
+versionSelect.addEventListener("change", applyModel);
+
+initModels();

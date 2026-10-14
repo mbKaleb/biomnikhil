@@ -64,6 +64,41 @@ def chat():
     return jsonify(task_id=task_id, chat_id=chat_id), 202
 
 
+def models_payload() -> dict:
+    """Models the UI selector offers, for the active provider, plus the one
+    currently in effect. Served from cache, so it never waits on the network;
+    the index page embeds it so the selects render with the page."""
+    from ..providers import group_models, list_models
+
+    info = list_models(Config.PROVIDER)
+    usable = [m["id"] for m in info["models"] if m.get("status", "available") == "available"]
+    current = biomni_runner.get_model() or (usable[0] if usable else None)
+    # Always make the active model selectable, even if the live/static list
+    # doesn't happen to include it (e.g. a pinned .env model).
+    if current and current not in {m["id"] for m in info["models"]}:
+        info["models"] = [{"id": current}, *info["models"]]
+    # Family + version, for the UI's two selects.
+    info["families"] = group_models(info["models"])
+    return {"current": current, **info}
+
+
+@bp.get("/models")
+def list_models_route():
+    """Same payload as embedded in the page; the frontend re-checks it once
+    after load to pick up a background refresh."""
+    return jsonify(models_payload())
+
+
+@bp.post("/model")
+def set_model_route():
+    body = request.get_json(silent=True) or {}
+    model = (body.get("model") or "").strip()
+    if not model:
+        return jsonify(error="model is required"), 400
+    current = biomni_runner.set_model(model)
+    return jsonify(current=current)
+
+
 @bp.get("/datalake")
 def datalake_status():
     return jsonify(datalake.status())

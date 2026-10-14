@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 # release changes it materially.
 EXPECTED_BYTES = int(os.getenv("BIOMNI_DATA_LAKE_BYTES", str(10 * 1024**3)))
 
+# Where biomni publishes the data lake — must match biomni.agent.A1's own
+# s3_bucket_url. We re-fetch individual files ourselves (rather than relying on
+# biomni.utils.check_and_download_s3_files) because biomni skips any file that
+# merely *exists* — "if os.path.exists(...): continue" — so a truncated or
+# corrupt file is never re-downloaded. Overridable only to follow a biomni
+# release that moves the bucket.
+S3_BUCKET_URL = os.getenv(
+    "BIOMNI_S3_BUCKET_URL", "https://biomni-release.s3.amazonaws.com"
+)
+# Transient truncation happens; give each file a few tries before giving up.
+_REDOWNLOAD_ATTEMPTS = 3
+
 # A1 is constructed with path=Config.DATA_PATH and nests its own
 # "biomni_data" subfolder there — that subfolder is the actual data lake.
 # Config.DATA_PATH itself also holds data/user/ (uploads, chat db, agent
@@ -69,6 +81,10 @@ _validate_thread: threading.Thread | None = None
 _validated = False
 _valid: bool | None = None
 _validation_error: str | None = None
+# Relative paths (under the data lake dir, posix-style) of files that failed
+# the last integrity check — the exact set the repair re-download targets, so
+# a corrupt-but-present file actually gets replaced instead of skipped.
+_invalid_files: list[str] = []
 
 
 def _check_file(path: Path) -> str | None:
@@ -131,6 +147,8 @@ def _run_validation() -> None:
     with _validate_lock:
         _validated = True
         _valid = not errors
+        # Record the exact bad files (posix-relative) for the repair path.
+        _invalid_files[:] = [rel for rel, _size, _err in errors]
         if not errors:
             _validation_error = None
         else:
@@ -175,18 +193,137 @@ def _dir_stats() -> tuple[int, int]:
     return total, count
 
 
+def _redownload_one(rel: str) -> str | None:
+    """Re-fetch one data-lake file from S3 into place. Verifies the download
+    against the S3 Content-Length and re-runs the structural integrity check
+    before atomically replacing any existing (possibly truncated) copy.
+    Returns None on success, else an error string; retries a few times since
+    truncation is usually a transient network cutoff."""
+    import requests
+
+    url = f"{S3_BUCKET_URL}/{rel}"
+    dest = _lake_dir() / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.part")
+
+    last_err = "unknown error"
+    for attempt in range(1, _REDOWNLOAD_ATTEMPTS + 1):
+        try:
+            with requests.get(url, stream=True, timeout=(10, 300)) as resp:
+                resp.raise_for_status()
+                expected = int(resp.headers.get("content-length", 0)) or None
+                written = 0
+                with open(tmp, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                            written += len(chunk)
+            # Size check first — this is the exact failure biomni misses: a
+            # stream that cuts off early leaves a short-but-present file.
+            if expected is not None and written != expected:
+                last_err = f"size mismatch: got {written:,} of {expected:,} bytes"
+                logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
+                tmp.unlink(missing_ok=True)
+                continue
+            structural = _check_file(tmp)
+            if structural:
+                last_err = f"still corrupt after download: {structural}"
+                logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
+                tmp.unlink(missing_ok=True)
+                continue
+            os.replace(tmp, dest)  # atomic swap — never leaves a partial at dest
+            logger.info("repaired data lake file %s (%s bytes)", rel, f"{written:,}")
+            return None
+        except Exception as exc:  # noqa: BLE001 — surface any fetch/IO failure
+            last_err = f"{type(exc).__name__}: {exc}"
+            logger.warning("redownload %s attempt %d failed: %s", rel, attempt, last_err)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return last_err
+
+
 def _download() -> None:
+    """(Re)fetch the data lake directly from S3, repairing truncated or corrupt
+    files that biomni's own downloader skips.
+
+    biomni.utils.check_and_download_s3_files treats any file that merely
+    *exists* as complete and never verifies size, so an interrupted download
+    leaves a short file that is never re-fetched (and reconstructing A1 to
+    "retry" is a double no-op: the agent is cached, and the check still sees
+    the file present). We own the fetch here instead — every expected
+    data_lake file that is missing OR failed the integrity check is
+    re-downloaded with a size check and structural re-validation. Needs no
+    provider key, unlike constructing A1."""
     global _download_error
+    _download_error = None
+    try:
+        from biomni.env_desc import data_lake_dict
+    except Exception as exc:  # noqa: BLE001 — biomni not importable yet
+        logger.exception("cannot import biomni data lake manifest")
+        _download_error = f"biomni not importable: {type(exc).__name__}: {exc}"
+        return
+
+    lake_dir = _lake_dir()
+    (lake_dir / "data_lake").mkdir(parents=True, exist_ok=True)
+
+    # Which files are corrupt right now? We need the actual bad-file set, not
+    # just "what's missing" — run the integrity check synchronously if it
+    # hasn't produced a result since this download was kicked off.
+    if not _validated:
+        _run_validation()
+    with _validate_lock:
+        invalid = set(_invalid_files)
+
+    failures: list[str] = []
+    for filename in data_lake_dict:
+        rel = f"data_lake/{filename}"
+        dest = lake_dir / rel
+        if dest.is_file() and rel not in invalid:
+            continue  # present and, as far as the integrity check knows, intact
+        err = _redownload_one(rel)
+        if err:
+            failures.append(f"{rel}: {err}")
+
+    # Benchmark files ship as a single zip and are tiny; biomni only exposes a
+    # whole-folder fetch, so defer to it when the marker dir is absent.
+    if not (lake_dir / "benchmark" / "hle").is_dir():
+        try:
+            from biomni.utils import check_and_download_s3_files
+
+            (lake_dir / "benchmark").mkdir(parents=True, exist_ok=True)
+            check_and_download_s3_files(
+                s3_bucket_url=S3_BUCKET_URL,
+                local_data_lake_path=str(lake_dir / "benchmark"),
+                expected_files=[],
+                folder="benchmark",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("benchmark download failed")
+            failures.append(f"benchmark: {type(exc).__name__}: {exc}")
+
+    # Drop any cached agent so the next task rebuilds against the repaired
+    # files rather than holding reads from the bad copies.
     try:
         from . import biomni_runner
 
-        biomni_runner._get_agent()  # constructing A1 performs the download
-    except Exception as exc:
-        logger.exception(
-            "data lake download failed (path=%s, provider=%s, model=%s)",
-            _lake_dir(), Config.PROVIDER, Config.MODEL,
+        with biomni_runner._agent_lock:
+            biomni_runner._agent = None
+    except Exception:  # noqa: BLE001 — best effort
+        pass
+
+    # Re-validate so status() reflects the repaired state, not the stale
+    # pre-repair result.
+    _run_validation()
+
+    if failures:
+        detail = "\n".join(f"  • {f}" for f in failures[:15])
+        if len(failures) > 15:
+            detail += f"\n  … and {len(failures) - 15} more (see server log)"
+        _download_error = (
+            f"{len(failures)} data lake file(s) could not be repaired:\n{detail}"
         )
-        _download_error = f"{type(exc).__name__}: {exc}"
 
 
 def start_download() -> bool:
@@ -255,4 +392,5 @@ def status() -> dict:
         "validated": validated,
         "valid": valid,
         "validation_error": _validation_error,
+        "invalid_files": list(_invalid_files),
     }

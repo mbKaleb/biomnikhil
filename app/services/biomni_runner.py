@@ -30,6 +30,31 @@ from .tasks import registry
 _agent = None
 _agent_lock = threading.Lock()
 
+# Model used to build the agent. Starts from .env (Config.MODEL) but can be
+# switched at runtime from the UI via set_model(); changing it drops the
+# cached agent so the next task rebuilds A1 with the new model. An in-flight
+# run is unaffected — it already holds its own agent reference. The provider
+# stays fixed (from .env); only the model is selectable.
+_current_model: str | None = Config.MODEL
+
+
+def get_model() -> str | None:
+    """The model the next task will run on."""
+    return _current_model
+
+
+def set_model(model: str | None) -> str | None:
+    """Switch the model for subsequent runs. Drops the cached agent so it
+    rebuilds against the new model on the next task. Returns the model now in
+    effect. No-op (and no rebuild) if the model is unchanged."""
+    global _current_model, _agent
+    model = (model or "").strip() or None
+    with _agent_lock:
+        if model != _current_model:
+            _current_model = model
+            _agent = None  # force a rebuild on the next _get_agent()
+    return _current_model
+
 # Hard cap on agent messages per run; a legitimate deep analysis stays well
 # under this, while a stuck model would otherwise loop forever.
 MAX_STEPS = 150
@@ -39,23 +64,59 @@ def _get_agent():
     global _agent
     with _agent_lock:
         if _agent is None:
-            kwargs = resolve(Config.PROVIDER, Config.MODEL)
+            kwargs = resolve(Config.PROVIDER, _current_model)
 
             # The A1 constructor kwargs only override the *agent* LLM.
             # Biomni's database/query tools use its default BiomniConfig,
             # which defaults to claude-sonnet-4-5 and reads BIOMNI_LLM from
             # the env — point it at the same model so those tools don't
-            # demand an Anthropic key we may not have. Must happen before
+            # demand an Anthropic key we may not have. Assigned (not
+            # setdefault) so a runtime model switch takes effect for those
+            # tools too, not just the main agent loop. Must happen before
             # the biomni import below, which is when that config loads.
             import os
 
-            os.environ.setdefault("BIOMNI_LLM", kwargs["llm"])
+            os.environ["BIOMNI_LLM"] = kwargs["llm"]
 
             from biomni.agent import A1  # heavy import — keep it lazy
 
             _patch_run_python_repl()
+            _patch_sampling_params()
             _agent = A1(path=str(Config.DATA_PATH), **kwargs)
         return _agent
+
+
+def _patch_sampling_params() -> None:
+    """biomni's get_llm() always passes a temperature to ChatAnthropic (0.7
+    by default, 0.0 for its database tools), but Claude Opus 4.7+, Sonnet 5+
+    and Fable/Mythos reject sampling params with a 400 ("`temperature` is
+    deprecated for this model"). get_llm is imported by name in six biomni
+    modules, so rather than repoint each one, strip the params from the
+    outgoing request payload for those models. Older models (Haiku 4.5,
+    Sonnet 4.5, …) keep them. Idempotent."""
+    from langchain_anthropic import ChatAnthropic
+
+    from ..providers import rejects_sampling_params
+
+    if getattr(ChatAnthropic._get_request_payload, "_biomnikhil_patched", False):
+        return
+    original = ChatAnthropic._get_request_payload
+
+    def _get_request_payload(self, *args, **kwargs):
+        payload = original(self, *args, **kwargs)
+        if rejects_sampling_params(payload.get("model", "")):
+            # langchain-anthropic routes these through extra_body when the
+            # installed SDK's create() doesn't name them, so check both.
+            extra = payload.get("extra_body") or {}
+            for key in ("temperature", "top_p", "top_k"):
+                payload.pop(key, None)
+                extra.pop(key, None)
+            if "extra_body" in payload and not extra:
+                payload.pop("extra_body")
+        return payload
+
+    _get_request_payload._biomnikhil_patched = True
+    ChatAnthropic._get_request_payload = _get_request_payload
 
 
 def _patch_run_python_repl() -> None:
