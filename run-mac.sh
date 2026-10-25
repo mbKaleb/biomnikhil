@@ -4,6 +4,29 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Release installs (VERSION from the release zip, no .git folder) update
+# themselves from the latest GitHub release before starting. .env, data/ and
+# .venv aren't in the zip, so they're kept. BIOMNIKHIL_NO_UPDATE=1 skips this;
+# git checkouts update with git instead.
+if [ -f VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ]; then
+  current=$(cat VERSION)
+  latest=$(curl -fs --max-time 10 https://api.github.com/repos/mbKaleb/biomnikhil/releases/latest \
+    | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1) || latest=""
+  if [ -n "$latest" ] && [ "$latest" != "$current" ]; then
+    echo ">> Updating biomnikhil $current -> $latest"
+    tmp=$(mktemp -d)
+    if curl -fsSL --max-time 300 -o "$tmp/biomnikhil.zip" \
+         https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip \
+       && unzip -q "$tmp/biomnikhil.zip" -d "$tmp"; then
+      cp -R "$tmp/biomnikhil/." .
+      rm -rf "$tmp"
+      exec bash ./run-mac.sh "$@"  # restart on the new script
+    fi
+    rm -rf "$tmp"
+    echo ">> Update failed, starting $current."
+  fi
+fi
+
 # README says 3.11, but take the closest thing installed (3.14 is too new
 # for some biomni deps — prefer an older interpreter when present)
 PY=python3
@@ -21,8 +44,7 @@ fi
 
 if [ ! -f .env ]; then
   /bin/cp .env.example .env
-  echo ">> Created .env from .env.example — add your API key, then re-run."
-  exit 1
+  echo ">> Created .env from .env.example — sign in with your Cognito account when the page opens."
 fi
 
 source .venv/bin/activate

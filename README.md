@@ -13,7 +13,31 @@ endpoints. See `docs/` for the diagram. Providers (Claude, OpenAI, Gemini,
 Azure, Ollama on-device, custom) are profiles in `app/providers.py`; pick one
 with a single env var.
 
-## Windows quickstart (the lab machine)
+## Install (lab members)
+
+Download
+[biomnikhil.zip](https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip),
+extract it anywhere, then start it from that folder:
+
+- Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File run.ps1`
+- Mac (Terminal): `bash run-mac.sh`
+
+Open http://localhost:8000 and sign in. Each start checks for a newer
+release and updates itself first; your `.env` and `data\` are kept.
+
+## Releasing
+
+Commit and push to `main`, then tag the version:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` publishes the release with `biomnikhil.zip`
+and notes from the commit subjects since the last tag. Lab installs pick it
+up the next time they start.
+
+## Windows quickstart (dev clone)
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
@@ -21,11 +45,11 @@ mkdir $env:USERPROFILE\biomni-box; cd $env:USERPROFILE\biomni-box
 git clone <repo-url> biomnikhil
 cd biomnikhil
 powershell -ExecutionPolicy Bypass -File scripts\setup-box.ps1
-# open .env, add your API key, then:
 .\run.ps1
 ```
 
-Open http://127.0.0.1:8000. First task triggers the ~11 GB data-lake
+Open http://localhost:8000 and sign in with your Cognito account (no API
+key: model calls are signed with your own short-lived AWS credentials). First task triggers the ~11 GB data-lake
 download into the box. Teardown: `Remove-Item -Recurse -Force
 $env:USERPROFILE\biomni-box` — everything (python, packages, data, app)
 lives in that one folder.
@@ -37,7 +61,7 @@ Every new shell after setup: `. scripts\activate.ps1`
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # add a key
+cp .env.example .env   # defaults to bedrock + Cognito sign-in
 flask --app wsgi run --port 8000 --debug
 ```
 
@@ -46,7 +70,7 @@ flask --app wsgi run --port 8000 --debug
 Edit two lines in `.env`:
 
 ```
-BIOMNI_PROVIDER=ollama        # anthropic | openai | gemini | azure | ollama | custom
+BIOMNI_PROVIDER=ollama        # bedrock | anthropic | openai | gemini | azure | ollama | custom
 BIOMNI_MODEL=                 # optional override, else profile default
 ```
 

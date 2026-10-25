@@ -16,6 +16,39 @@ $Repo    = $PSScriptRoot
 $EnvName = "bionikhil"
 $Forge   = "$env:USERPROFILE\Miniforge3"
 
+# --- 0. update: release installs (VERSION from the release zip, no .git folder)
+# update themselves from the latest GitHub release. .env and data\ aren't in
+# the zip, so they're kept. BIOMNIKHIL_NO_UPDATE=1 skips this; git checkouts
+# update with git instead.
+if ((Test-Path "$Repo\VERSION") -and -not (Test-Path "$Repo\.git")) {
+    $updated = $false
+    if (-not $env:BIOMNIKHIL_NO_UPDATE) {
+        $current = (Get-Content "$Repo\VERSION" -Raw).Trim()
+        try {
+            $latest = (Invoke-RestMethod "https://api.github.com/repos/mbKaleb/biomnikhil/releases/latest" -TimeoutSec 10).tag_name.TrimStart("v")
+            if ($latest -and $latest -ne $current) {
+                Write-Host "updating biomnikhil $current -> $latest..."
+                $tmp = Join-Path $env:TEMP "biomnikhil-update"
+                Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory $tmp | Out-Null
+                Invoke-WebRequest "https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip" -OutFile "$tmp\biomnikhil.zip"
+                Expand-Archive "$tmp\biomnikhil.zip" -DestinationPath $tmp
+                # robocopy merges into existing folders; exit codes 8+ are failures
+                robocopy "$tmp\biomnikhil" $Repo /E /NFL /NDL /NJH /NJS /NP | Out-Null
+                if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+                Remove-Item $tmp -Recurse -Force
+                $updated = $true
+            }
+        } catch {
+            Write-Host "update failed ($($_.Exception.Message)) - starting $current"
+        }
+    }
+    if ($updated) {
+        & "$Repo\run.ps1" @PSBoundParameters  # restart on the new script
+        exit $LASTEXITCODE
+    }
+}
+
 # --- 1. conda: use existing, or install Miniforge per-user -------------------
 if (Test-Path "$Forge\shell\condabin\conda-hook.ps1") {
     & "$Forge\shell\condabin\conda-hook.ps1"
@@ -55,10 +88,8 @@ Set-Location $Repo
 if (-not (Test-Path "$Repo\.env")) {
     Copy-Item "$Repo\.env.example" "$Repo\.env"
     Write-Host ""
-    Write-Host ">>> No .env found - created one and opening it in notepad."
-    Write-Host ">>> Set BIOMNI_PROVIDER, paste the matching API key, save, and"
-    Write-Host ">>> close notepad. The server will start right after."
-    Start-Process notepad "$Repo\.env" -Wait
+    Write-Host ">>> No .env found - created one. Sign in with your Cognito account"
+    Write-Host ">>> when the page opens."
 }
 
 # --- 5. serve ------------------------------------------------------------------
@@ -68,7 +99,7 @@ $portLine = Select-String -Path "$Repo\.env" -Pattern '^\s*PORT\s*=\s*(\d+)' |
 if ($portLine) { $Port = [int]$portLine.Matches[0].Groups[1].Value }
 
 Write-Host ""
-Write-Host "biomnikhil -> http://127.0.0.1:$Port   (Ctrl+C to stop)"
+Write-Host "biomnikhil -> http://localhost:$Port   (Ctrl+C to stop)"
 # --threads: each open SSE trace stream pins a worker thread for the life of
 # its task, so the default of 4 would stall the app with a few open tabs.
 waitress-serve --listen=127.0.0.1:$Port --threads=16 wsgi:app
