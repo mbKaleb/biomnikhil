@@ -31,6 +31,13 @@ PROFILES: dict[str, ProviderProfile] = {
         default_model="claude-sonnet-4-5",  # override via BIOMNI_MODEL
         api_key_env="ANTHROPIC_API_KEY",
     ),
+    "bedrock": ProviderProfile(
+        # Claude on Bedrock Mantle via biomni's Anthropic client, signed per
+        # user with Cognito identity pool credentials (app/auth.py) — no key
+        # in .env. The model is the one the bedrock-web-auth policy names.
+        source="Anthropic",
+        default_model="anthropic.claude-haiku-4-5",
+    ),
     "openai": ProviderProfile(
         source="OpenAI",
         default_model="gpt-4o",
@@ -71,6 +78,7 @@ PROFILES: dict[str, ProviderProfile] = {
 # reachable (offline, endpoint without a /models route, missing key).
 # The live query in list_models() is authoritative when it works.
 STATIC_MODELS: dict[str, tuple[str, ...]] = {
+    "bedrock": ("anthropic.claude-haiku-4-5",),
     "openai": ("gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4o", "o3"),
     "gemini": ("gemini-2.5-pro", "gemini-2.5-flash"),
     "azure": ("azure-gpt-4o",),
@@ -213,8 +221,11 @@ def _static_anthropic() -> list[dict]:
     return [{"id": _anthropic_id(f, *v)} for f, v in ANTHROPIC_FAMILIES.items()]
 
 
-def _cache_key() -> str:
-    return os.getenv("ANTHROPIC_BASE_URL") or "default"
+def _cache_key(provider: str) -> str:
+    """One cache entry per provider + endpoint, so pointing a provider at a
+    different base URL starts a fresh list."""
+    env = {"anthropic": "ANTHROPIC_BASE_URL", "openai": "OPENAI_BASE_URL"}.get(provider, "")
+    return f"{provider}:{os.getenv(env) or 'default'}" if env else provider
 
 
 def _fetch_anthropic_models() -> list[dict]:
@@ -247,9 +258,34 @@ def _fetch_anthropic_models() -> list[dict]:
     )
 
 
-def _refresh(key: str) -> None:
+def _fetch_openai_models() -> list[dict]:
+    """OpenAI's Models API objects, kept whole. Bounded timeout and no
+    retries — this runs on a background thread, but a dead network
+    shouldn't hold a refresh slot for minutes. Not used for azure: OpenAI()
+    ignores OPENAI_ENDPOINT, so it would list api.openai.com's models rather
+    than the Azure deployments; azure stays on its static list."""
+    from openai import OpenAI
+
+    return [m.to_dict() for m in OpenAI(timeout=10, max_retries=0).models.list().data]
+
+
+# Providers whose model list is fetched live (in the background, cached);
+# every other provider uses STATIC_MODELS only.
+_FETCHERS = {
+    "anthropic": _fetch_anthropic_models,
+    "openai": _fetch_openai_models,
+}
+
+
+def _static_models(provider: str) -> list[dict]:
+    if provider == "anthropic":
+        return _static_anthropic()
+    return [{"id": i} for i in STATIC_MODELS.get(provider, ())]
+
+
+def _refresh(provider: str, key: str) -> None:
     try:
-        models = _fetch_anthropic_models()
+        models = _FETCHERS[provider]()
     except Exception:  # noqa: BLE001 — outage, bad key, no SDK
         models = []
     with _discovery_lock:
@@ -261,10 +297,14 @@ def _refresh(key: str) -> None:
             _save_disk_cache()
 
 
-def refresh_models_in_background(force: bool = False) -> None:
-    """Start a background re-fetch unless one is running or the cache is
-    still fresh (force skips the freshness check)."""
-    key = _cache_key()
+def refresh_models_in_background(provider: str, force: bool = False) -> None:
+    """Start a background re-fetch of this provider's model list unless it
+    has no live list, one is already running, or the cache is still fresh
+    (force skips the freshness check)."""
+    provider = provider.strip().lower()
+    if provider not in _FETCHERS:
+        return
+    key = _cache_key(provider)
     with _discovery_lock:
         if not _discovery_cache:
             _load_disk_cache()
@@ -273,51 +313,69 @@ def refresh_models_in_background(force: bool = False) -> None:
         if key in _refreshing or (fresh and not force):
             return
         _refreshing.add(key)
-    threading.Thread(target=_refresh, args=(key,), daemon=True).start()
-
-
-def _list_anthropic() -> tuple[list[dict], str]:
-    """(model objects, source) for Anthropic, never blocking on the network:
-    the cached list if there is one, else the static fallback; a stale or
-    missing entry triggers a background refresh for later reads."""
-    refresh_models_in_background()
-    with _discovery_lock:
-        cached = _discovery_cache.get(_cache_key())
-    if cached:
-        return cached[1], "live"
-    return _static_anthropic(), "static"
-
-
-def _list_models_live(provider: str) -> list[str]:
-    """Best-effort live model list from the provider's own Models API. Reads
-    credentials/base URL from the env the same way the client does. Returns []
-    on any failure so the caller falls back to the static catalog — never
-    raises into the request."""
-    try:
-        if provider in ("openai", "azure"):
-            from openai import OpenAI
-
-            return [m.id for m in OpenAI().models.list().data]
-    except Exception:  # noqa: BLE001 — any failure => fall back to static
-        return []
-    return []
+    threading.Thread(target=_refresh, args=(provider, key), daemon=True).start()
 
 
 def list_models(provider_name: str | None = None) -> dict:
-    """Available models for a provider, for the UI selector. Shape:
-    {"provider": str, "models": list[dict], "source": "live"|"static"} —
-    each model an object with at least "id"; for Anthropic, the full object
-    the endpoint's model list returned."""
+    """Available models for a provider, for the UI selector, never blocking
+    on the network: the cached live list if there is one, else the static
+    list; a stale or missing entry triggers a background refresh for later
+    reads. Shape: {"provider": str, "models": list[dict], "source":
+    "live"|"static"} — each model an object with at least "id"; for a live
+    list, the full object the provider's model list returned."""
     provider = (provider_name or os.getenv("BIOMNI_PROVIDER", "anthropic")).strip().lower()
-    if provider == "anthropic":
-        models, source = _list_anthropic()
-        return {"provider": provider, "models": models, "source": source}
-    ids = _list_models_live(provider)
-    source = "live"
-    if not ids:
-        ids = list(STATIC_MODELS.get(provider, ()))
-        source = "static"
-    return {"provider": provider, "models": [{"id": i} for i in ids], "source": source}
+    refresh_models_in_background(provider)
+    with _discovery_lock:
+        cached = _discovery_cache.get(_cache_key(provider))
+    if cached:
+        return {"provider": provider, "models": cached[1], "source": "live"}
+    return {"provider": provider, "models": _static_models(provider), "source": "static"}
+
+
+def model_cache_info(provider_name: str | None) -> dict:
+    """How fresh the cached model list is, for the Integrity tab:
+    {"live": bool (provider has a live list at all), "fetched_at": epoch or
+    None, "age_s", "stale": bool, "refreshing": bool, "count": int}."""
+    provider = (provider_name or "anthropic").strip().lower()
+    key = _cache_key(provider)
+    with _discovery_lock:
+        if not _discovery_cache:
+            _load_disk_cache()
+        cached = _discovery_cache.get(key)
+        refreshing = key in _refreshing
+    at = cached[0] if cached else None
+    age = time.time() - at if at else None
+    return {
+        "live": provider in _FETCHERS,
+        "fetched_at": at,
+        "age_s": age,
+        "stale": age is None or age >= _DISCOVERY_TTL,
+        "ttl_s": _DISCOVERY_TTL,
+        "refreshing": refreshing,
+        "count": len(cached[1]) if cached else 0,
+    }
+
+
+def credentials_status(provider_name: str | None) -> dict:
+    """Whether the provider's API key env var is set (never its value)."""
+    p = PROFILES.get((provider_name or "anthropic").strip().lower())
+    if p is None or not p.api_key_env:
+        return {"env": None, "set": True}  # keyless provider (ollama, …)
+    return {"env": p.api_key_env, "set": bool((os.getenv(p.api_key_env) or "").strip())}
+
+
+def default_model(provider_name: str | None) -> str | None:
+    """The model a run uses when no model is chosen (BIOMNI_MODEL unset, no
+    UI switch) — the single source for both resolve() and the UI's
+    "current" model, so the UI never claims a model the run won't use. On
+    Bedrock, Anthropic ids need the 'anthropic.' prefix."""
+    p = PROFILES.get((provider_name or "anthropic").strip().lower())
+    if p is None:
+        return None
+    model = p.default_model
+    if p is PROFILES["anthropic"] and _is_bedrock_anthropic() and not model.startswith("anthropic."):
+        model = f"anthropic.{model}"
+    return model
 
 
 def resolve(provider_name: str | None, model_override: str | None = None) -> dict:
@@ -330,7 +388,7 @@ def resolve(provider_name: str | None, model_override: str | None = None) -> dic
         )
     p = PROFILES[key]
 
-    kwargs: dict = {"source": p.source, "llm": model_override or p.default_model}
+    kwargs: dict = {"source": p.source, "llm": model_override or default_model(key)}
 
     if p.api_key_env:
         api_key = (os.getenv(p.api_key_env) or "").strip()

@@ -57,3 +57,15 @@ class Config:
 
     HOST: str = os.getenv("HOST", "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8000"))
+
+    # Cognito sign-in for the "bedrock" provider (see app/auth.py). These
+    # are public identifiers, not secrets — a browser app would embed them.
+    AWS_REGION: str = os.getenv("AWS_REGION", "us-west-2")
+    COGNITO_DOMAIN: str = os.getenv("COGNITO_DOMAIN", "").rstrip("/")
+    COGNITO_CLIENT_ID: str = os.getenv("COGNITO_CLIENT_ID", "")
+    COGNITO_USER_POOL_ID: str = os.getenv("COGNITO_USER_POOL_ID", "")
+    COGNITO_IDENTITY_POOL_ID: str = os.getenv("COGNITO_IDENTITY_POOL_ID", "")
+    # Must exactly match an "Allowed callback URL" on the app client.
+    COGNITO_REDIRECT_URI: str = (
+        os.getenv("COGNITO_REDIRECT_URI") or f"http://localhost:{PORT}/callback"
+    )

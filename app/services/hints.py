@@ -270,3 +270,63 @@ def save_recipe_if_verified(prompt: str, steps: list[dict], files: list[dict]) -
             _recipe_path(domain).write_text(recipe)
         except OSError:
             pass  # best-effort — never let recipe-saving break a run
+
+
+# ---- harness inventory (for the Integrity tab) -----------------------------
+
+_HARNESS_KINDS = {"recipes": ".py", "capabilities": ".json"}
+
+
+def _check_harness_file(path: Path, suffix: str) -> str | None:
+    """None if the file parses, else the reason — a recipe that isn't valid
+    Python or a capability probe that isn't valid JSON would be fed to the
+    agent as broken guidance."""
+    import ast
+    import json
+
+    try:
+        text = path.read_text()
+        if not text.strip():
+            return "file is empty"
+        if suffix == ".py":
+            ast.parse(text)
+        else:
+            json.loads(text)
+        return None
+    except SyntaxError as e:
+        return f"invalid Python (line {e.lineno}): {e.msg}"
+    except ValueError as e:
+        return f"invalid JSON: {e}"
+    except OSError as e:
+        return f"unreadable: {e}"
+
+
+def harness_inventory() -> list[dict]:
+    """Every saved recipe and capability probe, with a parse check each."""
+    items = []
+    for kind, suffix in _HARNESS_KINDS.items():
+        d = Config.HARNESS_PATH / kind
+        if not d.is_dir():
+            continue
+        for path in sorted(d.glob(f"*{suffix}")):
+            st = path.stat()
+            items.append({
+                "kind": kind,
+                "name": path.name,
+                "domain": path.stem,
+                "size": st.st_size,
+                "modified": st.st_mtime,
+                "error": _check_harness_file(path, suffix),
+            })
+    return items
+
+
+def read_harness_file(kind: str, name: str) -> str | None:
+    """Contents of one harness file, or None if it doesn't exist. kind is
+    allow-listed and name must be a bare filename with the kind's suffix,
+    so nothing outside HARNESS_PATH/<kind>/ is reachable."""
+    suffix = _HARNESS_KINDS.get(kind)
+    if suffix is None or "/" in name or "\\" in name or name.startswith(".") or not name.endswith(suffix):
+        return None
+    path = Config.HARNESS_PATH / kind / name
+    return path.read_text() if path.is_file() else None

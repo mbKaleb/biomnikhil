@@ -10,6 +10,7 @@ import zipfile
 from flask import Blueprint, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
+from .. import auth
 from ..config import Config
 from ..services import biomni_runner, chat_store, datalake
 from ..services.tasks import registry
@@ -60,7 +61,7 @@ def chat():
         chat_id = chat_store.create_chat(title)["id"]
     chat_store.add_message(chat_id, "user", display_prompt)
 
-    task_id = biomni_runner.submit(prompt, chat_id=chat_id)
+    task_id = biomni_runner.submit(prompt, chat_id=chat_id, user=auth.current_user())
     return jsonify(task_id=task_id, chat_id=chat_id), 202
 
 
@@ -68,11 +69,11 @@ def models_payload() -> dict:
     """Models the UI selector offers, for the active provider, plus the one
     currently in effect. Served from cache, so it never waits on the network;
     the index page embeds it so the selects render with the page."""
-    from ..providers import group_models, list_models
+    from ..providers import default_model, group_models, list_models
 
     info = list_models(Config.PROVIDER)
-    usable = [m["id"] for m in info["models"] if m.get("status", "available") == "available"]
-    current = biomni_runner.get_model() or (usable[0] if usable else None)
+    # What the next run will actually use — same fallback as resolve().
+    current = biomni_runner.get_model() or default_model(Config.PROVIDER)
     # Always make the active model selectable, even if the live/static list
     # doesn't happen to include it (e.g. a pinned .env model).
     if current and current not in {m["id"] for m in info["models"]}:
@@ -108,6 +109,163 @@ def datalake_status():
 def datalake_download():
     started = datalake.start_download()
     return jsonify(started=started, **datalake.status()), 202
+
+
+def _check(label: str, status: str, detail: str = "") -> dict:
+    """One row on the Integrity tab. status: pass | warn | fail | pending
+    (actively in progress — spinner, fast polling) | info (a normal resting
+    state that isn't a pass/fail, e.g. "builds on the first run")."""
+    return {"label": label, "status": status, "detail": detail}
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n} B"
+
+
+def _datalake_card() -> dict:
+    st = datalake.status()
+    state = st["state"]
+    # expected_bytes is only a rough estimate for the progress bar, so it's
+    # shown while downloading but not once the manifest says it's complete.
+    size = f"{_fmt_bytes(st['bytes'])} of ~{_fmt_bytes(st['expected_bytes'])}, {st['files']:,} files"
+    try:
+        from biomni.env_desc import data_lake_dict
+
+        manifest = f"all {len(data_lake_dict)} manifest files present"
+    except Exception:  # noqa: BLE001 — biomni not importable
+        manifest = "complete"
+    done = f"{manifest} — {_fmt_bytes(st['bytes'])}, {st['files']:,} files"
+    download = {
+        "ready": _check("Downloaded", "pass", done),
+        "invalid": _check("Downloaded", "pass", done),
+        "downloading": _check("Downloaded", "pending", f"downloading — {st['percent']}% ({size})"),
+        "partial": _check("Downloaded", "warn", f"partial — {size}"),
+        "missing": _check("Downloaded", "fail", "not downloaded yet"),
+        "error": _check("Downloaded", "fail", st["error"] or "download failed"),
+    }[state]
+    if state in ("ready", "invalid"):
+        if not st["validated"]:
+            verify = _check("Files verified", "pending", "checking parquet footers, json/pkl parse, empty files…")
+        elif st["valid"]:
+            verify = _check("Files verified", "pass", "every file opened cleanly")
+        else:
+            n = len(st["invalid_files"])
+            verify = _check("Files verified", "fail", f"{n} file(s) failed — Repair re-downloads them")
+    else:
+        verify = _check("Files verified", "pending", "runs once the download is complete")
+    return {
+        "checks": [download, verify],
+        "state": state,
+        "path": st["path"],
+        "invalid_files": st["invalid_files"][:50],
+        "validation_error": st["validation_error"],
+        "can_download": state in ("missing", "partial", "error", "invalid"),
+    }
+
+
+def _agent_card() -> dict:
+    from ..providers import credentials_status, default_model, list_models, model_cache_info
+
+    provider = Config.PROVIDER.strip().lower()
+    model = biomni_runner.get_model() or default_model(provider)
+    checks = []
+
+    creds = credentials_status(provider)
+    if auth.enabled():
+        user = auth.current_user()
+        checks.append(
+            _check("Credentials", "pass", f"Cognito credentials for {user.email}")
+            if user else
+            _check("Credentials", "fail", "not signed in to Cognito")
+        )
+    elif creds["set"]:
+        checks.append(_check("Credentials", "pass", f"{creds['env']} is set" if creds["env"] else "provider needs no key"))
+    else:
+        checks.append(_check("Credentials", "fail", f"{creds['env']} is not set in .env"))
+
+    cache = model_cache_info(provider)
+    listed = {m["id"]: m for m in list_models(provider)["models"]}
+    if not cache["live"]:
+        checks.append(_check("Model", "pass" if model else "fail",
+                             f"{model} (built-in list — {provider} has no live model list)" if model else "no model configured"))
+    elif cache["fetched_at"] is None:
+        checks.append(_check("Model", "pending", f"{model} — model list not fetched yet"))
+    elif model not in listed:
+        checks.append(_check("Model", "fail", f"{model} isn't in the endpoint's model list — runs will 404"))
+    elif listed[model].get("status", "available") != "available":
+        reason = listed[model].get("status_reason") or listed[model].get("status")
+        checks.append(_check("Model", "fail", f"{model} is unavailable: {reason}"))
+    else:
+        checks.append(_check("Model", "pass", f"{model} is available"))
+
+    if cache["live"]:
+        if cache["refreshing"] and cache["fetched_at"] is None:
+            checks.append(_check("Model list", "pending", "fetching…"))
+        elif cache["fetched_at"] is None:
+            checks.append(_check("Model list", "warn", "not fetched — the endpoint may be unreachable"))
+        else:
+            mins = int(cache["age_s"] // 60)
+            age = f"{mins} min ago" if mins < 120 else f"{mins // 60} h ago"
+            checks.append(_check(
+                "Model list", "warn" if cache["stale"] else "pass",
+                f"{cache['count']} models, fetched {age}" + (" — refreshing" if cache["refreshing"] else ""),
+            ))
+
+    agent = biomni_runner.agent_status()
+    if agent["built"]:
+        checks.append(_check("Agent", "pass", "loaded"))
+    elif agent["building"]:
+        checks.append(_check("Agent", "pending", "building — loading tools and the data lake index…"))
+    else:
+        checks.append(_check("Agent", "info", "not loaded yet — builds on the first run"))
+
+    active = registry.active()
+    running = [t for t in active if t["status"] == "running"]
+    queued = [t for t in active if t["status"] == "queued"]
+    detail = ("idle" if not active else
+              f"{len(running)} running, {len(queued)} queued (runs execute one at a time)")
+    checks.append(_check("Runs", "pass", detail))
+    return {"checks": checks, "provider": provider, "model": model, "active": active}
+
+
+def _harness_card() -> dict:
+    from ..services import hints
+
+    items = hints.harness_inventory()
+    broken = [i for i in items if i["error"]]
+    recipes = sum(1 for i in items if i["kind"] == "recipes")
+    probes = sum(1 for i in items if i["kind"] == "capabilities")
+    checks = [
+        _check("Saved knowledge", "pass",
+               f"{recipes} verified recipe(s), {probes} capability probe(s)" if items
+               else "nothing saved yet — recipes are saved after a run produces real output"),
+        _check("Files parse", "fail" if broken else "pass",
+               f"{len(broken)} broken: " + ", ".join(i["name"] for i in broken) if broken
+               else "every recipe is valid Python, every probe valid JSON"),
+    ]
+    return {"checks": checks, "items": items, "path": str(Config.HARNESS_PATH)}
+
+
+@bp.get("/integrity")
+def integrity():
+    """Pass/fail health of the data lake, the agent, and its harness (saved
+    recipes + capability probes) — the Integrity tab. Never blocks on the
+    network or on a running build/run."""
+    return jsonify(datalake=_datalake_card(), agent=_agent_card(), harness=_harness_card())
+
+
+@bp.get("/harness/<kind>/<name>")
+def harness_file(kind: str, name: str):
+    from ..services import hints
+
+    text = hints.read_harness_file(kind, name)
+    if text is None:
+        abort(404)
+    return Response(text, mimetype="text/plain")
 
 
 @bp.get("/chats")
@@ -233,6 +391,9 @@ def cancel_task(task_id: str):
     return jsonify(ok=True), 202
 
 
+_SCRIPTABLE_EXTS = {"html", "htm", "xhtml", "svg", "svgz", "xml", "xsl", "js", "mjs"}
+
+
 @bp.get("/tasks/<task_id>/outputs/<path:relpath>")
 def get_output_file(task_id: str, relpath: str):
     """Serve a file a run wrote to its output folder. Reads straight from
@@ -251,9 +412,19 @@ def get_output_file(task_id: str, relpath: str):
     # any ../ escape attempt — this is the actual traversal guard.
     as_attachment = request.args.get("dl") == "1"
     try:
-        return send_from_directory(task_dir, relpath, as_attachment=as_attachment)
+        response = send_from_directory(task_dir, relpath, as_attachment=as_attachment)
     except FileNotFoundError:
         abort(404)
+    # Agent-written files are untrusted: an .html/.svg served inline on this
+    # origin could script /api/* as the app. CSP sandbox gives such a
+    # document an opaque origin (scripts still run, for interactive plots,
+    # but can't act as the app). Only for scriptable types — Chrome refuses
+    # to render PDFs under a sandbox CSP. nosniff stops any other file being
+    # sniffed into HTML.
+    if relpath.lower().rsplit(".", 1)[-1] in _SCRIPTABLE_EXTS:
+        response.headers["Content-Security-Policy"] = "sandbox allow-scripts"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @bp.post("/outputs/zip")

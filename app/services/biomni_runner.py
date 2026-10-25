@@ -22,6 +22,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 logger = logging.getLogger(__name__)
 
+from .. import auth
 from ..config import Config
 from ..providers import resolve
 from . import hints
@@ -29,6 +30,22 @@ from .tasks import registry
 
 _agent = None
 _agent_lock = threading.Lock()
+
+# One run at a time. Every task shares the single cached A1 — its log,
+# memory checkpointer, system prompt and the REPL's persistent namespace —
+# and the REPL captures output by swapping the process-wide sys.stdout, so
+# two concurrent runs would leak variables into each other and clobber each
+# other's output. Later tasks wait here (still "queued", still cancellable).
+_run_lock = threading.Lock()
+
+
+def _acquire_run_slot(task_id: str) -> None:
+    if _run_lock.acquire(blocking=False):
+        return
+    registry.append_step(task_id, "system", "waiting for the current run to finish")
+    while not _run_lock.acquire(timeout=1):
+        if registry.is_cancel_requested(task_id):
+            raise RuntimeError("stopped by user")
 
 # Model used to build the agent. Starts from .env (Config.MODEL) but can be
 # switched at runtime from the UI via set_model(); changing it drops the
@@ -41,6 +58,19 @@ _current_model: str | None = Config.MODEL
 def get_model() -> str | None:
     """The model the next task will run on."""
     return _current_model
+
+
+def agent_status() -> dict:
+    """Whether the A1 agent is built (or being built right now) and whether
+    a run holds the run slot — read without taking either lock, so a long
+    build or run never blocks the Integrity tab. _agent_lock is only held
+    for any length of time while _get_agent() constructs A1."""
+    built = _agent is not None
+    return {
+        "built": built,
+        "building": not built and _agent_lock.locked(),
+        "run_in_progress": _run_lock.locked(),
+    }
 
 
 def set_model(model: str | None) -> str | None:
@@ -77,11 +107,18 @@ def _get_agent():
             import os
 
             os.environ["BIOMNI_LLM"] = kwargs["llm"]
+            # Bedrock ids ("anthropic.claude-…") would otherwise auto-detect
+            # as biomni's "Bedrock" source (langchain-aws, not installed) in
+            # those tools; pin them to the agent's source.
+            if kwargs["source"] == "Anthropic":
+                os.environ["BIOMNI_SOURCE"] = os.environ["LLM_SOURCE"] = "Anthropic"
 
             from biomni.agent import A1  # heavy import — keep it lazy
 
             _patch_run_python_repl()
             _patch_sampling_params()
+            if auth.enabled():
+                _patch_cognito_client()
             _agent = A1(path=str(Config.DATA_PATH), **kwargs)
         return _agent
 
@@ -117,6 +154,49 @@ def _patch_sampling_params() -> None:
 
     _get_request_payload._biomnikhil_patched = True
     ChatAnthropic._get_request_payload = _get_request_payload
+
+
+_cognito_patched = False
+
+
+def _patch_cognito_client() -> None:
+    """Point every ChatAnthropic in the process (the agent loop and biomni's
+    helper LLMs) at Bedrock Mantle, SigV4-signing each request with the
+    Cognito credentials of the user whose run is in progress
+    (auth.run_credentials) rather than an API key. The SDK's own Mantle
+    client signs with credentials fixed at construction, but the agent and
+    its clients are cached across runs and users, so signing is done per
+    request here. Idempotent."""
+    global _cognito_patched
+    if _cognito_patched:
+        return
+    from functools import cached_property
+
+    from anthropic.lib.bedrock import AnthropicBedrockMantle
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+    from langchain_anthropic import ChatAnthropic
+
+    class CognitoMantle(AnthropicBedrockMantle):
+        def _prepare_request(self, request) -> None:
+            headers = {k: v for k, v in request.headers.items() if k.lower() != "connection"}
+            aws_request = AWSRequest(
+                method=request.method, url=str(request.url), headers=headers, data=request.read(),
+            )
+            SigV4Auth(auth.run_credentials(), "bedrock-mantle", self.aws_region).add_auth(aws_request)
+            request.headers.update(
+                {k: v for k, v in aws_request.prepare().headers.items() if v is not None}
+            )
+
+    def _client(self):
+        params = {k: v for k, v in self._client_params.items() if k not in ("api_key", "base_url")}
+        # skip_auth: the SDK adds no auth of its own; _prepare_request signs.
+        return CognitoMantle(aws_region=Config.AWS_REGION, skip_auth=True, **params)
+
+    prop = cached_property(_client)
+    prop.__set_name__(ChatAnthropic, "_client")
+    ChatAnthropic._client = prop
+    _cognito_patched = True
 
 
 def _patch_run_python_repl() -> None:
@@ -216,9 +296,11 @@ def _patch_run_python_repl() -> None:
 # see services/hints.py for why.
 
 
-def submit(prompt: str, chat_id: str | None = None) -> str:
+def submit(prompt: str, chat_id: str | None = None, user: auth.User | None = None) -> str:
     """Queue a prompt for the agent; returns a task id immediately. When a
-    chat_id is given, the final answer (or error) is appended to that chat."""
+    chat_id is given, the final answer (or error) is appended to that chat.
+    `user` is the signed-in user whose credentials the run's model calls
+    are signed with (bedrock provider only)."""
     user_prompt = prompt
     task = registry.create(prompt, chat_id=chat_id)
 
@@ -238,7 +320,7 @@ def submit(prompt: str, chat_id: str | None = None) -> str:
 
     thread = threading.Thread(
         target=_run,
-        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir),
+        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir, user),
         daemon=True,
     )
     thread.start()
@@ -278,6 +360,7 @@ def _run(
     chat_id: str | None = None,
     user_prompt: str = "",
     output_dir=None,
+    user: auth.User | None = None,
 ) -> None:
     from . import chat_store
 
@@ -291,7 +374,11 @@ def _run(
             chat_store.add_message(chat_id, kind, text)
 
     mark("run_start", user_prompt or prompt)
+    holds_slot = False
     try:
+        _acquire_run_slot(task_id)
+        holds_slot = True
+        auth.set_run_user(user)
         agent = _get_agent()
         registry.mark_running(task_id)
         registry.append_step(task_id, "system", "agent running")
@@ -361,6 +448,10 @@ def _run(
         registry.fail(task_id, message, files=files)
         if chat_id:
             chat_store.add_message(chat_id, "assistant", f"[error] {message}", files=files)
+    finally:
+        if holds_slot:
+            auth.set_run_user(None)
+            _run_lock.release()
 
 
 def _extract_answer(last_output: str) -> str:
@@ -379,6 +470,14 @@ def _friendly_error(exc: Exception) -> str:
     text = str(exc)
     if "stopped by user" in text:
         return "Stopped by user."
+    if isinstance(exc, auth.SignInRequired):
+        return f"{text} (Reload the page to sign in.)"
+    if auth.enabled() and ("AuthenticationError" in name or "PermissionDenied" in name):
+        return (
+            "Bedrock refused the signed request. Sign out and back in; if it "
+            "persists, check that the bedrock-web-auth role allows "
+            f"bedrock-mantle:CreateInference. ({name}: {text})"
+        )
     if "AuthenticationError" in name or "invalid_api_key" in text or " 401" in text:
         return (
             "The provider rejected the API key. Update the key in .env "
