@@ -41,7 +41,7 @@ pip install --upgrade -r "$Repo\requirements.txt"
 if (-not (Test-Path "$Repo\.env")) {
     Copy-Item "$Repo\.env.example" "$Repo\.env"
     Write-Host ""
-    Write-Host ">>> created .env — open it and add your API key <<<"
+    Write-Host ">>> created .env - no key needed, you sign in with Cognito <<<"
 }
 
 Write-Host ""

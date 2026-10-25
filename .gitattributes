@@ -1,0 +1,4 @@
+# Dev-only paths, left out of the release zip (git archive).
+.claude export-ignore
+.github export-ignore
+.gitattributes export-ignore

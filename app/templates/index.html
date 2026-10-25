@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Per-process token required on every state-changing API call; see
+       _guard_request in app/__init__.py. app.js adds it to each fetch. -->
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>biomnikhil</title>
   <!-- Font Awesome, vendored locally (app/static/fontawesome/) — no CDN,
        so icons still render with no internet connection. -->
@@ -253,6 +256,12 @@
       font-size: .8rem; background: #131f38;
     }
     #about-link:hover { color: #dbe4f3; border-color: #3b5bdb; }
+    #user-link {
+      font-size: .74rem; color: #7c90b4; text-decoration: none;
+      padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
+      background: #131f38;
+    }
+    #user-link:hover { color: #dbe4f3; border-color: #3b5bdb; }
     #trace-btn {
       margin: 0; padding: .35rem .6rem; background: transparent;
       border: 1px solid #2c3f63; border-radius: 8px; color: #7c90b4;
@@ -634,6 +643,110 @@
       border-radius: 8px 8px 0 0; cursor: pointer;
     }
     .tabs button.active { background: #131f38; color: #dbe4f3; }
+    #viewer-toolbar { display: flex; align-items: stretch; gap: .5rem; }
+    #viewer-toolbar > * {
+      box-sizing: border-box; height: 2.35rem; font-size: .82rem;
+      border-radius: 9px; font-family: inherit; margin: 0;
+      border: 1px solid #24365a; background-color: #0e1729; color: #a9bce0;
+    }
+    #viewer-page {
+      flex: 1 1 auto; min-width: 0; padding: 0 2rem 0 .8rem; cursor: pointer;
+      text-overflow: ellipsis; appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237c90b4' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+      background-repeat: no-repeat; background-position: right .8rem center;
+    }
+    #viewer-page option { background: #0e1729; color: #dbe4f3; }
+    #viewer-reload, #viewer-open {
+      flex: none; width: 2.35rem; padding: 0; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      text-decoration: none;
+    }
+    #viewer-toolbar > *:hover:not(:disabled) { border-color: #5b7fe8; color: #dbe4f3; }
+    #viewer-toolbar > *:focus-visible { outline: none; border-color: #5b7fe8; }
+    #viewer-toolbar > :disabled, #viewer-open[aria-disabled="true"] {
+      opacity: .5; cursor: default; pointer-events: none;
+    }
+    #viewer-empty {
+      margin-top: 1.5rem; padding: 2rem 1rem; text-align: center;
+      color: #7c90b4; border: 1.5px dashed #24365a; border-radius: 12px;
+    }
+    #viewer-empty code { color: #a9bce0; }
+    /* Generated pages usually assume a white canvas. */
+    #viewer-frame {
+      display: block; width: 100%; height: calc(100vh - 13rem); min-height: 420px;
+      margin-top: .7rem; box-sizing: border-box;
+      border: 1px solid #24365a; border-radius: 9px; background: #fff;
+    }
+    #viewer-frame[hidden] { display: none; }
+    /* ---- Integrity tab ---- */
+    #integrity-badge:empty { display: none; }
+    #integrity-badge {
+      display: inline-block; min-width: 1.1rem; padding: 0 .3rem; margin-left: .25rem;
+      font-size: .7rem; line-height: 1.1rem; border-radius: 999px;
+      background: #7a2333; color: #ffd9df;
+    }
+    #integrity-summary {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .75rem 1rem; border-radius: 12px; border: 1px solid #24365a;
+      background: #0e1729; font-size: .9rem;
+    }
+    #integrity-summary .refresh {
+      margin: 0 0 0 auto; padding: .3rem .7rem; font-size: .76rem;
+      background: transparent; border: 1px solid #35507f; color: #a9bce0;
+    }
+    #integrity-summary .refresh:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    #integrity-summary .when { color: #56688c; font-size: .76rem; }
+    .integrity-card {
+      margin-top: .9rem; border: 1px solid #24365a; border-radius: 12px;
+      background: linear-gradient(180deg, #111c33, #0e1729); overflow: hidden;
+    }
+    .integrity-card > header {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .7rem 1rem; border-bottom: 1px solid #1d2b48;
+    }
+    .integrity-card > header h2 { font-size: .95rem; margin: 0; font-weight: 600; }
+    .integrity-card > header .sub { color: #56688c; font-size: .74rem; margin-left: auto;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .check-row {
+      display: grid; grid-template-columns: 1.2rem 8.5rem 1fr; gap: .6rem;
+      align-items: baseline; padding: .5rem 1rem; font-size: .85rem;
+    }
+    .check-row + .check-row { border-top: 1px solid #16233d; }
+    .check-row .label { color: #a9bce0; }
+    .check-row .detail { color: #7c90b4; overflow-wrap: anywhere; }
+    @media (max-width: 520px) {
+      .check-row { grid-template-columns: 1.2rem 1fr; }
+      .check-row .detail { grid-column: 2; }
+    }
+    .st-pass { color: #4fbf8b; }
+    .st-warn { color: #e0a84f; }
+    .st-fail { color: #e5677d; }
+    .st-pending { color: #7c90b4; }
+    .st-info { color: #6f86b3; }
+    .card-extra { padding: .6rem 1rem .9rem; border-top: 1px solid #1d2b48; font-size: .8rem; color: #7c90b4; }
+    .card-extra button {
+      margin: .2rem 0 0; padding: .4rem .9rem; font-size: .8rem;
+    }
+    .card-extra ul { margin: .4rem 0 0; padding-left: 1.1rem; max-height: 10em; overflow-y: auto; }
+    .card-extra code { color: #a9bce0; overflow-wrap: anywhere; }
+    .harness-item { border-top: 1px solid #16233d; }
+    .harness-item summary {
+      display: flex; align-items: center; gap: .6rem; padding: .5rem 1rem;
+      cursor: pointer; font-size: .84rem; list-style: none;
+    }
+    .harness-item summary::-webkit-details-marker { display: none; }
+    .harness-item summary:hover { background: #131f38; }
+    .harness-item summary .kind {
+      font-size: .68rem; text-transform: uppercase; letter-spacing: .08em;
+      color: #56688c; width: 6.5rem; flex: none;
+    }
+    .harness-item summary .name { color: #cdd6e4; }
+    .harness-item summary .meta { margin-left: auto; color: #56688c; font-size: .74rem; white-space: nowrap; }
+    .harness-item pre {
+      margin: 0; padding: .7rem 1rem; max-height: 22em; overflow: auto;
+      background: #0a1222; color: #b9c7de; font-size: .76rem; line-height: 1.45;
+      border-top: 1px solid #16233d;
+    }
     .panel { display: none; }
     .panel.active { display: block; }
     #dropzone {
@@ -733,6 +846,7 @@
     <select id="model-version" class="model-select" title="Model version" disabled>
       <option value="">—</option>
     </select>
+    {% if user %}<a id="user-link" href="/logout" title="Sign out">{{ user.email }}</a>{% endif %}
     <a id="about-link" href="/about" title="How the agent works">?</a>
     <button id="trace-btn" title="Agent trace">&gt;_</button>
   </header>
@@ -793,6 +907,8 @@
       <button class="active" data-tab="task">Task</button>
       <button data-tab="outputs">Outputs <span id="output-count-badge"></span></button>
       <button data-tab="files">Files</button>
+      <button data-tab="viewer">Viewer</button>
+      <button data-tab="integrity">Integrity <span id="integrity-badge"></span></button>
     </nav>
 
     <section id="tab-task" class="panel active">
@@ -810,6 +926,28 @@
       </div>
       <div id="output-count"></div>
       <ul id="output-list"></ul>
+    </section>
+
+    <!-- Viewer: renders a webpage the agent generated (index.html by
+         default) by URL, so its relative CSS/JS/images load too. Sandboxed
+         twice — the iframe here and the CSP header on the served file —
+         so the page's scripts run but can't act as this app. -->
+    <section id="tab-viewer" class="panel">
+      <div id="viewer-toolbar">
+        <select id="viewer-page" title="Generated page to show"></select>
+        <button id="viewer-reload" title="Reload page"><i class="fa-solid fa-rotate-right"></i></button>
+        <a id="viewer-open" target="_blank" rel="noopener" title="Open in a new tab"><i class="fa-solid fa-up-right-from-square"></i></a>
+      </div>
+      <div id="viewer-empty">No webpage generated in this chat yet — ask the agent to build one (an <code>index.html</code> in its output folder).</div>
+      <iframe id="viewer-frame" sandbox="allow-scripts" title="Generated webpage" hidden></iframe>
+    </section>
+
+    <!-- Integrity: pass/fail checks for the data lake, the agent, and the
+         agent harness (saved recipes + capability probes). Built by
+         renderIntegrity() in app.js from GET /api/integrity. -->
+    <section id="tab-integrity" class="panel">
+      <div id="integrity-summary"></div>
+      <div id="integrity-cards"></div>
     </section>
 
     <section id="tab-files" class="panel">

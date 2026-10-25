@@ -55,6 +55,22 @@ class TaskRegistry:
                     return task.id
         return None
 
+    def active(self) -> list[dict]:
+        """Queued/running tasks, oldest first — for the Integrity tab's
+        agent card (what's running now, what's waiting behind it)."""
+        with self._lock:
+            return [
+                {
+                    "id": t.id, "status": t.status, "chat_id": t.chat_id,
+                    "created_at": t.created_at,
+                    # The stored prompt carries injected hints; the first line
+                    # is what the user typed.
+                    "prompt": t.prompt.strip().splitlines()[0][:120] if t.prompt.strip() else "",
+                }
+                for t in self._tasks.values()
+                if t.status in ("queued", "running")
+            ]
+
     def get(self, task_id: str) -> dict | None:
         with self._lock:
             task = self._tasks.get(task_id)

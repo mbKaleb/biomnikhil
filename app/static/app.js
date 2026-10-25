@@ -1,3 +1,26 @@
+// Every state-changing API call must carry the per-process token the server
+// embedded in the page (see _guard_request in app/__init__.py). Wrapping
+// fetch once covers every call site; only same-origin requests get it.
+{
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url, location.href);
+    if (url.origin === location.origin) {
+      const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+      headers.set("X-Biomnikhil-Token", csrfToken);
+      init = { ...init, headers };
+      // 401 = the Cognito sign-in ended (server restart, revoked user):
+      // go sign in again rather than surfacing it as a broken call.
+      return nativeFetch(input, init).then((res) => {
+        if (res.status === 401) location.assign("/login");
+        return res;
+      });
+    }
+    return nativeFetch(input, init);
+  };
+}
+
 const promptEl = document.getElementById("prompt");
 const runBtn = document.getElementById("run");
 const stepsEl = document.getElementById("steps");
@@ -693,6 +716,11 @@ async function openPreview(f) {
       previewBody.appendChild(pre);
     } else if (["html", "htm"].includes(ext)) {
       const frame = document.createElement("iframe");
+      // Agent-written HTML is untrusted (it can embed fetched or uploaded
+      // data). Scripts may run, for interactive plots, but without
+      // allow-same-origin the frame gets an opaque origin: it can't read
+      // this page, its token, or call /api/* as the app.
+      frame.sandbox = "allow-scripts";
       frame.srcdoc = text;
       previewBody.appendChild(frame);
     } else {
@@ -720,7 +748,9 @@ let lastUserPrompt = "";
 
 function resetOutputTray() {
   chatOutputFiles = [];
+  viewerChoice = null; // a new chat starts back on its newest index.html
   renderOutputTray();
+  renderViewer();
 }
 
 function registerOutputFiles(files, prompt, ts) {
@@ -733,7 +763,73 @@ function registerOutputFiles(files, prompt, ts) {
     chatOutputFiles.push({ ...f, prompt: prompt || "", ts: ts || Date.now() / 1000 });
   }
   renderOutputTray();
+  renderViewer();
 }
+
+// ---- viewer: renders a webpage the agent generated, by URL (not srcdoc)
+// so its relative CSS/JS/images resolve against the run's output folder.
+// Defaults to the newest index.html in the chat (else the newest .html);
+// once the user picks a page it sticks until that chat is left. ----
+const viewerPageEl = document.getElementById("viewer-page");
+const viewerFrame = document.getElementById("viewer-frame");
+const viewerEmpty = document.getElementById("viewer-empty");
+const viewerOpen = document.getElementById("viewer-open");
+const viewerReload = document.getElementById("viewer-reload");
+let viewerChoice = null; // `${task_id}/${path}` the user picked, or null = auto
+
+function outputFileUrl(f) {
+  return `/api/tasks/${encodeURIComponent(f.task_id)}/outputs/${f.path
+    .split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function renderViewer() {
+  const pages = chatOutputFiles
+    .filter((f) => /\.html?$/i.test(f.name))
+    .sort((a, b) => b.ts - a.ts);
+  const hasPages = pages.length > 0;
+  viewerEmpty.hidden = hasPages;
+  viewerFrame.hidden = !hasPages;
+  viewerPageEl.disabled = viewerReload.disabled = !hasPages;
+  viewerOpen.setAttribute("aria-disabled", String(!hasPages));
+  if (!hasPages) {
+    viewerPageEl.replaceChildren(option("", "No pages yet"));
+    viewerOpen.removeAttribute("href");
+    if (viewerFrame.getAttribute("src")) viewerFrame.removeAttribute("src");
+    return;
+  }
+
+  const key = (f) => `${f.task_id}/${f.path}`;
+  const fallback = pages.find((f) => /(^|\/)index\.html?$/i.test(f.path)) || pages[0];
+  const selected = pages.find((f) => key(f) === viewerChoice) || fallback;
+
+  viewerPageEl.replaceChildren(
+    ...pages.map((f) => {
+      const when = new Date(f.ts * 1000).toLocaleString([], {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      });
+      const opt = option(key(f), `${f.path} · ${when}`);
+      opt.title = f.prompt || f.path;
+      return opt;
+    }),
+  );
+  viewerPageEl.value = key(selected);
+
+  const url = outputFileUrl(selected);
+  viewerOpen.href = url;
+  // Only navigate when the page changed, so new outputs arriving mid-run
+  // don't reload (and reset) the page being looked at.
+  if (viewerFrame.getAttribute("src") !== url) viewerFrame.src = url;
+}
+
+viewerPageEl.addEventListener("change", () => {
+  viewerChoice = viewerPageEl.value;
+  renderViewer();
+});
+viewerReload.addEventListener("click", () => {
+  const url = viewerFrame.getAttribute("src");
+  if (url) viewerFrame.src = url; // reassigning the same URL reloads it
+});
+renderViewer(); // empty state until a chat's outputs load
 
 let visibleOutputFiles = []; // whatever renderOutputTray last showed — what "Download all" zips
 
@@ -1042,6 +1138,8 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
     if (btn.dataset.tab === "files") refreshFiles();
     if (btn.dataset.tab === "outputs") renderOutputTray();
+    if (btn.dataset.tab === "integrity") startIntegrity();
+    else stopIntegrity();
   });
 });
 
@@ -1650,6 +1748,7 @@ function renderModels(info) {
   familySelect.value = current.name;
   familySelect.disabled = false;
   fillVersions(current.name, info.current);
+  currentModel = versionSelect.value || info.current;
   familySelect.title =
     `Model for new runs (provider: ${info.provider}` +
     (info.source === "static" ? ", built-in list" : "") +
@@ -1679,24 +1778,37 @@ async function initModels() {
   }
 }
 
+// The model in effect on the server; the selects fall back to it when a
+// switch fails, so they never show a model the next run won't use.
+let currentModel = null;
+
+function showModel(modelId) {
+  const family = modelFamilies.find((f) => f.versions.some((v) => v.id === modelId));
+  if (family) familySelect.value = family.name;
+  fillVersions(familySelect.value, modelId);
+}
+
 async function applyModel() {
   const model = versionSelect.value;
   familySelect.disabled = versionSelect.disabled = true;
   familySelect.classList.add("saving");
   versionSelect.classList.add("saving");
   try {
-    await fetch("/api/model", {
+    const res = await fetch("/api/model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
     });
-  } catch {
-    /* leave the prior model in effect; the next run still works */
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    currentModel = body.current ?? model;
+  } catch (err) {
+    console.warn("model switch failed; keeping", currentModel, err);
   } finally {
     familySelect.classList.remove("saving");
     versionSelect.classList.remove("saving");
     familySelect.disabled = false;
-    fillVersions(familySelect.value, model); // restores the version's state
+    showModel(currentModel); // what the server has, success or not
   }
 }
 
@@ -1708,3 +1820,241 @@ familySelect.addEventListener("change", () => {
 versionSelect.addEventListener("change", applyModel);
 
 initModels();
+
+
+// ---- integrity tab: pass/fail checks for the data lake, the agent, and
+// the agent harness, from GET /api/integrity (checks are computed on the
+// server). Polls while the tab is open — fast while anything is pending
+// (download, verification, model-list fetch), slow otherwise. ----
+const integritySummaryEl = document.getElementById("integrity-summary");
+const integrityCardsEl = document.getElementById("integrity-cards");
+const integrityBadgeEl = document.getElementById("integrity-badge");
+let integrityTimer = null;
+const harnessOpen = new Set(); // "<kind>/<name>" rows the user expanded
+// File text by "<kind>/<name>", tagged with the mtime it was read at, so a
+// re-render fills an open row instantly instead of flashing "Loading…"
+// (which collapsed the row, shrank the page and jumped the scroll).
+const harnessContent = new Map();
+let lastIntegritySig = null; // skip re-rendering when nothing changed
+
+const STATUS_ICON = {
+  pass: "fa-circle-check",
+  warn: "fa-triangle-exclamation",
+  fail: "fa-circle-xmark",
+  pending: "fa-circle-notch fa-spin", // only for work actually in progress
+  info: "fa-circle-info", // a normal resting state, nothing to wait for
+};
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function statusIcon(status) {
+  const i = el("i", `fa-solid ${STATUS_ICON[status] || "fa-circle-info"} st-${status}`);
+  i.setAttribute("aria-label", status);
+  return i;
+}
+
+function worstStatus(checks) {
+  for (const s of ["fail", "warn", "pending"]) if (checks.some((c) => c.status === s)) return s;
+  return "pass";
+}
+
+function integrityCard(icon, title, sub, checks) {
+  const card = el("section", "integrity-card");
+  const head = el("header");
+  head.append(statusIcon(worstStatus(checks)), el("i", `fa-solid ${icon}`), el("h2", null, title));
+  if (sub) { const s = el("span", "sub", sub); s.title = sub; head.append(s); }
+  card.append(head);
+  for (const c of checks) {
+    const row = el("div", "check-row");
+    row.append(statusIcon(c.status), el("span", "label", c.label), el("span", "detail", c.detail));
+    card.append(row);
+  }
+  return card;
+}
+
+function datalakeExtra(d) {
+  const extra = el("div", "card-extra");
+  if (d.invalid_files?.length) {
+    extra.append(el("div", null, "Files that failed verification:"));
+    const ul = el("ul");
+    ul.dataset.scrollKey = "datalake:invalid";
+    for (const f of d.invalid_files) ul.append(el("li", null, typeof f === "string" ? f : JSON.stringify(f)));
+    extra.append(ul);
+  }
+  if (d.can_download) {
+    const btn = el("button", null, d.state === "invalid" ? "Repair data lake" : "Download data lake");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      dlNote.textContent = "";
+      await fetch("/api/datalake/download", { method: "POST" });
+      pollDl(); // the same progress modal the first-run download uses
+      refreshIntegrity();
+    });
+    extra.append(btn);
+  }
+  return extra.childElementCount ? extra : null;
+}
+
+function agentExtra(a) {
+  if (!a.active.length) return null;
+  const extra = el("div", "card-extra");
+  extra.append(el("div", null, "Active runs (oldest first):"));
+  const ul = el("ul");
+  ul.dataset.scrollKey = "agent:active";
+  for (const t of a.active) {
+    const started = new Date(t.created_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    ul.append(el("li", null, `${t.status} · ${started} · ${t.prompt || t.id}`));
+  }
+  extra.append(ul);
+  return extra;
+}
+
+function harnessItem(item) {
+  const key = `${item.kind}/${item.name}`;
+  const details = el("details", "harness-item");
+  const summary = el("summary");
+  const saved = new Date(item.modified * 1000).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+  summary.append(
+    statusIcon(item.error ? "fail" : "pass"),
+    el("span", "kind", item.kind === "recipes" ? "recipe" : "capability"),
+    el("span", "name", item.name),
+    el("span", "meta", `${formatBytes(item.size)} · ${saved}`),
+  );
+  if (item.error) summary.title = item.error;
+  details.append(summary);
+  const cached = harnessContent.get(key);
+  const fresh = cached && cached.modified === item.modified;
+  const pre = el("pre", null, fresh ? cached.text : "Loading…");
+  pre.dataset.scrollKey = `harness:${key}`;
+  details.append(pre);
+  const load = async () => {
+    const hit = harnessContent.get(key);
+    if (hit && hit.modified === item.modified) {
+      pre.textContent = hit.text; // already have this version — no refetch
+      return;
+    }
+    try {
+      const res = await fetch(`/api/harness/${encodeURIComponent(item.kind)}/${encodeURIComponent(item.name)}`);
+      const text = res.ok ? await res.text() : `Couldn't load (HTTP ${res.status})`;
+      if (res.ok) harnessContent.set(key, { modified: item.modified, text });
+      pre.textContent = text;
+    } catch (err) {
+      pre.textContent = `Couldn't load: ${err.message || err}`;
+    }
+  };
+  // Restoring the open state still fires "toggle" (it's dispatched async),
+  // so the handler ignores rows already marked open — only a real click
+  // on a closed row loads.
+  if (harnessOpen.has(key)) details.open = true;
+  details.addEventListener("toggle", () => {
+    if (!details.open) harnessOpen.delete(key);
+    else if (!harnessOpen.has(key)) { harnessOpen.add(key); load(); }
+  });
+  if (details.open && !fresh) load(); // open row whose file changed on disk
+  return details;
+}
+
+// Rebuilding the cards replaces every element, which resets the scroll
+// offset of each inner scroll box (and can momentarily change the page
+// height). Remember offsets by data-scroll-key and put them back.
+function preserveScroll(container, rebuild) {
+  const offsets = new Map();
+  container.querySelectorAll("[data-scroll-key]").forEach((node) => {
+    if (node.scrollTop || node.scrollLeft) {
+      offsets.set(node.dataset.scrollKey, [node.scrollTop, node.scrollLeft]);
+    }
+  });
+  const pageY = window.scrollY;
+  rebuild();
+  container.querySelectorAll("[data-scroll-key]").forEach((node) => {
+    const o = offsets.get(node.dataset.scrollKey);
+    if (o) [node.scrollTop, node.scrollLeft] = o;
+  });
+  if (window.scrollY !== pageY) window.scrollTo({ top: pageY });
+}
+
+function renderIntegrity(data) {
+  const cards = [
+    ["fa-database", "Data lake", data.datalake.path, data.datalake.checks, datalakeExtra(data.datalake)],
+    ["fa-heart-pulse", "Agent health", `${data.agent.provider} · ${data.agent.model || "no model"}`,
+      data.agent.checks, agentExtra(data.agent)],
+    ["fa-book", "Agent harness", data.harness.path, data.harness.checks, null],
+  ];
+  const all = cards.flatMap((c) => c[3]);
+  const failing = all.filter((c) => c.status === "fail").length;
+  const warning = all.filter((c) => c.status === "warn").length;
+  const pending = all.filter((c) => c.status === "pending").length;
+  integrityBadgeEl.textContent = failing || "";
+
+  const overall = failing ? "fail" : warning ? "warn" : pending ? "pending" : "pass";
+  const headline = failing
+    ? `${failing} check${failing > 1 ? "s" : ""} failing`
+    : warning ? `${warning} warning${warning > 1 ? "s" : ""}`
+    : pending ? "Checks in progress…" : "All checks passing";
+  const refresh = el("button", "refresh", "Re-check");
+  refresh.addEventListener("click", () => refreshIntegrity());
+  integritySummaryEl.replaceChildren(
+    statusIcon(overall), el("strong", null, headline),
+    el("span", "when", `updated ${new Date().toLocaleTimeString()}`), refresh,
+  );
+
+  // Most polls return exactly what's already on screen — leave the cards
+  // (and whatever the user has scrolled or expanded) untouched then.
+  const sig = JSON.stringify(data);
+  if (sig === lastIntegritySig) return pending > 0;
+  lastIntegritySig = sig;
+
+  preserveScroll(integrityCardsEl, () => {
+    const nodes = cards.map(([icon, title, sub, checks, extra]) => {
+      const card = integrityCard(icon, title, sub, checks);
+      if (extra) card.append(extra);
+      return card;
+    });
+    // Harness files go inside their card, under its checks.
+    for (const item of data.harness.items) nodes[2].append(harnessItem(item));
+    integrityCardsEl.replaceChildren(...nodes);
+  });
+  return pending > 0;
+}
+
+async function refreshIntegrity() {
+  let pending = false;
+  try {
+    const res = await fetch("/api/integrity");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    pending = renderIntegrity(await res.json());
+  } catch (err) {
+    integritySummaryEl.replaceChildren(
+      statusIcon("fail"), el("strong", null, `Couldn't load integrity checks: ${err.message || err}`),
+    );
+  }
+  return pending;
+}
+
+let integrityGen = 0; // bumped on stop, so an in-flight tick can't reschedule
+
+async function startIntegrity() {
+  stopIntegrity();
+  const gen = integrityGen;
+  const tick = async () => {
+    const pending = await refreshIntegrity();
+    if (gen !== integrityGen) return; // tab was left while this tick ran
+    integrityTimer = setTimeout(tick, pending ? 3000 : 15000);
+  };
+  tick();
+}
+
+function stopIntegrity() {
+  integrityGen += 1;
+  if (integrityTimer) clearTimeout(integrityTimer);
+  integrityTimer = null;
+}
+
+refreshIntegrity(); // fill the tab badge on load, without polling

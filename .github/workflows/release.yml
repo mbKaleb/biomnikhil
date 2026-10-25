@@ -1,0 +1,43 @@
+# Publishes a GitHub release when a version tag is pushed:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The release carries biomnikhil.zip: the tracked source at that tag plus a
+# VERSION file. Lab installs download it from
+# https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip
+# and run.ps1 / run-mac.sh fetch the same URL to update themselves. The notes
+# are the commit subjects since the previous tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history and tags, for the notes
+
+      - name: Build biomnikhil.zip
+        run: |
+          echo "${GITHUB_REF_NAME#v}" > VERSION
+          git archive --format=zip --prefix=biomnikhil/ --add-file=VERSION \
+            -o biomnikhil.zip "$GITHUB_REF_NAME"
+
+      - name: Write notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          git log --no-merges --pretty='- %s' "${prev:+$prev..}$GITHUB_REF_NAME" > notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" biomnikhil.zip \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md
