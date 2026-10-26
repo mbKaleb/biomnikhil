@@ -1,3 +1,5 @@
+# Installs use requirements.lock (every version pinned, for every platform);
+# after editing this file, regenerate it as the README's "Releasing" says.
 biomni==0.0.8  # pinned: services/biomni_runner.py patches its internals
 # biomni's pip package under-declares runtime deps (assumes its conda env):
 pandas

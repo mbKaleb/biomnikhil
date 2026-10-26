@@ -15,55 +15,61 @@ with a single env var.
 
 ## Install (lab members)
 
-Download
-[biomnikhil.zip](https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip),
-extract it anywhere, then start it from that folder:
+Needs a 64-bit Intel/AMD Windows PC, or an Apple Silicon Mac on macOS 15 or
+newer; about 13 GB free; and internet access to PyPI, GitHub, the Biomni
+data lake (S3), Bedrock and Cognito. Setup checks all of these first.
 
-- Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File run.ps1`
-- Mac (Terminal): `bash run-mac.sh`
+1. Download
+   [biomnikhil.zip](https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip)
+   and extract it somewhere that isn't synced (not OneDrive or iCloud
+   Desktop/Documents), e.g. `C:\biomnikhil` or `~/biomnikhil`.
+2. Double-click **Start biomnikhil** (`.cmd` on Windows, `.command` on Mac).
+   - Windows may warn about a downloaded file: choose **Run** (or
+     **More info → Run anyway**).
+   - macOS blocks it the first time: open **System Settings → Privacy &
+     Security** and click **Open Anyway** (or run `bash run-mac.sh` in
+     Terminal from the folder).
+3. The first run explains each step: it uses your Python 3.11–3.13 if you
+   have one, otherwise installs a private copy in the folder, then installs
+   the app's packages (5–15 minutes). Your browser then opens the app; sign
+   in with your lab account.
 
-Open http://localhost:8000 and sign in. Each start checks for a newer
-release and updates itself first; your `.env` and `data\` are kept.
+Everything lives in that folder (app, Python environment, settings, data);
+deleting it removes biomnikhil. Keep the launcher window open while you use
+the app. Each start checks for a newer release and updates itself first.
 
 ## Releasing
 
-Commit and push to `main`, then tag the version:
+Commit and push to `main`, then tag a test build and try it:
+
+```bash
+git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
+```
+
+`.github/workflows/release.yml` publishes it as a pre-release with
+`biomnikhil.zip`. Lab installs ignore pre-releases, and a test install
+doesn't self-update; download the zip from that pre-release's page. Broken?
+Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-`.github/workflows/release.yml` publishes the release with `biomnikhil.zip`
-and notes from the commit subjects since the last tag. Lab installs pick it
-up the next time they start.
+That becomes the latest release, and lab installs update to it the next
+time they start. Release notes are the commit subjects since the previous
+release.
 
-## Windows quickstart (dev clone)
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-mkdir $env:USERPROFILE\biomni-box; cd $env:USERPROFILE\biomni-box
-git clone <repo-url> biomnikhil
-cd biomnikhil
-powershell -ExecutionPolicy Bypass -File scripts\setup-box.ps1
-.\run.ps1
-```
-
-Open http://localhost:8000 and sign in with your Cognito account (no API
-key: model calls are signed with your own short-lived AWS credentials). First task triggers the ~11 GB data-lake
-download into the box. Teardown: `Remove-Item -Recurse -Force
-$env:USERPROFILE\biomni-box` — everything (python, packages, data, app)
-lives in that one folder.
-
-Every new shell after setup: `. scripts\activate.ps1`
-
-## Mac / dev quickstart
+After editing `requirements.txt`, regenerate the pinned versions installs
+use (with [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # defaults to bedrock + Cognito sign-in
-flask --app wsgi run --port 8000 --debug
+uv pip compile requirements.txt --universal --python-version 3.11 -o requirements.lock
 ```
+
+## Dev setup
+
+Clone the repo and run the same launcher (`run.ps1` / `run-mac.sh`). Git
+checkouts skip the self-update; pull with git instead.
 
 ## Switching providers
 
@@ -75,21 +81,22 @@ BIOMNI_MODEL=                 # optional override, else profile default
 ```
 
 No code changes. On-device inference = `ollama` profile pointed at a local
-Ollama (`OLLAMA_MODELS` inside the box keeps weights disposable too).
+Ollama.
 
 ## Layout
 
 ```
 app/
+  auth.py                 Cognito sign-in + per-user AWS credentials
   providers.py            provider profiles -> A1 kwargs (the adapter)
-  config.py               env-driven config, box-relative paths
+  config.py               env-driven config, paths inside the app folder
   api/routes.py           /api/chat, /api/tasks/<id>, /api/tasks/<id>/stream (SSE)
   services/tasks.py       thread-safe in-memory task registry
   services/biomni_runner.py  lazy A1 init + background-thread runs
   templates/, static/     minimal test UI
-scripts/setup-box.ps1     builds the disposable box around this clone
-scripts/activate.ps1      per-session env (dot-source it)
-run.ps1                   waitress-serve one-shot
+Start biomnikhil.cmd/.command  double-click launchers
+run.ps1, run-mac.sh       first-run setup, self-update, then waitress-serve
+requirements.lock         exact versions installs use (from requirements.txt)
 wsgi.py                   app entrypoint
 ```
 

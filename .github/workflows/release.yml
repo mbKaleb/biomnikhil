@@ -1,6 +1,8 @@
 # Publishes a GitHub release when a version tag is pushed:
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag v0.2.0 && git push origin v0.2.0          release: lab installs update to it
+#   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  test build: published as a
+#     pre-release, which releases/latest (and so every install) ignores
 #
 # The release carries biomnikhil.zip: the tracked source at that tag plus a
 # VERSION file. Lab installs download it from
@@ -32,12 +34,16 @@ jobs:
 
       - name: Write notes
         run: |
-          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          # A release lists everything since the previous release (skipping its
+          # test builds); a test build lists what's new since the last tag.
+          case "$GITHUB_REF_NAME" in *-*) skip=() ;; *) skip=(--exclude '*-*') ;; esac
+          prev=$(git describe --tags --abbrev=0 "${skip[@]}" "$GITHUB_REF_NAME^" 2>/dev/null || true)
           git log --no-merges --pretty='- %s' "${prev:+$prev..}$GITHUB_REF_NAME" > notes.md
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" biomnikhil.zip \
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; *) pre=() ;; esac
+          gh release create "$GITHUB_REF_NAME" biomnikhil.zip "${pre[@]}" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md
