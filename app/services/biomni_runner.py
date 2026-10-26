@@ -50,8 +50,7 @@ def _acquire_run_slot(task_id: str) -> None:
 # Model used to build the agent. Starts from .env (Config.MODEL) but can be
 # switched at runtime from the UI via set_model(); changing it drops the
 # cached agent so the next task rebuilds A1 with the new model. An in-flight
-# run is unaffected — it already holds its own agent reference. The provider
-# stays fixed (from .env); only the model is selectable.
+# run is unaffected — it already holds its own agent reference.
 _current_model: str | None = Config.MODEL
 
 
@@ -94,7 +93,7 @@ def _get_agent():
     global _agent
     with _agent_lock:
         if _agent is None:
-            kwargs = resolve(Config.PROVIDER, _current_model)
+            kwargs = resolve(_current_model)
 
             # The A1 constructor kwargs only override the *agent* LLM.
             # Biomni's database/query tools use its default BiomniConfig,
@@ -110,17 +109,78 @@ def _get_agent():
             # Bedrock ids ("anthropic.claude-…") would otherwise auto-detect
             # as biomni's "Bedrock" source (langchain-aws, not installed) in
             # those tools; pin them to the agent's source.
-            if kwargs["source"] == "Anthropic":
-                os.environ["BIOMNI_SOURCE"] = os.environ["LLM_SOURCE"] = "Anthropic"
+            os.environ["BIOMNI_SOURCE"] = os.environ["LLM_SOURCE"] = kwargs["source"]
 
             from biomni.agent import A1  # heavy import — keep it lazy
 
             _patch_run_python_repl()
             _patch_sampling_params()
-            if auth.enabled():
-                _patch_cognito_client()
+            _patch_cognito_client()
             _agent = A1(path=str(Config.DATA_PATH), **kwargs)
+            _agent.llm.callbacks = [*(_agent.llm.callbacks or []), _untagged_reply_logger()]
         return _agent
+
+
+class ModelRefused(RuntimeError):
+    pass
+
+
+def _untagged_reply_logger():
+    """A callback that logs the model's raw reply when it has neither
+    <execute> nor <solution>. biomni answers such a reply with a "no tags"
+    message and never shows it, so otherwise the trace only shows the
+    complaint. A refusal (stop_reason "refusal", empty reply) ends the run
+    right away instead: biomni would just ask again and get refused again.
+    Built lazily: langchain_core is a heavy import."""
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class UntaggedReplyLogger(BaseCallbackHandler):
+        raise_error = True  # so ModelRefused reaches the run
+
+        def on_llm_end(self, response, **kwargs):
+            for gens in response.generations:
+                for gen in gens:
+                    message = getattr(gen, "message", None)
+                    content = message.content if message is not None else gen.text
+                    text = content if isinstance(content, str) else repr(content)
+                    meta = getattr(message, "response_metadata", {}) or {}
+                    if meta.get("stop_reason") == "refusal":
+                        logger.warning("model refused (model=%s)", meta.get("model"))
+                        raise ModelRefused(meta.get("model") or "the model")
+                    if "<execute>" not in text and "<solution>" not in text:
+                        logger.warning(
+                            "model reply without <execute>/<solution> (stop_reason=%s): %.1500s",
+                            meta.get("stop_reason"), text,
+                        )
+
+    return UntaggedReplyLogger()
+
+
+def _text_of(content) -> str:
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _observations_as_user_turns(messages: list) -> None:
+    """In place: assistant messages that are biomni code results become user
+    messages, merged into a user message right before them; if the
+    conversation still ends on the assistant, a short user turn follows."""
+    out = []
+    for m in messages:
+        if m.get("role") == "assistant" and _text_of(m.get("content", "")).lstrip().startswith("<observation>"):
+            m = {**m, "role": "user"}
+        if out and m["role"] == out[-1]["role"] == "user":
+            prev = out[-1]["content"]
+            prev = [{"type": "text", "text": prev}] if isinstance(prev, str) else list(prev)
+            cur = m["content"]
+            cur = [{"type": "text", "text": cur}] if isinstance(cur, str) else list(cur)
+            out[-1] = {**out[-1], "content": prev + cur}
+        else:
+            out.append(m)
+    if out and out[-1]["role"] == "assistant":
+        out.append({"role": "user", "content": "Continue."})
+    messages[:] = out
 
 
 def _patch_sampling_params() -> None:
@@ -130,7 +190,14 @@ def _patch_sampling_params() -> None:
     deprecated for this model"). get_llm is imported by name in six biomni
     modules, so rather than repoint each one, strip the params from the
     outgoing request payload for those models. Older models (Haiku 4.5,
-    Sonnet 4.5, …) keep them. Idempotent."""
+    Sonnet 4.5, …) keep them.
+
+    Also ends every request on a user turn. biomni appends each code result
+    as an *assistant* message ("<observation>…"), so the call after any code
+    runs ends with the assistant speaking — a "prefill", which newer models
+    reject with a 400 ("does not support assistant message prefill").
+    Observations come from the environment, not the model, so they're sent
+    as user turns. Idempotent."""
     from langchain_anthropic import ChatAnthropic
 
     from ..providers import rejects_sampling_params
@@ -150,6 +217,7 @@ def _patch_sampling_params() -> None:
                 extra.pop(key, None)
             if "extra_body" in payload and not extra:
                 payload.pop("extra_body")
+        _observations_as_user_turns(payload.get("messages") or [])
         return payload
 
     _get_request_payload._biomnikhil_patched = True
@@ -191,7 +259,7 @@ def _patch_cognito_client() -> None:
     def _client(self):
         params = {k: v for k, v in self._client_params.items() if k not in ("api_key", "base_url")}
         # skip_auth: the SDK adds no auth of its own; _prepare_request signs.
-        return CognitoMantle(aws_region=Config.AWS_REGION, skip_auth=True, **params)
+        return CognitoMantle(aws_region=Config.BEDROCK_REGION, skip_auth=True, **params)
 
     prop = cached_property(_client)
     prop.__set_name__(ChatAnthropic, "_client")
@@ -300,7 +368,7 @@ def submit(prompt: str, chat_id: str | None = None, user: auth.User | None = Non
     """Queue a prompt for the agent; returns a task id immediately. When a
     chat_id is given, the final answer (or error) is appended to that chat.
     `user` is the signed-in user whose credentials the run's model calls
-    are signed with (bedrock provider only)."""
+    are signed with."""
     user_prompt = prompt
     task = registry.create(prompt, chat_id=chat_id)
 
@@ -436,9 +504,9 @@ def _run(
         # shell out to Linux-only binaries will land here on Windows.
         prompt_preview = (user_prompt or prompt or "")[:200]
         logger.exception(
-            "task %s failed (chat=%s, provider=%s, model=%s, elapsed=%s, "
+            "task %s failed (chat=%s, model=%s, elapsed=%s, "
             "output_dir=%s, prompt=%r)",
-            task_id, chat_id, Config.PROVIDER, Config.MODEL,
+            task_id, chat_id, _current_model or Config.MODEL,
             _fmt_duration(time.time() - t0), output_dir, prompt_preview,
         )
         message = _friendly_error(exc)
@@ -464,36 +532,30 @@ def _extract_answer(last_output: str) -> str:
 
 
 def _friendly_error(exc: Exception) -> str:
-    """Map provider/plumbing exceptions to actionable messages; the full
+    """Map Bedrock/plumbing exceptions to actionable messages; the full
     traceback stays in the server log via logger.exception."""
     name = type(exc).__name__
     text = str(exc)
     if "stopped by user" in text:
         return "Stopped by user."
+    if isinstance(exc, ModelRefused):
+        return (
+            f"{text} declined this request (a safety refusal, not an error in "
+            "your prompt or the app). Switch to another model in the menu at "
+            "the top and run it again."
+        )
     if isinstance(exc, auth.SignInRequired):
         return f"{text} (Reload the page to sign in.)"
-    if auth.enabled() and ("AuthenticationError" in name or "PermissionDenied" in name):
+    if "AuthenticationError" in name or "PermissionDenied" in name:
         return (
             "Bedrock refused the signed request. Sign out and back in; if it "
-            "persists, check that the bedrock-web-auth role allows "
+            "persists, check that the bedrock-app-access role allows "
             f"bedrock-mantle:CreateInference. ({name}: {text})"
         )
-    if "AuthenticationError" in name or "invalid_api_key" in text or " 401" in text:
-        return (
-            "The provider rejected the API key. Update the key in .env "
-            "(e.g. OPENAI_API_KEY) and restart the server — the key is read "
-            "once at startup."
-        )
     if "RateLimit" in name or " 429" in text:
-        return "The provider is rate-limiting requests. Wait a moment and retry."
-    if "PermissionDenied" in name or "insufficient_quota" in text:
-        return (
-            "The provider refused the request (quota or permissions). "
-            "Check your plan/billing on the provider dashboard."
-        )
+        return "Bedrock is rate-limiting requests. Wait a moment and retry."
     if "Connection" in name or "Timeout" in name:
         return (
-            "Could not reach the model provider — check your network "
-            "connection and try again."
+            "Could not reach Bedrock — check your network connection and try again."
         )
     return f"{name}: {text}"

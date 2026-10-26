@@ -4,7 +4,7 @@
     {
       "name": "biomnikhil",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "flask", "--app", "wsgi", "run", "--port", "8000"],
+      "runtimeArgs": ["-m", "flask", "--app", "app.wsgi", "run", "--port", "8000"],
       "port": 8000
     }
   ]

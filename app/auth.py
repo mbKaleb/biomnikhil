@@ -1,8 +1,8 @@
-"""Cognito sign-in and per-user AWS credentials for the "bedrock" provider.
+"""Cognito sign-in and per-user AWS credentials for Bedrock.
 
 Flow: Cognito hosted login (authorization code + PKCE) → /callback trades
 the code for tokens → the ID token goes to the identity pool, which returns
-short-lived AWS credentials for the bedrock-web-auth role. Each run signs its
+short-lived AWS credentials for the bedrock-app-access role. Each run signs its
 Bedrock calls with the credentials of the user who started it (see
 _patch_cognito_client in services/biomni_runner.py), so the app holds no
 long-lived AWS key and every model call is attributable to a Cognito user.
@@ -31,16 +31,11 @@ from .config import Config
 bp = Blueprint("auth", __name__)
 
 # Endpoints that work signed out (everything else redirects to /login).
-PUBLIC_ENDPOINTS = {"static", "about", "auth.login", "auth.callback", "auth.logout"}
+PUBLIC_ENDPOINTS = {"static", "ping", "auth.login", "auth.callback", "auth.logout"}
 
 
 class SignInRequired(RuntimeError):
     pass
-
-
-def enabled() -> bool:
-    """Sign-in is required only for the provider that uses it."""
-    return Config.PROVIDER.strip().lower() == "bedrock"
 
 
 def _claims(jwt: str) -> dict:
@@ -86,7 +81,41 @@ class User:
         self.sub = claims["sub"]
         self.email = claims.get("email") or claims.get("cognito:username") or self.sub
 
+    def sign_out(self) -> None:
+        """Ends this sign-in for good: a run still going stops at its next
+        model call (run_credentials), and Cognito revokes the refresh token,
+        so it can't mint new ID tokens or credentials. Best effort on the
+        revoke — the token is dropped from memory either way."""
+        self.signed_out = True
+        try:
+            requests.post(
+                f"{Config.COGNITO_DOMAIN}/oauth2/revoke",
+                data={"token": self._refresh_token, "client_id": Config.COGNITO_CLIENT_ID},
+                timeout=10,
+            )
+        except requests.RequestException:
+            pass
+
+    def still_valid(self) -> bool:
+        """False once Cognito refuses this sign-in (user disabled, tokens
+        revoked, refresh token expired). Asks Cognito only when the ID token
+        has expired — about hourly — so most requests cost nothing. An
+        unreachable Cognito counts as valid: offline isn't signed out."""
+        if self.signed_out:
+            return False
+        if time.time() < self._id_token_exp:
+            return True
+        try:
+            self._current_id_token()
+        except SignInRequired:
+            return False
+        except Exception:  # noqa: BLE001 — Cognito unreachable or odd reply
+            pass
+        return not self.signed_out
+
     def _current_id_token(self) -> str:
+        if self.signed_out:
+            raise SignInRequired("You signed out — sign in again.")
         if self._id_token_exp - time.time() < 300:
             try:
                 tokens = _token_request({
@@ -140,7 +169,7 @@ def current_user() -> User | None:
     """The signed-in user for this request, or None."""
     sid = session.get("sid")
     user = _users.get(sid) if sid else None
-    if user is not None and user.signed_out:
+    if user is not None and not user.still_valid():
         _users.pop(sid, None)
         return None
     return user
@@ -163,6 +192,8 @@ def run_credentials():
     user = _run_user
     if user is None:
         raise SignInRequired("No signed-in user for this run — sign in and start it again.")
+    if user.signed_out:
+        raise SignInRequired("You signed out, which stopped this run — sign in and start it again.")
     return user.credentials.get_frozen_credentials()
 
 
@@ -220,7 +251,9 @@ def callback():
 
 @bp.get("/logout")
 def logout():
-    _users.pop(session.get("sid"), None)
+    user = _users.pop(session.get("sid"), None)
+    if user is not None:
+        user.sign_out()
     session.clear()
     # Also ends the hosted-login session; logout_uri must be one of the app
     # client's "Allowed sign-out URLs".

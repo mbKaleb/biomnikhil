@@ -56,8 +56,7 @@ def create_app() -> Flask:
             sent = request.headers.get("X-Biomnikhil-Token", "")
             if not secrets.compare_digest(sent, app.config["CSRF_TOKEN"]):
                 abort(403, description="Missing or invalid request token.")
-        if (auth.enabled() and request.endpoint not in auth.PUBLIC_ENDPOINTS
-                and auth.current_user() is None):
+        if request.endpoint not in auth.PUBLIC_ENDPOINTS and auth.current_user() is None:
             if request.path.startswith("/api/"):
                 abort(401, description="Sign in required.")
             return redirect("/login")
@@ -72,24 +71,21 @@ def create_app() -> Flask:
         return response
 
     from .api.routes import bp as api_bp, models_payload
-    from .providers import refresh_models_in_background
 
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(auth.bp)
 
-    # Warm the model cache at startup so the first page load already has a
-    # discovered list (no-op if the on-disk cache is still fresh).
-    refresh_models_in_background(Config.PROVIDER)
-
     @app.get("/")
     def index():
         return render_template(
-            "index.html", provider=Config.PROVIDER, models=models_payload(),
+            "index.html", models=models_payload(),
             csrf_token=app.config["CSRF_TOKEN"], user=auth.current_user(),
         )
 
-    @app.get("/about")
-    def about():
-        return render_template("about.html", provider=Config.PROVIDER)
+    @app.get("/ping")
+    def ping():
+        # Public and tiny: the launchers and the app window poll it to tell
+        # "biomnikhil is up" from some other program on the port.
+        return "biomnikhil"
 
     return app

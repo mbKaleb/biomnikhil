@@ -21,6 +21,21 @@
   };
 }
 
+// The desktop app window has no developer console, so uncaught errors go to
+// the server log (data/server.log) instead of disappearing.
+{
+  const report = (message, where) =>
+    fetch("/api/client-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: String(message).slice(0, 2000), where }),
+    }).catch(() => {});
+  window.addEventListener("error", (e) =>
+    report(e.error?.stack || e.message, `${e.filename}:${e.lineno}:${e.colno}`));
+  window.addEventListener("unhandledrejection", (e) =>
+    report(e.reason?.stack || e.reason, "unhandled promise rejection"));
+}
+
 const promptEl = document.getElementById("prompt");
 const runBtn = document.getElementById("run");
 const stepsEl = document.getElementById("steps");
@@ -1537,8 +1552,29 @@ const dlPercent = document.getElementById("dl-percent");
 const dlFiles = document.getElementById("dl-files");
 const dlEta = document.getElementById("dl-eta");
 const dlNote = document.getElementById("dl-note");
+const dlMini = document.getElementById("dl-mini");
+const dlMiniRing = document.getElementById("dl-mini-ring");
+const dlMiniPct = document.getElementById("dl-mini-pct");
+const DL_RING = 2 * Math.PI * 19; // the ring's circumference (r=19 in the SVG)
 let dlTimer = null;
 let dlLastSample = null; // {t, bytes} for the transfer-rate estimate
+
+// Hide moves a running download from the modal to the corner ring; the
+// choice survives a reload while that download is still going.
+let dlHidden = false;
+try { dlHidden = localStorage.getItem("dl-hidden") === "1"; } catch {}
+
+function dlStartedBefore() {
+  try { return localStorage.getItem("dl-started") === "1"; } catch { return false; }
+}
+
+function setDlHidden(hidden) {
+  dlHidden = hidden;
+  try { localStorage.setItem("dl-hidden", hidden ? "1" : "0"); } catch {}
+  dlModal.classList.toggle("show", !hidden);
+  dlMini.classList.remove("fade");
+  dlMini.classList.toggle("show", hidden);
+}
 
 function formatBytes(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
@@ -1556,6 +1592,9 @@ function renderDl(status) {
   }
   dlBytes.textContent = `${formatBytes(status.bytes)} / ${formatBytes(status.expected_bytes)}`;
   dlPercent.textContent = `${pct}%`;
+  dlMini.classList.toggle("indeterminate", !(status.bytes > 0));
+  dlMiniRing.style.strokeDashoffset = DL_RING * (1 - Math.min(pct, 100) / 100);
+  dlMiniPct.textContent = `${Math.floor(pct)}%`;
   dlFiles.textContent = `${status.files} files`;
 
   const now = Date.now();
@@ -1575,10 +1614,15 @@ function stopDlPolling() {
   dlTimer = null;
 }
 
-function pollDl() {
+// hidden: start in the corner ring rather than the modal (a reload while a
+// hidden download is still going); a download the user just started shows
+// the modal.
+function pollDl(hidden = false) {
   stopDlPolling();
-  dlModal.classList.add("show", "downloading");
-  dlTimer = setInterval(async () => {
+  dlModal.classList.add("downloading");
+  setDlHidden(hidden);
+  try { localStorage.setItem("dl-started", "1"); } catch {}
+  const tick = async () => {
     try {
       const status = await fetch("/api/datalake").then((r) => r.json());
       renderDl(status);
@@ -1589,24 +1633,39 @@ function pollDl() {
         dlFill.style.width = "100%";
         dlPercent.textContent = "100%";
         dlNote.textContent = "Data lake ready — you're all set.";
-        setTimeout(() => dlModal.classList.remove("show", "downloading"), 1600);
+        dlMiniRing.style.strokeDashoffset = 0;
+        dlMiniPct.innerHTML = '<i class="fa-solid fa-check"></i>';
+        dlMini.title = "Data lake ready";
+        try {
+          localStorage.removeItem("dl-hidden");
+          localStorage.removeItem("dl-started");
+        } catch {}
+        setTimeout(() => {
+          dlModal.classList.remove("show", "downloading");
+          dlMini.classList.add("fade");
+          setTimeout(() => dlMini.classList.remove("show", "fade"), 400);
+        }, 1600);
       } else if (status.state === "ready" && !status.validated) {
         dlNote.textContent = "Verifying downloaded files…";
       } else if (status.state === "invalid") {
         stopDlPolling();
         dlModal.classList.remove("downloading");
+        setDlHidden(false); // needs the user: bring the modal back
         dlNote.textContent =
           `Download finished but failed an integrity check ` +
           `(${status.validation_error || "unknown error"}). Click "Download" to retry.`;
       } else if (status.state === "error") {
         stopDlPolling();
         dlModal.classList.remove("downloading");
+        setDlHidden(false);
         dlNote.textContent = `Download failed: ${status.error}`;
       }
     } catch {
       /* transient poll failure — keep trying */
     }
-  }, 1500);
+  };
+  tick(); // show where it stands now, not after the first interval
+  dlTimer = setInterval(tick, 1500);
 }
 
 document.getElementById("dl-start").addEventListener("click", async () => {
@@ -1617,6 +1676,8 @@ document.getElementById("dl-start").addEventListener("click", async () => {
 document.getElementById("dl-later").addEventListener("click", () => {
   dlModal.classList.remove("show");
 });
+document.getElementById("dl-hide").addEventListener("click", () => setDlHidden(true));
+dlMini.addEventListener("click", () => setDlHidden(false));
 
 // Quietly poll (no modal) while a "ready-by-size" data lake finishes its
 // background integrity check, in case it turns out corrupted/truncated.
@@ -1644,7 +1705,13 @@ function pollValidationQuietly() {
     const status = await fetch("/api/datalake").then((r) => r.json());
     if (status.state === "downloading") {
       renderDl(status);
-      pollDl();
+      pollDl(dlHidden);
+    } else if (status.state === "partial" && dlStartedBefore()) {
+      // Closing the app stopped a download the user had started: pick it
+      // back up where it was (finished files are kept), modal or ring as before.
+      renderDl(status);
+      await fetch("/api/datalake/download", { method: "POST" });
+      pollDl(dlHidden);
     } else if (status.state === "missing" || status.state === "partial") {
       if (status.state === "partial") {
         dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — it will resume.`;
@@ -1676,11 +1743,10 @@ refreshChats();
 }
 
 // ---- model selection ----
-// Populated from GET /api/models on load (live provider list, else discovered
-// or static); changing either select POSTs the resolved id to /api/model,
-// which rebuilds the agent for the next run. Provider itself is fixed in
-// .env — only the model switches. Two selects: family (opus, haiku, …) and
-// that family's versions, newest first.
+// Populated from GET /api/models on load (Bedrock's model list, or the
+// built-in one in app/providers.py); changing either select POSTs the resolved id to
+// /api/model, which rebuilds the agent for the next run. Two selects: family
+// (opus, haiku, …) and that family's versions, newest first.
 const familySelect = document.getElementById("model-family");
 const versionSelect = document.getElementById("model-version");
 let modelFamilies = [];
@@ -1728,7 +1794,7 @@ function renderModels(info) {
   if (!modelFamilies.length) {
     showModelPlaceholder(
       "No models found",
-      `No models found for provider: ${info.provider}.`,
+      "No models are configured in app/providers.py.",
     );
     return;
   }
@@ -1749,10 +1815,7 @@ function renderModels(info) {
   familySelect.disabled = false;
   fillVersions(current.name, info.current);
   currentModel = versionSelect.value || info.current;
-  familySelect.title =
-    `Model for new runs (provider: ${info.provider}` +
-    (info.source === "static" ? ", built-in list" : "") +
-    `). Switching applies to the next task.`;
+  familySelect.title = "Model for new runs, on Bedrock. Switching applies to the next task.";
 }
 
 // Render instantly from the list embedded in the page, then re-check the
@@ -1766,15 +1829,23 @@ async function initModels() {
   } catch {
     showModelPlaceholder("Models unavailable", "Couldn't load the model list.");
   }
-  try {
-    const info = await fetch("/api/models").then((r) => r.json());
-    const same =
-      embedded &&
-      JSON.stringify(info.families) === JSON.stringify(embedded.families) &&
-      info.current === embedded.current;
-    if (!same) renderModels(info);
-  } catch {
-    /* keep whatever rendered from the embedded list */
+  // The page may have rendered the built-in list while the backend was still
+  // asking Bedrock for its models; check back a few times for the real list.
+  let shown = embedded;
+  for (const wait of [1500, 4000, 10000]) {
+    if (shown?.live) break;
+    await new Promise((r) => setTimeout(r, wait));
+    try {
+      const info = await fetch("/api/models").then((r) => r.json());
+      const same =
+        shown &&
+        JSON.stringify(info.families) === JSON.stringify(shown.families) &&
+        info.current === shown.current;
+      if (!same) renderModels(info);
+      shown = info;
+    } catch {
+      /* keep whatever rendered from the embedded list */
+    }
   }
 }
 
@@ -1983,7 +2054,7 @@ function preserveScroll(container, rebuild) {
 function renderIntegrity(data) {
   const cards = [
     ["fa-database", "Data lake", data.datalake.path, data.datalake.checks, datalakeExtra(data.datalake)],
-    ["fa-heart-pulse", "Agent health", `${data.agent.provider} · ${data.agent.model || "no model"}`,
+    ["fa-heart-pulse", "Agent health", `Bedrock · ${data.agent.model || "no model"}`,
       data.agent.checks, agentExtra(data.agent)],
     ["fa-book", "Agent harness", data.harness.path, data.harness.checks, null],
   ];

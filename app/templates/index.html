@@ -249,13 +249,6 @@
       animation: blink 1.1s steps(1) infinite;
     }
     @keyframes blink { 50% { opacity: 0; } }
-    #about-link {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 1.6rem; height: 1.6rem; border-radius: 50%;
-      border: 1px solid #2c3f63; color: #7c90b4; text-decoration: none;
-      font-size: .8rem; background: #131f38;
-    }
-    #about-link:hover { color: #dbe4f3; border-color: #3b5bdb; }
     #user-link {
       font-size: .74rem; color: #7c90b4; text-decoration: none;
       padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
@@ -625,8 +618,38 @@
     #dl-modal.downloading .dl-progress { display: block; }
     #dl-modal.downloading .dl-choices { display: none; }
     .dl-choices { display: flex; gap: .6rem; justify-content: flex-end; }
-    .dl-choices .secondary {
+    .dl-hide-row { display: none; justify-content: flex-end; }
+    #dl-modal.downloading .dl-hide-row { display: flex; }
+    .dl-hide-row .secondary, .dl-choices .secondary {
       background: transparent; border: 1px solid #2c3f63; color: #93a6c4;
+    }
+    .dl-hide-row .secondary:hover { background: #131f38; }
+    /* Hidden download: a progress ring in the bottom-right corner; click it
+       to bring the modal back. */
+    #dl-mini {
+      position: fixed; right: 1.1rem; bottom: 1.1rem; z-index: 29;
+      width: 52px; height: 52px; padding: 0; border-radius: 50%;
+      display: none; align-items: center; justify-content: center;
+      background: #0b1324; border: 1px solid #263a63;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .5); cursor: pointer;
+      transition: opacity .4s ease;
+    }
+    #dl-mini.show { display: flex; }
+    #dl-mini.fade { opacity: 0; }
+    #dl-mini svg { position: absolute; inset: 3px; width: 44px; height: 44px; transform: rotate(-90deg); }
+    #dl-mini circle { fill: none; stroke-width: 3.5; }
+    #dl-mini .track { stroke: #1a2742; }
+    #dl-mini .ring {
+      stroke: #6b8cff; stroke-linecap: round;
+      stroke-dasharray: 119.4; stroke-dashoffset: 119.4;
+      transition: stroke-dashoffset .6s ease;
+    }
+    #dl-mini.indeterminate svg { animation: dl-spin 1.1s linear infinite; }
+    #dl-mini.indeterminate .ring { stroke-dashoffset: 85; }
+    @keyframes dl-spin { to { transform: rotate(270deg); } }
+    #dl-mini-pct {
+      position: relative; font-size: .64rem; color: #cbd5e1;
+      font-variant-numeric: tabular-nums;
     }
     .dl-choices .secondary:hover { background: #131f38; }
     .dl-note {
@@ -839,7 +862,7 @@
     <button id="menu-btn" title="Chats"><i class="fa-solid fa-bars"></i></button>
     <h1>biomnikhil</h1>
     <span id="chat-name"></span>
-    <span class="provider-badge">Biomni agent · {{ provider }}</span>
+    <span class="provider-badge">Biomni agent · Bedrock</span>
     <select id="model-family" class="model-select" title="Model for new runs" disabled>
       <option value="">Models unavailable</option>
     </select>
@@ -847,7 +870,6 @@
       <option value="">—</option>
     </select>
     {% if user %}<a id="user-link" href="/logout" title="Sign out">{{ user.email }}</a>{% endif %}
-    <a id="about-link" href="/about" title="How the agent works">?</a>
     <button id="trace-btn" title="Agent trace">&gt;_</button>
   </header>
 
@@ -884,9 +906,19 @@
         <button class="secondary" id="dl-later">Later</button>
         <button id="dl-start">Download now</button>
       </div>
+      <div class="dl-hide-row">
+        <button class="secondary" id="dl-hide">Hide</button>
+      </div>
       <div class="dl-note" id="dl-note"></div>
     </div>
   </div>
+  <button id="dl-mini" title="Downloading the data lake — click to show">
+    <svg viewBox="0 0 44 44" aria-hidden="true">
+      <circle class="track" cx="22" cy="22" r="19"></circle>
+      <circle class="ring" id="dl-mini-ring" cx="22" cy="22" r="19"></circle>
+    </svg>
+    <span id="dl-mini-pct">0%</span>
+  </button>
 
   <div id="backdrop"></div>
   <aside id="sidebar">

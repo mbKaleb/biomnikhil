@@ -1,11 +1,12 @@
 """Data-lake download state for the first-run popup.
 
-Biomni downloads the ~11 GB data lake as a side effect of constructing A1,
+Biomni downloads the ~14 GB data lake as a side effect of constructing A1,
 so "downloading" here just means building the agent on a background thread
 while we watch the data directory grow on disk.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -15,12 +16,12 @@ from ..config import Config
 
 logger = logging.getLogger(__name__)
 
-# Rough size of a complete data lake, for the progress percentage during an
-# active download only — completeness itself is decided by the manifest
-# check below, not this number. Measured directly against the installed
-# biomni version's actual data lake (~9.7 GB); override via env if a biomni
-# release changes it materially.
-EXPECTED_BYTES = int(os.getenv("BIOMNI_DATA_LAKE_BYTES", str(10 * 1024**3)))
+# Size of a complete data lake, for the progress percentage only —
+# completeness itself is decided by the manifest check below, not this
+# number. The download measures the real total (a HEAD request per manifest
+# file, saved in .sizes.json); this is the fallback until it has, measured for
+# biomni 0.0.8 (76 files, 14.0 GiB).
+EXPECTED_BYTES = int(os.getenv("BIOMNI_DATA_LAKE_BYTES", str(14 * 1024**3)))
 
 # Where biomni publishes the data lake — must match biomni.agent.A1's own
 # s3_bucket_url. We re-fetch individual files ourselves (rather than relying on
@@ -126,6 +127,8 @@ def _run_validation() -> None:
         else:
             for root, _dirs, files in os.walk(lake_dir):
                 for name in files:
+                    if name.startswith("."):  # our .part downloads and .sizes.json
+                        continue
                     path = Path(root) / name
                     checked += 1
                     err = _check_file(path)
@@ -176,6 +179,41 @@ def ensure_validated() -> None:
         _validate_thread.start()
 
 
+def _sizes_file() -> Path:
+    return _lake_dir() / ".sizes.json"
+
+
+def _expected_bytes() -> int:
+    """The whole data lake's size as measured by _measure_sizes(), else
+    EXPECTED_BYTES."""
+    try:
+        return int(json.loads(_sizes_file().read_text())["total"])
+    except Exception:  # noqa: BLE001 — not measured yet
+        return EXPECTED_BYTES
+
+
+def _measure_sizes(filenames) -> None:
+    """Record the data lake's total size, from S3's Content-Length for every
+    manifest file, so progress counts against all of it — including files
+    finished on an earlier run. Skipped once measured; best effort."""
+    if _sizes_file().is_file():
+        return
+    import requests
+    from concurrent.futures import ThreadPoolExecutor
+
+    def head(name):
+        r = requests.head(f"{S3_BUCKET_URL}/data_lake/{name}", timeout=20)
+        r.raise_for_status()
+        return int(r.headers["content-length"])
+
+    try:
+        with ThreadPoolExecutor(16) as pool:
+            total = sum(pool.map(head, filenames))
+        _sizes_file().write_text(json.dumps({"total": total}))
+    except Exception:  # noqa: BLE001 — keep the EXPECTED_BYTES estimate
+        logger.warning("couldn't measure the data lake's size", exc_info=True)
+
+
 def _dir_stats() -> tuple[int, int]:
     """(total bytes, file count) under the data lake directory specifically —
     not all of Config.DATA_PATH, which also holds unrelated user data."""
@@ -198,7 +236,9 @@ def _redownload_one(rel: str) -> str | None:
     against the S3 Content-Length and re-runs the structural integrity check
     before atomically replacing any existing (possibly truncated) copy.
     Returns None on success, else an error string; retries a few times since
-    truncation is usually a transient network cutoff."""
+    truncation is usually a transient network cutoff. A .part file left by an
+    earlier run (the app closed mid-download) is continued with an HTTP Range
+    request rather than started over."""
     import requests
 
     url = f"{S3_BUCKET_URL}/{rel}"
@@ -209,38 +249,48 @@ def _redownload_one(rel: str) -> str | None:
     last_err = "unknown error"
     for attempt in range(1, _REDOWNLOAD_ATTEMPTS + 1):
         try:
-            with requests.get(url, stream=True, timeout=(10, 300)) as resp:
-                resp.raise_for_status()
-                expected = int(resp.headers.get("content-length", 0)) or None
-                written = 0
-                with open(tmp, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            written += len(chunk)
-            # Size check first — this is the exact failure biomni misses: a
-            # stream that cuts off early leaves a short-but-present file.
-            if expected is not None and written != expected:
-                last_err = f"size mismatch: got {written:,} of {expected:,} bytes"
-                logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
-                tmp.unlink(missing_ok=True)
-                continue
-            structural = _check_file(tmp)
-            if structural:
-                last_err = f"still corrupt after download: {structural}"
-                logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
-                tmp.unlink(missing_ok=True)
-                continue
-            os.replace(tmp, dest)  # atomic swap — never leaves a partial at dest
-            logger.info("repaired data lake file %s (%s bytes)", rel, f"{written:,}")
-            return None
-        except Exception as exc:  # noqa: BLE001 — surface any fetch/IO failure
+            have = tmp.stat().st_size if tmp.is_file() else 0
+            headers = {"Range": f"bytes={have}-"} if have else {}
+            with requests.get(url, stream=True, timeout=(10, 300), headers=headers) as resp:
+                if resp.status_code == 416:  # the .part already holds the whole file
+                    expected = written = have
+                else:
+                    resp.raise_for_status()
+                    if resp.status_code != 206:  # sent the whole file: start over
+                        have = 0
+                    length = int(resp.headers.get("content-length", 0)) or None
+                    expected = have + length if length is not None else None
+                    written = have
+                    with open(tmp, "ab" if have else "wb") as f:
+                        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+                                written += len(chunk)
+        except Exception as exc:  # noqa: BLE001 — network/IO failure: the .part
+            # keeps what arrived, and the next attempt (or run) continues it.
             last_err = f"{type(exc).__name__}: {exc}"
             logger.warning("redownload %s attempt %d failed: %s", rel, attempt, last_err)
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+            continue
+        # Size check first — this is the exact failure biomni misses: a
+        # stream that cuts off early leaves a short-but-present file.
+        if expected is not None and written < expected:
+            last_err = f"stream ended early: got {written:,} of {expected:,} bytes"
+            logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
+            continue  # resume from here on the next attempt
+        if expected is not None and written > expected:
+            last_err = f"size mismatch: got {written:,} of {expected:,} bytes"
+            logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
+            tmp.unlink(missing_ok=True)
+            continue
+        structural = _check_file(tmp)
+        if structural:
+            last_err = f"still corrupt after download: {structural}"
+            logger.warning("redownload %s attempt %d: %s", rel, attempt, last_err)
+            tmp.unlink(missing_ok=True)
+            continue
+        os.replace(tmp, dest)  # atomic swap — never leaves a partial at dest
+        logger.info("repaired data lake file %s (%s bytes)", rel, f"{written:,}")
+        return None
     return last_err
 
 
@@ -267,6 +317,7 @@ def _download() -> None:
 
     lake_dir = _lake_dir()
     (lake_dir / "data_lake").mkdir(parents=True, exist_ok=True)
+    _measure_sizes(data_lake_dict)
 
     # Which files are corrupt right now? We need the actual bad-file set, not
     # just "what's missing" — run the integrity check synchronously if it
@@ -344,6 +395,7 @@ def start_download() -> bool:
 
 def status() -> dict:
     bytes_done, files = _dir_stats()
+    expected = _expected_bytes()
     downloading = _download_thread is not None and _download_thread.is_alive()
     finished = _download_thread is not None and not downloading
 
@@ -363,7 +415,7 @@ def status() -> dict:
         state = "ready"
     elif manifest_ok is False:
         state = "partial" if bytes_done > 0 else "missing"
-    elif finished or bytes_done >= EXPECTED_BYTES * 0.9:  # manifest check unavailable
+    elif finished or bytes_done >= expected * 0.9:  # manifest check unavailable
         state = "ready"
     elif bytes_done > 0:
         state = "partial"
@@ -385,8 +437,8 @@ def status() -> dict:
         "state": state,
         "bytes": bytes_done,
         "files": files,
-        "expected_bytes": EXPECTED_BYTES,
-        "percent": min(100, round(bytes_done * 100 / EXPECTED_BYTES, 1)),
+        "expected_bytes": expected,
+        "percent": min(100, round(bytes_done * 100 / expected, 1)),
         "error": _download_error,
         "path": str(_lake_dir()),
         "validated": validated,

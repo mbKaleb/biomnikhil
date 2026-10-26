@@ -30,13 +30,13 @@ pymed           # PubMed search
 arxiv           # literature search
 markdown        # report generation in biomni.utils
 nest_asyncio    # agent internals
-langchain-openai
-# pinned: the bedrock provider's per-request signing replaces private parts
+langchain-openai  # unused, but biomni.agent.a1 imports it at startup
+# pinned: the per-request Bedrock signing replaces private parts
 # of these clients (ChatAnthropic._client, AnthropicBedrockMantle
 # ._prepare_request) — re-test sign-in and a run before bumping them
 langchain-anthropic==1.7.1
 anthropic==1.4.0
-boto3==1.43.118  # bedrock provider: Cognito credentials + SigV4 signing
+boto3==1.43.118  # Cognito credentials + SigV4 signing
 flask>=3.0
 waitress>=3.0
 python-dotenv>=1.0

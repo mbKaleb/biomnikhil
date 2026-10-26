@@ -1,8 +1,12 @@
-"""Central config, loaded from .env / environment. Everything path-related
-defaults to living inside the repo's own data/ folder (gitignored), so the
-whole box — code, data lake, uploads, chat history — is one deletable tree.
+"""Central config, loaded from data/.env / environment. Everything
+path-related defaults to living inside the install's own data/ folder
+(gitignored), so the whole install — code, Python runtime, data lake,
+uploads, chat history — is one deletable tree:
 
+    app/              this package, plus the launch scripts
+    runtime/          Python environment (created by the launch scripts)
     data/
+      .env            settings (created from app/.env.example)
       biomni_data/    biomni's own data lake (it nests this dir name itself
                        under whatever path A1 is given — see biomni_runner)
       user/           our application data: uploads, chat history
@@ -15,9 +19,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(REPO_ROOT / ".env")
-
 _DATA_ROOT = REPO_ROOT / "data"
+load_dotenv(_DATA_ROOT / ".env")
 
 
 def _env(name: str, default: str) -> str:
@@ -28,7 +31,7 @@ def _env(name: str, default: str) -> str:
 
 
 class Config:
-    PROVIDER: str = _env("BIOMNI_PROVIDER", "anthropic")
+    # Optional: the Bedrock model to start on (else app/providers.py's default).
     MODEL: str | None = os.getenv("BIOMNI_MODEL") or None
 
     # Passed straight to A1(path=...); A1 creates/expects a "biomni_data"
@@ -65,9 +68,13 @@ class Config:
     HOST: str = _env("HOST", "127.0.0.1")
     PORT: int = int(_env("PORT", "8000"))
 
-    # Cognito sign-in for the "bedrock" provider (see app/auth.py). These
+    # Cognito sign-in, whose credentials sign the Bedrock calls (see app/auth.py). These
     # are public identifiers, not secrets — a browser app would embed them.
-    AWS_REGION: str = _env("AWS_REGION", "us-west-2")
+    # One region for the Cognito pools and Bedrock (Mantle's Claude models are
+    # in us-east-1). BEDROCK_REGION can split them: the identity pool's
+    # credentials work in any region the role's policy allows.
+    AWS_REGION: str = _env("AWS_REGION", "us-east-1")
+    BEDROCK_REGION: str = _env("BEDROCK_REGION", AWS_REGION)
     COGNITO_DOMAIN: str = os.getenv("COGNITO_DOMAIN", "").rstrip("/")
     COGNITO_CLIENT_ID: str = os.getenv("COGNITO_CLIENT_ID", "")
     COGNITO_USER_POOL_ID: str = os.getenv("COGNITO_USER_POOL_ID", "")

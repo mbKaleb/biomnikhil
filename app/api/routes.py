@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import time
 import zipfile
@@ -22,12 +23,22 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+@bp.post("/client-error")
+def client_error():
+    """Uncaught errors from the page (app.js reports them), so problems in the
+    desktop app window, which has no console, end up in the server log."""
+    body = request.get_json(silent=True) or {}
+    logging.getLogger("biomnikhil.page").warning(
+        "page error at %s: %s", str(body.get("where", "?"))[:200], str(body.get("message", ""))[:2000],
+    )
+    return "", 204
+
+
 @bp.get("/health")
 def health():
     return jsonify(
         ok=True,
-        provider=Config.PROVIDER,
-        model=Config.MODEL or "(provider default)",
+        model=biomni_runner.get_model() or "(default)",
         data_path=str(Config.DATA_PATH),
     )
 
@@ -66,16 +77,18 @@ def chat():
 
 
 def models_payload() -> dict:
-    """Models the UI selector offers, for the active provider, plus the one
-    currently in effect. Served from cache, so it never waits on the network;
-    the index page embeds it so the selects render with the page."""
-    from ..providers import default_model, group_models, list_models
+    """Models the UI selector offers, plus the one currently in effect; the
+    index page embeds it so the selects render with the page."""
+    from ..providers import default_model, group_models, list_models, refresh_models
 
-    info = list_models(Config.PROVIDER)
+    user = auth.current_user()
+    if user is not None:
+        refresh_models(user.credentials)
+    info = list_models()
     # What the next run will actually use — same fallback as resolve().
-    current = biomni_runner.get_model() or default_model(Config.PROVIDER)
-    # Always make the active model selectable, even if the live/static list
-    # doesn't happen to include it (e.g. a pinned .env model).
+    current = biomni_runner.get_model() or default_model()
+    # Always make the active model selectable, even if the list doesn't
+    # include it (e.g. a model pinned with BIOMNI_MODEL).
     if current and current not in {m["id"] for m in info["models"]}:
         info["models"] = [{"id": current}, *info["models"]]
     # Family + version, for the UI's two selects.
@@ -85,8 +98,7 @@ def models_payload() -> dict:
 
 @bp.get("/models")
 def list_models_route():
-    """Same payload as embedded in the page; the frontend re-checks it once
-    after load to pick up a background refresh."""
+    """Same payload as embedded in the page."""
     return jsonify(models_payload())
 
 
@@ -168,52 +180,22 @@ def _datalake_card() -> dict:
 
 
 def _agent_card() -> dict:
-    from ..providers import credentials_status, default_model, list_models, model_cache_info
+    from ..providers import default_model, list_models
 
-    provider = Config.PROVIDER.strip().lower()
-    model = biomni_runner.get_model() or default_model(provider)
-    checks = []
-
-    creds = credentials_status(provider)
-    if auth.enabled():
-        user = auth.current_user()
-        checks.append(
-            _check("Credentials", "pass", f"Cognito credentials for {user.email}")
-            if user else
-            _check("Credentials", "fail", "not signed in to Cognito")
-        )
-    elif creds["set"]:
-        checks.append(_check("Credentials", "pass", f"{creds['env']} is set" if creds["env"] else "provider needs no key"))
-    else:
-        checks.append(_check("Credentials", "fail", f"{creds['env']} is not set in .env"))
-
-    cache = model_cache_info(provider)
-    listed = {m["id"]: m for m in list_models(provider)["models"]}
-    if not cache["live"]:
-        checks.append(_check("Model", "pass" if model else "fail",
-                             f"{model} (built-in list — {provider} has no live model list)" if model else "no model configured"))
-    elif cache["fetched_at"] is None:
-        checks.append(_check("Model", "pending", f"{model} — model list not fetched yet"))
-    elif model not in listed:
-        checks.append(_check("Model", "fail", f"{model} isn't in the endpoint's model list — runs will 404"))
-    elif listed[model].get("status", "available") != "available":
-        reason = listed[model].get("status_reason") or listed[model].get("status")
-        checks.append(_check("Model", "fail", f"{model} is unavailable: {reason}"))
-    else:
-        checks.append(_check("Model", "pass", f"{model} is available"))
-
-    if cache["live"]:
-        if cache["refreshing"] and cache["fetched_at"] is None:
-            checks.append(_check("Model list", "pending", "fetching…"))
-        elif cache["fetched_at"] is None:
-            checks.append(_check("Model list", "warn", "not fetched — the endpoint may be unreachable"))
-        else:
-            mins = int(cache["age_s"] // 60)
-            age = f"{mins} min ago" if mins < 120 else f"{mins // 60} h ago"
-            checks.append(_check(
-                "Model list", "warn" if cache["stale"] else "pass",
-                f"{cache['count']} models, fetched {age}" + (" — refreshing" if cache["refreshing"] else ""),
-            ))
+    model = biomni_runner.get_model() or default_model()
+    user = auth.current_user()
+    listed = list_models()
+    checks = [
+        _check("Credentials", "pass", f"Cognito credentials for {user.email}")
+        if user else _check("Credentials", "fail", "not signed in to Cognito"),
+        _check("Model", "pass", f"{model} on Bedrock")
+        if model in {m["id"] for m in listed["models"]} else
+        _check("Model", "warn", f"{model} isn't in Bedrock's model list — runs may fail"),
+        _check("Model list", "pass", f"{len(listed['models'])} Claude models listed by Bedrock")
+        if listed["live"] else
+        _check("Model list", "warn", "built-in list — Bedrock's model list couldn't be read"
+               + (f" ({listed['error']})" if listed["error"] else " yet")),
+    ]
 
     agent = biomni_runner.agent_status()
     if agent["built"]:
@@ -229,7 +211,7 @@ def _agent_card() -> dict:
     detail = ("idle" if not active else
               f"{len(running)} running, {len(queued)} queued (runs execute one at a time)")
     checks.append(_check("Runs", "pass", detail))
-    return {"checks": checks, "provider": provider, "model": model, "active": active}
+    return {"checks": checks, "model": model, "active": active}
 
 
 def _harness_card() -> dict:

@@ -2,6 +2,7 @@
 .claude export-ignore
 .github export-ignore
 .gitattributes export-ignore
+.gitignore export-ignore
 
 # Line endings the launchers need, whatever OS commits them.
 *.cmd text eol=crlf

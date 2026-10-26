@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>biomnikhil Setup</title>
+<style>
+/* Same palette as the app (templates/index.html). */
+:root {
+  color-scheme: dark;
+  --bg: #0d1526;
+  --sunk: #080e1a;
+  --panel: #131f38;
+  --line: #1d2b48;
+  --line-2: #2c3f63;
+  --fg: #dbe4f3;
+  --muted: #7c90b4;
+  --faint: #4f6286;
+  --accent: #3b5bdb;
+  --accent-hi: #5b7fe8;
+  --ok: #4ade80;
+  --warn: #f2b45a;
+  --err: #f0707e;
+  --err-bg: #2a1420;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.4 var(--ui); overflow: hidden; cursor: default; user-select: none; }
+[hidden] { display: none !important; }
+.screen { height: 100%; display: flex; flex-direction: column; padding: 28px 32px 22px; gap: 18px; }
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand img { width: 52px; height: 52px; }
+.brand h1 { margin: 0; font-size: 1.35rem; font-weight: 650; letter-spacing: -.01em; }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: .84rem; }
+.foot { margin-top: auto; display: flex; align-items: center; gap: 10px; }
+.ver { font-size: .72rem; color: var(--faint); font-family: var(--mono); margin-right: auto; }
+button { font: inherit; font-size: .85rem; border-radius: 8px; padding: .55rem 1.15rem; cursor: pointer; border: 1px solid var(--line-2); background: var(--panel); color: var(--fg); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+button:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+button.link { background: none; border: none; color: var(--muted); padding: .55rem .4rem; }
+button.link:hover { color: var(--fg); }
+button:disabled { opacity: .5; cursor: default; }
+
+/* welcome */
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 9px 18px; font-size: .82rem; padding: 14px 16px; margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.facts code { font-family: var(--mono); font-size: .78rem; user-select: text; }
+.free { color: var(--ok); }
+.free.low { color: var(--warn); }
+.note { font-size: .78rem; color: var(--muted); margin: 0; line-height: 1.5; }
+
+/* installing */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; font-size: .84rem; }
+.steps li { display: flex; align-items: center; gap: 10px; color: var(--faint); }
+.mark { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--line-2); flex: none; display: grid; place-items: center; font-size: .65rem; }
+.steps li.done { color: var(--muted); }
+.steps li.done .mark { border-color: var(--ok); color: var(--ok); }
+.steps li.done .mark::before { content: "✓"; }
+.steps li.active { color: var(--fg); font-weight: 550; }
+.steps li.active .mark { border-color: var(--accent-hi); border-top-color: transparent; animation: spin .9s linear infinite; }
+.steps .sub { margin-left: auto; font-family: var(--mono); font-size: .74rem; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.bar { display: grid; gap: 8px; }
+.bar .row { display: flex; justify-content: space-between; gap: 12px; font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar .row b { color: var(--fg); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track { height: 8px; border-radius: 99px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+.fill { height: 100%; width: 0; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent-hi)); transition: width .4s ease; }
+.whisper { font-size: .78rem; color: var(--faint); font-style: italic; text-align: center; margin: auto 0 0; min-height: 1.2em; transition: opacity .6s; }
+
+/* done / error */
+.center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; }
+.badge { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; font-size: 1.6rem; font-weight: 700; flex: none; }
+.badge.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.badge.err { background: var(--err-bg); color: var(--err); width: 42px; height: 42px; font-size: 1.2rem; }
+.center h2 { margin: 4px 0 0; font-size: 1.15rem; font-weight: 650; }
+.center p { margin: 0; color: var(--muted); font-size: .84rem; max-width: 46ch; line-height: 1.5; }
+.made { font-size: .78rem; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+.made span::before { content: "✓ "; color: var(--ok); }
+.made-note { color: var(--warn) !important; }
+.err-head { display: flex; gap: 14px; align-items: flex-start; }
+.err-head h2 { margin: 2px 0 4px; font-size: 1.05rem; font-weight: 650; }
+.err-head p { margin: 0; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+.details { margin: 0; flex: 1; min-height: 0; font-family: var(--mono); font-size: .7rem; line-height: 1.5; color: var(--muted); background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; user-select: text; cursor: text; }
+@media (prefers-reduced-motion: reduce) { .steps li.active .mark { animation: none; } .fill { transition: none; } }
+</style>
+</head>
+<body>
+
+<section class="screen" id="welcome">
+  <div class="brand">
+    <img src="icon.png" alt="">
+    <div>
+      <h1>biomnikhil</h1>
+      <p>An AI research assistant for the lab, built on Stanford Biomni.</p>
+    </div>
+  </div>
+  <dl class="facts">
+    <dt>Install location</dt><dd><code id="w-location">…</code></dd>
+    <dt>Space needed</dt><dd>About <span id="w-need">13</span> GB <span class="free" id="w-free"></span></dd>
+    <dt>Download now</dt><dd id="w-download">…</dd>
+    <dt>Python</dt><dd id="w-python">…</dd>
+    <dt>Shortcuts</dt><dd id="w-shortcuts">…</dd>
+  </dl>
+  <p class="note">The 14 GB data library downloads later, the first time an analysis needs it. Setup takes about 5 minutes on a typical connection.</p>
+  <div class="foot">
+    <span class="ver" id="w-ver"></span>
+    <button class="link" id="w-cancel">Cancel</button>
+    <button class="primary" id="w-install" disabled>Install</button>
+  </div>
+</section>
+
+<section class="screen" id="installing" hidden>
+  <div class="brand">
+    <img src="icon.png" alt="">
+    <div>
+      <h1>Installing biomnikhil</h1>
+      <p>You can keep working while this runs.</p>
+    </div>
+  </div>
+  <ul class="steps" id="steps"></ul>
+  <div class="bar">
+    <div class="row"><b id="status">Starting…</b><span id="pct">0%</span></div>
+    <div class="track"><div class="fill" id="fill"></div></div>
+  </div>
+  <p class="whisper" id="whisper"></p>
+</section>
+
+<section class="screen" id="done" hidden>
+  <div class="center">
+    <div class="badge ok">✓</div>
+    <h2>biomnikhil is installed</h2>
+    <p id="d-next"></p>
+    <div class="made" id="d-made"></div>
+    <p class="made-note" id="d-note" hidden></p>
+  </div>
+  <div class="foot">
+    <span class="ver" id="d-ver"></span>
+    <button class="link" id="d-close">Close</button>
+    <button class="primary" id="d-open">Open biomnikhil</button>
+  </div>
+</section>
+
+<section class="screen" id="error" hidden>
+  <div class="err-head">
+    <div class="badge err">!</div>
+    <div>
+      <h2 id="e-title"></h2>
+      <p id="e-message"></p>
+    </div>
+  </div>
+  <pre class="details" id="e-details" hidden></pre>
+  <div class="foot">
+    <span class="ver" id="e-ver"></span>
+    <button class="link" id="e-toggle">Show details</button>
+    <button id="e-close">Close</button>
+    <button class="primary" id="e-retry">Retry</button>
+  </div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = () => window.pywebview.api;
+const isMac = navigator.platform.startsWith("Mac");
+
+const TIPS = [
+  "You'll sign in with your lab account. No API key needed.",
+  "Your chats and uploads stay in the data folder inside biomnikhil.",
+  "Model requests go to Claude on AWS Bedrock, in us-west-2.",
+  "The agent writes and runs Python on this computer, in its own environment.",
+  "Enrichment analysis runs on gseapy.",
+  "Mass-spec work uses pyopenms and pymzml.",
+  "Compound structures come from RDKit.",
+  "Sequence and database tools come from Biopython.",
+];
+let tipTimer = null;
+
+function show(id) {
+  for (const s of document.querySelectorAll(".screen")) s.hidden = s.id !== id;
+  const btn = document.querySelector(`#${id} button.primary`);
+  if (btn) btn.focus();
+}
+
+function rotateTips() {
+  if (tipTimer) return;
+  let i = Math.floor(Math.random() * TIPS.length);
+  const el = $("whisper");
+  el.textContent = TIPS[i];
+  tipTimer = setInterval(() => {
+    el.style.opacity = 0;
+    setTimeout(() => { i = (i + 1) % TIPS.length; el.textContent = TIPS[i]; el.style.opacity = 1; }, 600);
+  }, 7000);
+}
+
+window.ui = {
+  welcome(info) {
+    for (const v of ["w-ver", "d-ver", "e-ver"]) $(v).textContent = info.version === "dev" ? "dev" : "v" + info.version;
+    if (info.blocked) return ui.error(info.blocked);
+    $("w-location").textContent = info.location;
+    $("w-need").textContent = info.need_gb;
+    if (info.free_gb !== null) {
+      $("w-free").textContent = info.low_space ? `· only ${info.free_gb} GB free` : `· ${info.free_gb} GB free`;
+      $("w-free").classList.toggle("low", info.low_space);
+    }
+    $("w-download").textContent = info.download;
+    $("w-python").textContent = info.python;
+    $("w-shortcuts").textContent = info.shortcuts;
+    $("d-next").textContent = isMac
+      ? "It runs in a Terminal window; keep that open while you use it. Next time, open biomnikhil from Applications or the Desktop."
+      : "It runs in a console window; keep that open while you use it. Next time, open biomnikhil from the Desktop or the Start menu.";
+    $("w-install").disabled = false;
+    show("welcome");
+  },
+  progress(state) {
+    if ($("installing").hidden) { show("installing"); rotateTips(); }
+    const list = $("steps");
+    list.replaceChildren(...state.steps.map((s) => {
+      const li = document.createElement("li");
+      li.className = s.state;
+      li.innerHTML = '<span class="mark"></span><span class="label"></span>';
+      li.querySelector(".label").textContent = s.label;
+      if (s.sub) { const sub = document.createElement("span"); sub.className = "sub"; sub.textContent = s.sub; li.append(sub); }
+      return li;
+    }));
+    $("status").textContent = state.status;
+    $("pct").textContent = state.pct + "%";
+    $("fill").style.width = state.pct + "%";
+  },
+  done(result) {
+    $("d-made").replaceChildren(...result.made.map((m) => Object.assign(document.createElement("span"), { textContent: m })));
+    $("d-note").hidden = !result.note;
+    $("d-note").textContent = result.note || "";
+    show("done");
+  },
+  error(err) {
+    $("e-title").textContent = err.title;
+    $("e-message").textContent = err.message;
+    $("e-details").textContent = err.details || "";
+    $("e-details").hidden = true;
+    $("e-toggle").textContent = "Show details";
+    $("e-toggle").hidden = !err.details;
+    $("e-retry").hidden = !err.retry;
+    $("e-close").className = err.retry ? "link" : "primary";
+    show("error");
+    if (!err.retry) $("e-close").focus();
+  },
+};
+
+$("w-install").onclick = () => { $("w-install").disabled = true; api().install(); };
+$("w-cancel").onclick = () => api().close();
+$("d-open").onclick = () => { $("d-open").disabled = true; api().open_app(); };
+$("d-close").onclick = () => api().close();
+$("e-close").onclick = () => api().close();
+$("e-retry").onclick = () => api().install();
+$("e-toggle").onclick = () => {
+  const d = $("e-details");
+  d.hidden = !d.hidden;
+  $("e-toggle").textContent = d.hidden ? "Show details" : "Hide details";
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("welcome").hidden) api().close();
+});
+window.addEventListener("pywebviewready", async () => ui.welcome(await api().info()));
+</script>
+</body>
+</html>

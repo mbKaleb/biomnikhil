@@ -4,10 +4,10 @@
 #   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  test build: published as a
 #     pre-release, which releases/latest (and so every install) ignores
 #
-# The release carries biomnikhil.zip: the tracked source at that tag plus a
-# VERSION file. Lab installs download it from
+# The release carries biomnikhil.zip: the tracked source at that tag plus
+# app/VERSION. Lab installs download it from
 # https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip
-# and run.ps1 / run-mac.sh fetch the same URL to update themselves. The notes
+# and app/run.ps1 / app/run-mac.sh fetch the same URL to update themselves. The notes
 # are the commit subjects since the previous tag.
 name: Release
 
@@ -29,8 +29,10 @@ jobs:
       - name: Build biomnikhil.zip
         run: |
           echo "${GITHUB_REF_NAME#v}" > VERSION
-          git archive --format=zip --prefix=biomnikhil/ --add-file=VERSION \
-            -o biomnikhil.zip "$GITHUB_REF_NAME"
+          # VERSION goes in app/ (the --prefix before --add-file); the tracked
+          # files go under biomnikhil/ (the last --prefix).
+          git archive --format=zip --prefix=biomnikhil/app/ --add-file=VERSION \
+            --prefix=biomnikhil/ -o biomnikhil.zip "$GITHUB_REF_NAME"
 
       - name: Write notes
         run: |
