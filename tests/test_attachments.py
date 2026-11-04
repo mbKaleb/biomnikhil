@@ -1,5 +1,7 @@
 """A run only gets the files attached to its message: nothing carries over
 from earlier runs or chats through the namespace, recipes or input folders."""
+from pathlib import Path
+
 from app.config import Config
 from app.services import biomni_runner, hints
 from app.services.tasks import registry
@@ -93,4 +95,6 @@ def test_recipe_has_no_files_from_its_run():
     assert "sample1" not in recipe
     assert str(Config.OUTPUT_PATH) not in recipe
     assert 'a = "<INPUT_FILE>"' in recipe
-    assert 'c = "<OUTPUT_DIR>/plots/a.png"' in recipe
+    # What follows the placeholder keeps the run's own path separators.
+    expected_output = Path("<OUTPUT_DIR>") / "plots" / "a.png"
+    assert f'c = "{expected_output}"' in recipe
