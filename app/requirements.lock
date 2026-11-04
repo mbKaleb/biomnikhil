@@ -16,7 +16,9 @@ anyio==4.15.1
 arxiv==4.0.1
     # via -r app/requirements.txt
 beautifulsoup4==4.15.0
-    # via -r app/requirements.txt
+    # via
+    #   -r app/requirements.txt
+    #   googlesearch-python
 biomni==0.0.8
     # via -r app/requirements.txt
 biopython==1.88
@@ -61,6 +63,8 @@ fonttools==4.67.0
     # via matplotlib
 formulaic==1.2.2
     # via statsmodels
+googlesearch-python==1.3.0
+    # via -r app/requirements.txt
 gseapy==1.3.1
     # via -r app/requirements.txt
 h11==0.16.0
@@ -275,6 +279,7 @@ requests==2.34.2
     # via
     #   -r app/requirements.txt
     #   arxiv
+    #   googlesearch-python
     #   gseapy
     #   langsmith
     #   pymed

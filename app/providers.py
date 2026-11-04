@@ -21,6 +21,8 @@ SOURCE = "Anthropic"
 # bedrock-app-access role's policy allows.
 MODELS: tuple[str, ...] = ("anthropic.claude-haiku-4-5",)
 
+EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
 _LIST_TTL = 6 * 3600
 _listed: dict = {"at": 0.0, "models": None, "error": None}
 _list_lock = threading.Lock()
@@ -60,6 +62,49 @@ def rejects_sampling_params(model_id: str) -> bool:
     return False
 
 
+def supported_efforts(model_id: str) -> tuple[str, ...]:
+    """The output_config.effort levels a model accepts, lowest first; empty
+    if it 400s on effort (Haiku 4.5, Sonnet 4.5, anything unversioned). Like
+    rejects_sampling_params, keyed on the version."""
+    parsed = _parse_version(model_id)
+    if not parsed:
+        return ()
+    family, version, _ = parsed
+    if family in ("fable", "mythos"):
+        return EFFORTS
+    if family == "opus" and version == (4, 5):
+        return EFFORTS[:3]
+    if family in ("opus", "sonnet") and version == (4, 6):
+        return tuple(e for e in EFFORTS if e != "xhigh")
+    if (family == "opus" and version >= (4, 7)) or (family == "sonnet" and version >= (5, 0)):
+        return EFFORTS
+    return ()
+
+
+def max_output_tokens(model_id: str) -> int | None:
+    """The most a model can write in one reply, thinking included; None if
+    unknown. Keyed on the version, like the other capabilities here."""
+    parsed = _parse_version(model_id)
+    if not parsed:
+        return None
+    family, version, _ = parsed
+    if family in ("fable", "mythos") or (family in ("opus", "sonnet") and version >= (4, 6)):
+        return 128_000
+    if family in ("opus", "sonnet", "haiku") and version >= (4, 5):
+        return 64_000
+    return None
+
+
+def needs_explicit_thinking(model_id: str) -> bool:
+    """True for models that run without thinking unless sent {"type":
+    "adaptive"}: Opus 4.6-4.8 and Sonnet 4.6. Newer ones think by default."""
+    parsed = _parse_version(model_id)
+    if not parsed:
+        return False
+    family, version, _ = parsed
+    return (family == "opus" and (4, 6) <= version <= (4, 8)) or (family == "sonnet" and version == (4, 6))
+
+
 def group_models(models: list[dict]) -> list[dict]:
     """Split model objects into the family/version pair the UI shows as two
     selects: [{"name": "opus", "versions": [{"id", "label", "available",
@@ -76,6 +121,7 @@ def group_models(models: list[dict]) -> list[dict]:
             # No status field (first-party API, static list) means usable.
             "available": obj.get("status", "available") == "available",
             "status_reason": obj.get("status_reason"),
+            "efforts": list(supported_efforts(obj["id"])),
             "model": obj,
         })
     return [{"name": name, "versions": versions} for name, versions in families.items()]

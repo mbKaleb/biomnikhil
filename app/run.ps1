@@ -28,6 +28,8 @@ $VenvPy = "$Venv\Scripts\python.exe"
 $Tools = "$Root\runtime\tools"
 $Uv = "$Tools\uv.exe"
 $UvVersion = "0.13.5"
+# SHA-256 of that release's uv-x86_64-pc-windows-msvc.zip; change both together.
+$UvSha256 = "a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a"
 $env:UV_CACHE_DIR = "$Tools\cache"
 $env:UV_PYTHON_INSTALL_DIR = "$Root\runtime\python"
 
@@ -61,6 +63,10 @@ function Install-Uv {  # the pinned uv in runtime\tools; $true when it's there
     try {
         New-Item -ItemType Directory -Force $Tools | Out-Null
         Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip" -OutFile "$Tools\uv.zip" -UseBasicParsing -TimeoutSec 300
+        if ((Get-FileHash "$Tools\uv.zip" -Algorithm SHA256).Hash -ne $UvSha256) {
+            Remove-Item "$Tools\uv.zip"
+            throw "the downloaded uv doesn't match its pinned SHA-256"
+        }
         Expand-Archive "$Tools\uv.zip" -DestinationPath $Tools -Force
         Remove-Item "$Tools\uv.zip"
         return $true
@@ -83,33 +89,19 @@ function Test-App($Url) {
 # --- update: release installs (app\VERSION from the release zip, no .git
 # folder) update themselves from the latest GitHub release. data\ and runtime\
 # aren't in the zip, so they're kept. Git checkouts update with git; test
-# builds (versions like 0.2.0-rc1) stay on the build being tested.
-if ((Test-Path "$Root\app\VERSION") -and -not (Test-Path "$Root\.git")) {
-    $updated = $false
+# builds (versions like 0.2.0-rc1) stay on the build being tested. Only signed
+# releases are taken: app\installer\update.py checks the signature, the version
+# and the zip's checksum before it swaps any file in. It needs a Python, so a
+# first run (nothing installed yet, and the zip was just downloaded) skips it.
+if ((Test-Path "$Root\app\VERSION") -and -not (Test-Path "$Root\.git") -and -not $env:BIOMNIKHIL_NO_UPDATE) {
     $current = (Get-Content "$Root\app\VERSION" -Raw).Trim()
-    if (-not $env:BIOMNIKHIL_NO_UPDATE -and -not $current.Contains("-")) {
-        try {
-            $latest = (Invoke-RestMethod "https://api.github.com/repos/mbKaleb/biomnikhil/releases/latest" -TimeoutSec 10).tag_name.TrimStart("v")
-            if ($latest -and $latest -ne $current) {
-                Write-Host "updating biomnikhil $current -> $latest..."
-                $tmp = Join-Path $env:TEMP "biomnikhil-update"
-                Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-                New-Item -ItemType Directory $tmp | Out-Null
-                Invoke-WebRequest "https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip" -OutFile "$tmp\biomnikhil.zip" -UseBasicParsing
-                Expand-Archive "$tmp\biomnikhil.zip" -DestinationPath $tmp
-                # robocopy merges into existing folders; exit codes 8+ are failures
-                robocopy "$tmp\biomnikhil" $Root /E /NFL /NDL /NJH /NJS /NP | Out-Null
-                if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
-                Remove-Item $tmp -Recurse -Force
-                $updated = $true
-            }
-        } catch {
-            Write-Host "update failed ($($_.Exception.Message)) - starting $current"
+    $updatePy = @("$Tools\installer\Scripts\python.exe", $VenvPy) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $current.Contains("-") -and $updatePy) {
+        $code = Invoke-Native { & $updatePy "$Root\app\installer\update.py" }
+        if ($code -eq 0) {
+            & "$Root\app\run.ps1" @PSBoundParameters  # restart on the new script
+            exit $LASTEXITCODE
         }
-    }
-    if ($updated) {
-        & "$Root\app\run.ps1" @PSBoundParameters  # restart on the new script
-        exit $LASTEXITCODE
     }
 }
 

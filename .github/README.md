@@ -19,8 +19,8 @@ Needs a 64-bit Intel/AMD Windows PC, or an Apple Silicon Mac on macOS 15 or
 newer; about 16 GB free; and internet access to PyPI, GitHub, the Biomni
 data lake (S3), Bedrock and Cognito. Setup checks all of these first.
 
-1. Download
-   [biomnikhil.zip](https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip)
+1. Download `biomnikhil-<version>.zip` from the
+   [latest release](https://github.com/mbKaleb/biomnikhil/releases/latest)
    and extract it somewhere that isn't synced (not OneDrive or iCloud
    Desktop/Documents), e.g. `C:\biomnikhil` or `~/biomnikhil`.
 2. Double-click **setup-windows** or **setup-mac**.
@@ -55,6 +55,31 @@ shortcut(s).
 
 ## Releasing
 
+Every push to `main` runs the tests (`tests/`, on macOS and Windows, with the
+exact versions in `app/requirements.lock`), and a release is only published
+once they pass. Run them locally first:
+
+```bash
+uv venv .venv && uv pip install --python .venv -r app/requirements.lock -r tests/requirements.txt
+.venv/bin/python -m pytest tests
+```
+
+Releases are signed. The workflow writes `release.txt` (the version and the
+zip's SHA-256) and signs it with the `RELEASE_SIGNING_KEY` repository secret,
+an Ed25519 private key in PEM form; installs only update to a release whose
+signature matches `PUBLIC_KEY` in `app/installer/update.py`, and only to a
+newer version. A release without the secret fails rather than shipping
+unsigned. To set the secret from the key file:
+
+```bash
+gh secret set RELEASE_SIGNING_KEY -R mbKaleb/biomnikhil < ~/.config/biomnikhil/release-signing-key.pem
+```
+
+Keep a backup of that file somewhere safe: losing it means installs can't
+update until they're reinstalled from a zip with a new `PUBLIC_KEY`. To
+rotate the key, ship one release signed with the old key whose `PUBLIC_KEY`
+is the new one, then switch the secret.
+
 Commit and push to `main`, then tag a test build and try it:
 
 ```bash
@@ -62,7 +87,8 @@ git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
 ```
 
 `.github/workflows/release.yml` publishes it as a pre-release with
-`biomnikhil.zip`. Lab installs ignore pre-releases, and a test install
+`biomnikhil-0.2.0-rc1.zip` (plus the same file as `biomnikhil.zip`, the name
+installs update from, and the signed `release.txt`). Lab installs ignore pre-releases, and a test install
 doesn't self-update; download the zip from that pre-release's page. Broken?
 Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
 
@@ -104,7 +130,8 @@ app/
   run.ps1, run-mac.sh     launchers: fetch uv, start the installer, self-update, open the app window
   installer/              the install window (pywebview + ui/index.html), same on Mac and Windows:
                           system checks, Python, packages, data/.env, shortcuts;
-                          window.py is the app window (runs waitress in the background)
+                          window.py is the app window (runs waitress in the background);
+                          update.py the signed self-update
   wsgi.py                 app entrypoint (app.wsgi:app)
   requirements.txt/.lock  dependencies / exact versions installs use
   .env.example            template for data/.env
@@ -117,7 +144,8 @@ app/
   templates/, static/     UI (static/icons: the app icon)
 data/                     created on first run: .env, chats, uploads, data lake
 runtime/                  created on first run: uv, Python, the app's environment
-.github/                  this README and the release workflow (not shipped)
+.github/                  this README, the test and release workflows (not shipped)
+tests/                    pytest suite: security guards, biomni patches, self-update (not shipped)
 ```
 
 ## Known seams

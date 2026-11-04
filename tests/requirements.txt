@@ -1,0 +1,2 @@
+# Test-only packages, on top of app/requirements.lock (see .github/workflows/test.yml).
+pytest==9.2.0

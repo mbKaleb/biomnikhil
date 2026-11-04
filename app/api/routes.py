@@ -58,9 +58,6 @@ def chat():
         if safe and path.is_file():
             attached.append(str(path))
     display_prompt = prompt
-    if attached:
-        listing = "\n".join(f"- {p}" for p in attached)
-        prompt = f"{prompt}\n\nThe user attached these files (local paths):\n{listing}"
 
     # Attach the run to a chat: use the given one, or start a new chat titled
     # from the prompt so history always has a home.
@@ -72,7 +69,7 @@ def chat():
         chat_id = chat_store.create_chat(title)["id"]
     chat_store.add_message(chat_id, "user", display_prompt)
 
-    task_id = biomni_runner.submit(prompt, chat_id=chat_id, user=auth.current_user())
+    task_id = biomni_runner.submit(prompt, chat_id=chat_id, user=auth.current_user(), attached=attached)
     return jsonify(task_id=task_id, chat_id=chat_id), 202
 
 
@@ -93,7 +90,7 @@ def models_payload() -> dict:
         info["models"] = [{"id": current}, *info["models"]]
     # Family + version, for the UI's two selects.
     info["families"] = group_models(info["models"])
-    return {"current": current, **info}
+    return {"current": current, "effort": biomni_runner.get_effort(), **info}
 
 
 @bp.get("/models")
@@ -110,6 +107,18 @@ def set_model_route():
         return jsonify(error="model is required"), 400
     current = biomni_runner.set_model(model)
     return jsonify(current=current)
+
+
+@bp.post("/effort")
+def set_effort_route():
+    """Empty/absent effort means the model's default."""
+    from ..providers import EFFORTS
+
+    body = request.get_json(silent=True) or {}
+    effort = (body.get("effort") or "").strip()
+    if effort and effort not in EFFORTS:
+        return jsonify(error=f"effort must be one of {', '.join(EFFORTS)}"), 400
+    return jsonify(effort=biomni_runner.set_effort(effort))
 
 
 @bp.get("/datalake")
@@ -200,6 +209,17 @@ def _agent_card() -> dict:
     agent = biomni_runner.agent_status()
     if agent["built"]:
         checks.append(_check("Agent", "pass", "loaded"))
+        hidden = biomni_runner.hidden_tools
+        if hidden:
+            reasons = sorted({why.split(" (")[0] for why in hidden.values()})
+            checks.append(_check("biomni tools", "info",
+                                 f"{len(hidden)} hidden because they can't run here: " + "; ".join(reasons)))
+        usage = biomni_runner.last_run_usage
+        if usage:
+            used = len(usage["tools"]) + len(usage["data_lake"])
+            checks.append(_check("Last run", "pass" if used else "warn",
+                                 biomni_runner._usage_line(usage)
+                                 + ("" if used else " — no biomni tools or data used")))
     elif agent["building"]:
         checks.append(_check("Agent", "pending", "building — loading tools and the data lake index…"))
     else:
@@ -467,11 +487,15 @@ def stream_task(task_id: str):
 
     def generate():
         seen = 0
+        max_steps_sent = False
         while True:
             snap = registry.get(task_id)
             if snap is None:
                 yield _sse({"error": "unknown task"})
                 return
+            if snap["max_steps"] is not None and not max_steps_sent:
+                yield _sse({"max_steps": snap["max_steps"]})
+                max_steps_sent = True
             steps = snap["steps"]
             for step in steps[seen:]:
                 yield _sse({"step": step})
@@ -483,6 +507,7 @@ def stream_task(task_id: str):
                         "result": snap.get("result"),
                         "error": snap.get("error"),
                         "files": snap.get("files") or [],
+                        "cancelled": snap.get("cancelled"),
                     }
                 )
                 return

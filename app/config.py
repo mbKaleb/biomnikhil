@@ -58,6 +58,12 @@ class Config:
         _env("BIOMNI_OUTPUT_PATH", str(_DATA_ROOT / "user" / "outputs"))
     ).resolve()
 
+    # Each run's attached files, linked in for the length of that run, so the
+    # agent gets a folder holding only what the user attached.
+    INPUT_PATH: Path = Path(
+        _env("BIOMNI_INPUT_PATH", str(_DATA_ROOT / "user" / "inputs"))
+    ).resolve()
+
     # Generated harness state: cached environment-capability probes (so the
     # agent doesn't re-discover the same pyopenms API surface by trial and
     # error every run) and verified working-code recipes (see services/hints.py).

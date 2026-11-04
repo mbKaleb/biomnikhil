@@ -176,7 +176,8 @@ def _recipe_note(domain: str) -> str:
         f"environment exists at {path} — read it first "
         f"(open(...).read()) and adapt it rather than starting from "
         f"scratch; it's known to actually produce real output here, not "
-        f"just plausible-looking code.\n"
+        f"just plausible-looking code. <INPUT_FILE> and <OUTPUT_DIR> in it "
+        f"stand for this run's own attached files and output folder.\n"
     )
 
 
@@ -219,6 +220,32 @@ _EXECUTE_RE = re.compile(r"<execute>(.*?)</execute>", re.DOTALL)
 _ERROR_MARKERS = ("Traceback (most recent call last)", "Error:", "error:")
 
 
+def _path_pattern(root: Path) -> str:
+    """Regex for a folder's path, whichever slashes the code spelled it with."""
+    parts = []
+    for part in re.split(r"[/\\\\]", str(root)):
+        parts.append(re.escape(part))
+    return r"[/\\]+".join(parts)
+
+
+def _scrub_run_files(code: str) -> str:
+    """Replaces the run's own files with placeholders. Recipes are offered to
+    later runs in any chat, which must not be pointed at this run's files."""
+    sep = r"[/\\]+"
+    segment = r"[^/\\\s\"']+"
+    inputs = _path_pattern(Config.INPUT_PATH) + sep + segment + sep + segment
+    uploads = _path_pattern(Config.UPLOAD_PATH) + sep + segment
+    outputs = _path_pattern(Config.OUTPUT_PATH) + sep + segment
+    code = re.sub(inputs, "<INPUT_FILE>", code)
+    code = re.sub(uploads, "<INPUT_FILE>", code)
+    code = re.sub(outputs, "<OUTPUT_DIR>", code)
+    # Names written on their own, like os.path.join(folder, "sample1.mzML").
+    if Config.UPLOAD_PATH.is_dir():
+        for path in Config.UPLOAD_PATH.iterdir():
+            code = code.replace(path.name, "<INPUT_FILE>")
+    return code
+
+
 def _recipe_path(domain: str):
     d = Config.HARNESS_PATH / "recipes"
     d.mkdir(parents=True, exist_ok=True)
@@ -252,7 +279,7 @@ def save_recipe_if_verified(prompt: str, steps: list[dict], files: list[dict]) -
             nxt = agent_texts[i + 1] if i + 1 < len(agent_texts) else ""
             if any(marker in nxt for marker in _ERROR_MARKERS):
                 continue
-            good_blocks.append(code.strip())
+            good_blocks.append(_scrub_run_files(code.strip()))
 
     if not good_blocks:
         return

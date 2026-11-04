@@ -13,6 +13,7 @@ openpyxl        # Excel files
 beautifulsoup4  # literature / web tools
 lxml
 PyPDF2          # PDF reading in literature tools
+googlesearch-python  # web search in literature tools (biomni.tool.literature imports it)
 requests
 matplotlib      # plotting, used across most tool modules
 scipy

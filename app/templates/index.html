@@ -74,6 +74,9 @@
       background: #3b5bdb; color: #fff; font: inherit; cursor: pointer;
     }
     button:disabled { opacity: .5; cursor: wait; }
+    #prompt { max-height: 40vh; overflow-y: auto; }
+    /* Nothing to send isn't "busy", so no wait cursor. */
+    #run.nothing-to-send:disabled { cursor: not-allowed; }
     #stop {
       background: #7a2333; border: 1px solid #a03247; margin-left: .5rem;
     }
@@ -393,6 +396,55 @@
       border-bottom-left-radius: 4px;
     }
     .msg.error { background: #2c1420; border-color: #6e2438; }
+    .msg.stopped { background: #131f38; border-color: #2c3f63; color: #a9bce0; }
+
+    /* ---- Markdown inside an assistant answer ---- */
+    .msg-markdown { white-space: normal; }
+    .msg-markdown > :first-child { margin-top: 0; }
+    .msg-markdown > :last-child { margin-bottom: 0; }
+    .msg-markdown p, .msg-markdown ul, .msg-markdown ol,
+    .msg-markdown pre, .msg-markdown table, .msg-markdown blockquote { margin: .6rem 0; }
+    .msg-markdown ul, .msg-markdown ol { padding-left: 1.4rem; }
+    .msg-markdown h1, .msg-markdown h2, .msg-markdown h3,
+    .msg-markdown h4, .msg-markdown h5, .msg-markdown h6 {
+      margin: 1rem 0 .4rem; font-size: 1rem; line-height: 1.3;
+    }
+    .msg-markdown h1 { font-size: 1.2rem; }
+    .msg-markdown h2 { font-size: 1.1rem; }
+    .msg-markdown a { color: #8fb0ff; }
+    .msg-markdown code {
+      padding: .08rem .3rem; background: #0d1526; border-radius: 4px; font-size: .85em;
+    }
+    .msg-markdown pre {
+      padding: .6rem .8rem; background: #0d1526; border: 1px solid #24365a;
+      border-radius: 8px; overflow-x: auto; white-space: pre;
+    }
+    .msg-markdown pre code { padding: 0; background: none; }
+    .msg-markdown table {
+      display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: .85rem;
+    }
+    .msg-markdown th, .msg-markdown td { padding: .3rem .6rem; border: 1px solid #2c4a74; }
+    .msg-markdown th { background: #1a2a4c; }
+    .msg-markdown blockquote {
+      padding-left: .8rem; border-left: 3px solid #2c4a74; color: #a9bce0;
+    }
+    .msg-file-link {
+      display: inline; margin: 0; padding: 0; background: none; border: 0;
+      color: #8fb0ff; font: inherit; text-decoration: underline; cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+    .msg-file-link:hover { color: #b9ccff; }
+
+    /* ---- example and follow-up prompts: a click only fills the prompt ---- */
+    .prompt-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .followups { margin-top: .7rem; white-space: normal; }
+    .empty-state { margin-top: 1.5rem; color: #7c90b4; font-size: .85rem; }
+    .empty-state .prompt-chips { margin-top: .5rem; }
+    .prompt-chip {
+      margin: 0; padding: .3rem .7rem; background: #131f38; border: 1px solid #2c3f63;
+      border-radius: 999px; color: #a9bce0; font-size: .8rem; text-align: left;
+    }
+    .prompt-chip:hover { background: #1a2a4c; border-color: #5b7fe8; color: #dbe4f3; }
     .copy-btn {
       display: flex; align-items: center; gap: .35rem; margin: .7rem 0 0 auto;
       padding: .25rem .6rem; background: transparent;
@@ -781,6 +833,9 @@
     #dropzone:hover, #dropzone.dragover {
       border-color: #5b7fe8; color: #a9bce0; background: #14213d;
     }
+    #tab-task.dragover {
+      outline: 1.5px dashed #5b7fe8; outline-offset: 6px; border-radius: 8px;
+    }
     #dropzone .dz-icon { font-size: 1.6rem; display: block; margin-bottom: .35rem; }
     #dropzone .dz-hint { font-size: .78rem; opacity: .75; }
     #file-list { list-style: none; margin: 1.1rem 0 0; padding: 0; }
@@ -823,7 +878,30 @@
     }
     .file-remove:hover { background: #b03547; border-color: #b03547; color: #fff; }
     #upload-status { margin-top: .6rem; font-size: .85rem; color: #7c90b4; min-height: 1.2em; }
-    .attach-hint { margin-top: .5rem; font-size: .8rem; color: #7c90b4; }
+    .attach-hint {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+      margin-top: .5rem; font-size: .8rem; color: #7c90b4;
+    }
+    .attach-hint[hidden] { display: none; }
+    .attach-chip {
+      display: inline-flex; align-items: center; gap: .35rem; max-width: 100%;
+      padding: .15rem .35rem .15rem .6rem; background: #131f38;
+      border: 1px solid #2c3f63; border-radius: 999px; color: #a9bce0;
+    }
+    .attach-chip.missing { background: #2c1420; border-color: #6e2438; color: #f87171; }
+    .attach-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .attach-chip-size { color: #7c90b4; white-space: nowrap; }
+    .attach-chip-remove {
+      margin: 0; padding: 0 .3rem; background: none; border: 0;
+      color: inherit; font-size: .75rem; line-height: 1.4;
+    }
+    .attach-chip-remove:hover { color: #fff; }
+    .attach-summary, .attach-clear {
+      margin: 0; padding: .15rem .3rem; background: none; border: 0;
+      color: #8fb0ff; font-size: .8rem;
+    }
+    .attach-clear { text-decoration: underline; }
+    .task-upload-status { margin-top: .4rem; font-size: .8rem; color: #7c90b4; }
     #file-toolbar {
       display: flex; align-items: stretch; gap: .5rem; margin-top: .9rem;
       flex-wrap: wrap;
@@ -868,6 +946,9 @@
     </select>
     <select id="model-version" class="model-select" title="Model version" disabled>
       <option value="">—</option>
+    </select>
+    <select id="model-effort" class="model-select" title="Effort" disabled>
+      <option value="">Default effort</option>
     </select>
     {% if user %}<a id="user-link" href="/logout" title="Sign out">{{ user.email }}</a>{% endif %}
     <button id="trace-btn" title="Agent trace">&gt;_</button>
@@ -945,10 +1026,11 @@
 
     <section id="tab-task" class="panel active">
       <div id="messages"></div>
-      <textarea id="prompt" placeholder="Ask the agent something…"></textarea>
+      <textarea id="prompt" placeholder="Ask the agent something… (Enter to run, Shift+Enter for newline)"></textarea>
       <button id="run">Run task</button>
       <button id="stop" hidden><i class="fa-solid fa-stop"></i> Stop</button>
       <div class="attach-hint" id="attach-hint" hidden></div>
+      <div class="task-upload-status" id="task-upload-status" hidden></div>
     </section>
 
     <section id="tab-outputs" class="panel">
@@ -1035,6 +1117,10 @@
   <!-- Model list embedded at render time (served from the backend cache) so
        the model selects fill instantly, without waiting on /api/models. -->
   <script id="models-data" type="application/json">{{ models|tojson }}</script>
+  <!-- Vendored (app/static/vendor/) so answers render with no internet
+       connection. app.js falls back to plain text if either is missing. -->
+  <script src="{{ url_for('static', filename='vendor/marked.umd.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

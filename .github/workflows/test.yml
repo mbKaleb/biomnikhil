@@ -1,0 +1,40 @@
+# The tests (tests/), on the two platforms biomnikhil installs on, with the
+# exact package versions installs use (app/requirements.lock). Runs on every
+# push to main and pull request, and gates every release (release.yml calls
+# it before publishing anything).
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.13.5"  # the uv the launchers pin
+          enable-cache: true
+          cache-dependency-glob: |
+            app/requirements.lock
+            tests/requirements.txt
+
+      - name: Install
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv -r app/requirements.lock -r tests/requirements.txt
+
+      - name: Test
+        run: uv run --no-project --python .venv python -m pytest tests -v

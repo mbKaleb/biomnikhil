@@ -20,6 +20,9 @@ ROOT=$(pwd)
 VENV="$ROOT/runtime/.venv"
 UV="$ROOT/runtime/tools/uv"
 UV_VERSION=0.13.5
+# SHA-256 of that release's uv-<arch>-apple-darwin.tar.gz; change with UV_VERSION.
+UV_SHA256_ARM64=743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73
+UV_SHA256_X86_64=b0f52b0e3945b4107d89024ea38e625683011fbfc05a0d98f9fa2d6dcee28c66
 export UV_CACHE_DIR="$ROOT/runtime/tools/cache" UV_PYTHON_INSTALL_DIR="$ROOT/runtime/python"
 
 fail() {  # fail "what went wrong" "what to do about it"
@@ -38,40 +41,45 @@ ensure_uv() {  # the pinned uv in runtime/tools
   mkdir -p runtime/tools
   # This Mac's own build, so an Intel Mac still gets as far as the installer's
   # "not supported" message.
-  curl -fsSL --max-time 300 \
-    "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$(uname -m | sed s/arm64/aarch64/)-apple-darwin.tar.gz" \
-    | tar -xz -C runtime/tools --strip-components 1
+  local arch sha tarball
+  arch=$(uname -m)
+  if [ "$arch" = arm64 ]; then sha=$UV_SHA256_ARM64; else sha=$UV_SHA256_X86_64; fi
+  tarball=runtime/tools/uv.tar.gz
+  curl -fsSL --max-time 300 -o "$tarball" \
+    "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$(echo "$arch" | sed s/arm64/aarch64/)-apple-darwin.tar.gz"
+  if [ "$(shasum -a 256 "$tarball" | cut -d ' ' -f 1)" != "$sha" ]; then
+    rm -f "$tarball"
+    echo "the downloaded uv doesn't match its pinned SHA-256" >&2
+    return 1
+  fi
+  tar -xzf "$tarball" -C runtime/tools --strip-components 1
+  rm -f "$tarball"
 }
 
 # --- update: release installs (app/VERSION from the release zip, no .git
 # folder) update themselves from the latest GitHub release. data/ and runtime/
 # aren't in the zip, so they're kept. Git checkouts update with git; test
-# builds (versions like 0.2.0-rc1) stay on the build being tested.
+# builds (versions like 0.2.0-rc1) stay on the build being tested. Only signed
+# releases are taken: app/installer/update.py checks the signature, the version
+# and the zip's checksum before it swaps any file in. It needs a Python, so a
+# first run (nothing installed yet, and the zip was just downloaded) skips it.
+IV=runtime/tools/installer  # the installer's Python environment, with pywebview; it runs the app window too
 if [ -f app/VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ] \
    && [[ "$(cat app/VERSION)" != *-* ]]; then
-  current=$(cat app/VERSION)
-  latest=$(curl -fs --max-time 10 https://api.github.com/repos/mbKaleb/biomnikhil/releases/latest \
-    | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1) || latest=""
-  if [ -n "$latest" ] && [ "$latest" != "$current" ]; then
-    echo ">> Updating biomnikhil $current -> $latest"
-    tmp=$(mktemp -d)
-    if curl -fsSL --max-time 300 -o "$tmp/biomnikhil.zip" \
-         https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip \
-       && unzip -q "$tmp/biomnikhil.zip" -d "$tmp"; then
-      cp -R "$tmp/biomnikhil/." .
-      rm -rf "$tmp"
-      exec bash app/run-mac.sh "$@"  # restart on the new script
-    fi
-    rm -rf "$tmp"
-    echo ">> Update failed, starting $current."
+  update_py=""
+  for candidate in "$IV/bin/python" "$VENV/bin/python"; do
+    if [ -x "$candidate" ]; then update_py=$candidate; break; fi
+  done
+  if [ -n "$update_py" ]; then
+    code=0
+    "$update_py" app/installer/update.py || code=$?
+    [ "$code" != 0 ] || exec bash app/run-mac.sh "$@"  # restart on the new script
   fi
 fi
 
 # --- install -------------------------------------------------------------------
 # The installer writes .biomnikhil-ready last; pip's own launcher breaks when
 # the folder moves, which also sends a run back through the installer.
-IV=runtime/tools/installer  # the installer's Python environment, with pywebview; it runs the app window too
-
 installer_env() {  # makes $IV unless it's there
   "$IV/bin/python" -c 'import webview' >/dev/null 2>&1 && return 0
   ensure_uv >>data/install.log 2>&1 || fail "Couldn't download the installer." \

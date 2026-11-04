@@ -21,6 +21,7 @@ class Task:
     cancel_requested: bool = False
     chat_id: str | None = None
     files: list[dict] = field(default_factory=list)  # output files this run produced
+    max_steps: int | None = None  # the run's step cap, when it has one
 
     def snapshot(self) -> dict:
         return {
@@ -32,6 +33,8 @@ class Task:
             "error": self.error,
             "created_at": self.created_at,
             "files": list(self.files),
+            "cancelled": self.cancel_requested,
+            "max_steps": self.max_steps,
         }
 
 
@@ -87,6 +90,12 @@ class TaskRegistry:
             task = self._tasks.get(task_id)
             if task:
                 task.status = "running"
+
+    def set_max_steps(self, task_id: str, max_steps: int) -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task.max_steps = max_steps
 
     def finish(self, task_id: str, result: str, files: list[dict] | None = None) -> None:
         with self._lock:

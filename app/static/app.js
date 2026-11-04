@@ -89,6 +89,11 @@ function setTraceStatus(text) {
   traceStatusEl.textContent = text;
 }
 
+// The current run's progress, for the live status line. The trace panel keeps
+// every earlier run of the chat, so its step labels can't supply this count.
+let runStepCount = 0;
+let runMaxSteps = null; // sent by the server; absent for a run with no cap
+
 // Elapsed-run ticker in the trace header. runT0 starts at "now" but gets
 // corrected backwards by the first replayed SSE step, so a re-attach after
 // a page refresh still shows time since the run actually began.
@@ -167,6 +172,8 @@ function traceStart() {
   // rather than wiping it — matches what a reload would show.
   traceLive.remove();
   setTraceStatus("waiting on model…");
+  runStepCount = 0;
+  runMaxSteps = null;
   stepsEl.appendChild(traceLive);
   traceEl.classList.add("open", "running");
   startElapsed();
@@ -212,12 +219,32 @@ function parseSegments(text) {
 const SEG_LABELS = { execute: "code", observation: "output", solution: "answer" };
 
 // What the agent is doing next, inferred from the segment it just emitted.
-const NEXT_STATUS = {
-  execute: "running code…",
-  observation: "waiting on model…",
-  thought: "thinking…",
-  solution: "finishing up…",
+const PHASE_LABELS = {
+  execute: "running code",
+  observation: "reading output",
+  thought: "thinking",
+  solution: "writing answer",
 };
+
+// The first module a code segment imports, shown as the tool in use.
+function findImportedTool(code) {
+  const importMatch = code.match(/^\s*(?:from|import)\s+(\w+)/m);
+  if (!importMatch) return null;
+  return importMatch[1];
+}
+
+// For example: "step 7/150 · running code · using pyopenms".
+function buildProgressStatus(phase, tool) {
+  const parts = [];
+  if (runMaxSteps) {
+    parts.push(`step ${runStepCount}/${runMaxSteps}`);
+  } else {
+    parts.push(`step ${runStepCount}`);
+  }
+  parts.push(PHASE_LABELS[phase] || "thinking");
+  if (tool) parts.push(`using ${tool}`);
+  return parts.join(" · ");
+}
 
 function fmtTime(ts) {
   return new Date(ts * 1000).toLocaleTimeString([], {
@@ -273,11 +300,14 @@ function isTabular(text) {
 }
 
 function traceLine(kind, text, ts) {
+  // Counted before filtering: the server's step cap counts hidden steps too.
+  if (kind === "agent" && traceLive.parentNode === stepsEl) runStepCount += 1;
   const cleaned = kind === "agent" ? cleanTrace(text) : text;
   if (cleaned === null) return;
   const ln = document.createElement("div");
   ln.className = `ln ${kind}`;
   let lastSegType = null;
+  let lastSegTool = null;
   if (kind === "run_start" || kind === "run_end") {
     // Run boundary divider: play icon at start, outcome icon at end.
     const icons = { done: "square", failed: "xmark", stopped: "ban" };
@@ -322,6 +352,8 @@ function traceLine(kind, text, ts) {
     ln.appendChild(head);
     for (const seg of parseSegments(cleaned)) {
       lastSegType = seg.type;
+      lastSegTool = null;
+      if (seg.type === "execute") lastSegTool = findImportedTool(seg.text);
       const el = document.createElement("div");
       el.className = `seg seg-${seg.type}`;
       if (seg.type === "observation" && isTabular(seg.text)) {
@@ -393,7 +425,7 @@ function traceLine(kind, text, ts) {
   // (loaded from a chat) appends at the end.
   const live = traceLive.parentNode === stepsEl;
   stepsEl.insertBefore(ln, live ? traceLive : null);
-  if (live && lastSegType) setTraceStatus(NEXT_STATUS[lastSegType] || "thinking…");
+  if (live && lastSegType) setTraceStatus(buildProgressStatus(lastSegType, lastSegTool));
   if (nearBottom) stepsEl.scrollTop = stepsEl.scrollHeight;
   else jumpPill.hidden = false;
   if (ln.classList.contains("has-err")) updateErrCount();
@@ -768,10 +800,16 @@ function resetOutputTray() {
   renderViewer();
 }
 
+// Chats saved by a Windows server before paths were normalized store
+// "figures\\a.png"; every URL and label here assumes "/".
+function normalizeOutputFile(f) {
+  return f.path && f.path.includes("\\") ? { ...f, path: f.path.replaceAll("\\", "/") } : f;
+}
+
 function registerOutputFiles(files, prompt, ts) {
   if (!files || !files.length) return;
   const seen = new Set(chatOutputFiles.map((f) => `${f.task_id}/${f.path}`));
-  for (const f of files) {
+  for (const f of files.map(normalizeOutputFile)) {
     const key = `${f.task_id}/${f.path}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -955,10 +993,274 @@ outputDownloadAllBtn.addEventListener("click", async () => {
   }
 });
 
-function addMessage(role, text, isError = false, files = [], ts = null, msgId = null) {
+// ---- Markdown answers ----
+// Agent answers can repeat text from fetched pages or uploaded files, so only
+// structural tags survive. Images and embeds are left out on purpose: a remote
+// image would load by itself and could carry data out in its URL.
+const MARKDOWN_SANITIZE_CONFIG = {
+  ALLOWED_TAGS: [
+    "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "del", "code", "pre", "blockquote", "sup", "sub",
+    "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td", "a",
+  ],
+  ALLOWED_ATTR: ["href", "title", "align", "start"],
+};
+
+// Raw HTML tags the sanitizer would keep, written with no attributes. Agents
+// use these on purpose, as in "10<sup>-5</sup>".
+const KEPT_RAW_HTML_TAG = /^<\/?(sup|sub|br|strong|em|del|code)\s*\/?>$/i;
+
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function createMarkdownParser() {
+  if (!window.marked || !window.DOMPurify) return null;
+  const parser = new window.marked.Marked({ gfm: true, breaks: true });
+  parser.use({
+    renderer: {
+      // Images aren't allowed through, so keep their description in the text.
+      image(token) {
+        return token.text;
+      },
+      // Anything else shaped like a tag is text: "<NA>" is a pandas value and
+      // "x<y and z>w" is a comparison. Left as HTML, the sanitizer would
+      // delete it and silently change what the answer says.
+      html(token) {
+        const rawHtml = token.text;
+        if (KEPT_RAW_HTML_TAG.test(rawHtml.trim())) return rawHtml;
+        const escapedHtml = escapeHtml(rawHtml);
+        if (token.block) return `<p>${escapedHtml}</p>`;
+        return escapedHtml;
+      },
+      // Inside a raw tag like <code>, marked leaves text unescaped, so
+      // "<code>a<b</code>" would lose its end the same way.
+      text(token) {
+        if (token.escaped && !token.tokens) return escapeHtml(token.text);
+        return false; // false = the default renderer
+      },
+      // The sanitizer removes <input>, which would make done and not-done
+      // steps look the same.
+      checkbox(token) {
+        if (token.checked) return "☑ ";
+        return "☐ ";
+      },
+    },
+    tokenizer: {
+      // Only ~~double~~ tildes strike through. Answers often say "~5 kDa to
+      // ~10 kDa", which single-tilde strikethrough would mangle.
+      del(source) {
+        if (source.startsWith("~~")) return false; // false = the default tokenizer
+        return undefined; // not a strikethrough
+      },
+    },
+  });
+  return parser;
+}
+const markdownParser = createMarkdownParser();
+
+function outputFileUrl(file) {
+  const encodedParts = [];
+  for (const part of file.path.split("/")) {
+    encodedParts.push(encodeURIComponent(part));
+  }
+  return `/api/tasks/${file.task_id}/outputs/${encodedParts.join("/")}`;
+}
+
+function createFileLink(file, label) {
+  const extension = file.name.split(".").pop().toLowerCase();
+  if (VIEWABLE_EXT.has(extension)) {
+    const previewButton = document.createElement("button");
+    previewButton.className = "msg-file-link";
+    previewButton.title = `View ${file.name}`;
+    previewButton.textContent = label;
+    previewButton.addEventListener("click", () => openPreview(file));
+    return previewButton;
+  }
+  const downloadLink = document.createElement("a");
+  downloadLink.className = "msg-file-link";
+  downloadLink.href = `${outputFileUrl(file)}?dl=1`;
+  downloadLink.download = file.name;
+  downloadLink.title = `Download ${file.name}`;
+  downloadLink.textContent = label;
+  return downloadLink;
+}
+
+// Turns output file names mentioned in the answer's prose into links.
+function linkFileNames(container, files) {
+  const fileByLabel = new Map();
+  for (const rawFile of files) {
+    const file = normalizeOutputFile(rawFile);
+    if (file.path) fileByLabel.set(file.path, file);
+    if (!fileByLabel.has(file.name)) fileByLabel.set(file.name, file);
+  }
+  if (fileByLabel.size === 0) return;
+
+  // Longest first, so "figures/a.png" wins over "a.png".
+  const labels = [...fileByLabel.keys()];
+  labels.sort((first, second) => second.length - first.length);
+  const escapedLabels = [];
+  for (const label of labels) {
+    escapedLabels.push(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  }
+  const labelPattern = new RegExp(
+    `(?<![\\w./-])(?:${escapedLabels.join("|")})(?![\\w-]|\\.\\w)`,
+    "g"
+  );
+
+  // Collected first: replacing nodes during the walk would derail it.
+  const textNodes = [];
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const textNode = walker.currentNode;
+    if (!textNode.parentElement.closest("code, pre, a")) textNodes.push(textNode);
+  }
+
+  for (const textNode of textNodes) {
+    const nodeText = textNode.nodeValue;
+    const matches = [...nodeText.matchAll(labelPattern)];
+    if (matches.length === 0) continue;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const match of matches) {
+      const label = match[0];
+      fragment.append(nodeText.slice(cursor, match.index));
+      fragment.append(createFileLink(fileByLabel.get(label), label));
+      cursor = match.index + label.length;
+    }
+    fragment.append(nodeText.slice(cursor));
+    textNode.replaceWith(fragment);
+  }
+}
+
+// The rendered answer, or null when it has to stay plain text (a library
+// didn't load, or parsing failed).
+function renderMarkdown(text, files) {
+  if (!markdownParser) return null;
+  try {
+    const parsedHtml = markdownParser.parse(text);
+    const body = document.createElement("div");
+    body.className = "msg-markdown";
+    body.innerHTML = window.DOMPurify.sanitize(parsedHtml, MARKDOWN_SANITIZE_CONFIG);
+    for (const link of body.querySelectorAll("a")) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    linkFileNames(body, files || []);
+    return body;
+  } catch (err) {
+    console.error("Markdown rendering failed", err);
+    return null;
+  }
+}
+
+// ---- smart scrolling ----
+// The page itself scrolls, so this measures against the window.
+function messagesNearBottom() {
+  const distanceBelowWindow = messagesEl.getBoundingClientRect().bottom - window.innerHeight;
+  return distanceBelowWindow < 80;
+}
+
+// ---- example and follow-up prompts ----
+// A click only fills the prompt; it never starts a run.
+function createPromptChips(prompts) {
+  const chips = document.createElement("div");
+  chips.className = "prompt-chips";
+  for (const promptText of prompts) {
+    const chip = document.createElement("button");
+    chip.className = "prompt-chip";
+    chip.textContent = promptText;
+    chip.addEventListener("click", () => fillPrompt(promptText));
+    chips.appendChild(chip);
+  }
+  return chips;
+}
+
+function fileExtension(fileName) {
+  return fileName.split(".").pop().toLowerCase();
+}
+
+function examplePromptsForEmptyChat() {
+  const prompts = [];
+  for (const fileName of attached) {
+    const extension = fileExtension(fileName);
+    if (extension === "mzml") {
+      prompts.push(`Identify peptides in ${fileName}`);
+    } else if (extension === "csv" || extension === "tsv") {
+      prompts.push(`Summarize ${fileName}`);
+    }
+  }
+  prompts.push("Find recent papers on a protein and summarize their findings");
+  prompts.push("Design PCR primers for a gene");
+  prompts.push("Look up known drug targets for a disease");
+  return prompts.slice(0, 4);
+}
+
+function renderEmptyState() {
+  removeEmptyState();
+  const emptyState = document.createElement("div");
+  emptyState.className = "empty-state";
+  emptyState.textContent = "Try one of these, or ask your own question:";
+  emptyState.appendChild(createPromptChips(examplePromptsForEmptyChat()));
+  messagesEl.appendChild(emptyState);
+}
+
+function removeEmptyState() {
+  const emptyState = messagesEl.querySelector(".empty-state");
+  if (emptyState) emptyState.remove();
+}
+
+function followupPromptsForFiles(files) {
+  const prompts = [];
+  let hasTable = false;
+  let hasFigure = false;
+  for (const file of files) {
+    const extension = fileExtension(file.name);
+    if (!hasTable && (extension === "csv" || extension === "tsv")) {
+      prompts.push(`Plot the key columns of ${file.name}`);
+      hasTable = true;
+    }
+    if (!hasFigure && extension === "png") {
+      prompts.push(`Explain this figure: ${file.name}`);
+      hasFigure = true;
+    }
+  }
+  if (files.length === 0) prompts.push("Save the result as a CSV");
+  prompts.push("Explain the method used");
+  return prompts;
+}
+
+function renderFollowups(messageDiv, files) {
+  const wasNearBottom = messagesNearBottom();
+  const followups = createPromptChips(followupPromptsForFiles(files || []));
+  followups.classList.add("followups");
+  messageDiv.appendChild(followups);
+  if (wasNearBottom) messageDiv.scrollIntoView({ block: "end" });
+}
+
+const STOPPED_ERROR_TEXT = "Stopped by user.";
+
+// options.noScroll: replaying history, which scrolls once at the end.
+// options.stopped: the user stopped the run, which isn't a failure.
+function addMessage(role, text, isError = false, files = [], ts = null, msgId = null, options = {}) {
+  removeEmptyState();
+  const wasNearBottom = messagesNearBottom();
   const div = document.createElement("div");
   div.className = `msg ${role}` + (isError ? " error" : "");
-  div.textContent = text;
+  if (options.stopped) div.classList.add("stopped");
+  let markdownBody = null;
+  if (role === "assistant" && !isError && !options.stopped) {
+    markdownBody = renderMarkdown(text, files);
+  }
+  if (markdownBody) {
+    div.appendChild(markdownBody);
+  } else {
+    div.textContent = text;
+  }
   if (role === "user") {
     lastUserPrompt = text;
     const btns = document.createElement("div");
@@ -991,7 +1293,7 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
   if (files && files.length) {
     const list = document.createElement("div");
     list.className = "msg-files";
-    for (const f of files) {
+    for (const f of files.map(normalizeOutputFile)) {
       const chip = document.createElement("div");
       chip.className = "msg-file";
 
@@ -1056,7 +1358,10 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
     div.appendChild(copy);
   }
   messagesEl.appendChild(div);
-  div.scrollIntoView({ block: "end" });
+  // Someone reading further up shouldn't be pulled away by a new answer.
+  if (!options.noScroll && (role === "user" || wasNearBottom)) {
+    div.scrollIntoView({ block: "end" });
+  }
   return div;
 }
 
@@ -1068,20 +1373,25 @@ async function selectChat(chatId) {
     currentChatId = chatId;
     localStorage.setItem("lastChatId", chatId);
     setChatName(chat.title);
+    lastUserPrompt = "";
     messagesEl.innerHTML = "";
     stepsEl.innerHTML = "";
     updateErrCount();
     resetOutputTray();
     loadAttachedForChat(chatId);
+    refreshFiles(); // a file may have gone since the list was last fetched
     for (const m of chat.messages) {
       if (m.role === "trace") {
         traceLine("agent", m.content, m.created); // replay into the terminal panel
       } else if (m.role === "run_start" || m.role === "run_end") {
         traceLine(m.role, m.content, m.created); // run boundary markers
+      } else if (m.content === `[error] ${STOPPED_ERROR_TEXT}`) {
+        addMessage(m.role, "Stopped by user", false, m.files, m.created, m.id, { noScroll: true, stopped: true });
       } else {
-        addMessage(m.role, m.content, m.content.startsWith("[error]"), m.files, m.created, m.id);
+        addMessage(m.role, m.content, m.content.startsWith("[error]"), m.files, m.created, m.id, { noScroll: true });
       }
     }
+    if (messagesEl.children.length === 0) renderEmptyState();
     // Re-attach to an in-flight run (e.g. after a page refresh) so the
     // running indicator, stop button, and live trace come back.
     try {
@@ -1107,14 +1417,22 @@ async function selectChat(chatId) {
           traceStart();
           attachStream(task_id);
         }
+      } else if (task_id) {
+        // Same run, stream still open: the panel was rebuilt from history
+        // above, so put the live status line back under it.
+        stepsEl.appendChild(traceLive);
       }
     } catch {
       /* active-task lookup is best-effort */
     }
     document.querySelector('.tabs button[data-tab="task"]').click();
+    // After the click: nothing scrolls while the Task tab is hidden.
+    const lastMessage = messagesEl.lastElementChild;
+    if (lastMessage) lastMessage.scrollIntoView({ block: "end" });
     closeSidebar();
     refreshChats();
   } catch {
+    if (messagesEl.children.length === 0) renderEmptyState();
     refreshChats();
   }
 }
@@ -1131,11 +1449,14 @@ function startNewChat() {
   }
   currentChatId = null;
   setChatName("");
+  lastUserPrompt = "";
   messagesEl.innerHTML = "";
   stepsEl.innerHTML = "";
   updateErrCount();
   resetOutputTray();
   loadAttachedForChat(null);
+  refreshFiles(); // a file may have gone since the list was last fetched
+  renderEmptyState();
   promptEl.focus();
 }
 newChatBtn.addEventListener("click", () => {
@@ -1167,6 +1488,9 @@ function attachedKeyFor(chatId) {
   return ATTACHED_KEY_PREFIX + (chatId || "new");
 }
 const attached = new Set(); // repopulated by loadAttachedForChat() below
+const MAX_CHIPS_BEFORE_COLLAPSE = 3;
+let attachChipsExpanded = false;
+let filesLoaded = false; // until the list arrives, no file can be called missing
 
 function loadAttachedForChat(chatId) {
   attached.clear();
@@ -1191,13 +1515,120 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function updateAttachHint() {
-  if (attached.size === 0) {
-    attachHint.hidden = true;
-  } else {
-    attachHint.hidden = false;
-    attachHint.textContent = `Attached: ${[...attached].join(", ")}`;
+function detachFile(fileName) {
+  attached.delete(fileName);
+  saveAttached();
+  updateAttachHint();
+  renderFileList();
+}
+
+// Attached names the server would silently skip, as of the last file list.
+function missingAttachments() {
+  const missingNames = [];
+  if (!filesLoaded) return missingNames;
+  const namesOnDisk = new Set();
+  for (const file of allFiles) {
+    namesOnDisk.add(file.name);
   }
+  for (const fileName of attached) {
+    if (!namesOnDisk.has(fileName)) missingNames.push(fileName);
+  }
+  return missingNames;
+}
+
+// Deleting a file detaches it everywhere, so it doesn't show as missing in
+// other chats. A chat's saved list is only read when that chat opens.
+function removeFromSavedAttachments(fileName) {
+  try {
+    const savedKeys = [];
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (key.startsWith(ATTACHED_KEY_PREFIX)) savedKeys.push(key);
+    }
+    for (const key of savedKeys) {
+      const savedNames = JSON.parse(localStorage.getItem(key) || "[]");
+      const keptNames = [];
+      for (const savedName of savedNames) {
+        if (savedName !== fileName) keptNames.push(savedName);
+      }
+      localStorage.setItem(key, JSON.stringify(keptNames));
+    }
+  } catch {
+    /* corrupt or unavailable storage: its chip will show as missing instead */
+  }
+}
+
+function createAttachChip(fileName) {
+  let fileInfo = null;
+  for (const file of allFiles) {
+    if (file.name === fileName) fileInfo = file;
+  }
+  const isMissing = filesLoaded && fileInfo === null;
+
+  const chip = document.createElement("span");
+  chip.className = "attach-chip";
+  if (isMissing) chip.classList.add("missing");
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "attach-chip-name";
+  nameEl.textContent = fileName;
+  nameEl.title = fileName;
+  chip.appendChild(nameEl);
+
+  const sizeEl = document.createElement("span");
+  sizeEl.className = "attach-chip-size";
+  if (isMissing) {
+    sizeEl.textContent = "(missing)";
+    chip.appendChild(sizeEl);
+  } else if (fileInfo) {
+    sizeEl.textContent = formatSize(fileInfo.size);
+    chip.appendChild(sizeEl);
+  }
+
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "attach-chip-remove";
+  removeBtn.title = `Detach ${fileName}`;
+  removeBtn.replaceChildren(faIcon("xmark"));
+  removeBtn.addEventListener("click", () => detachFile(fileName));
+  chip.appendChild(removeBtn);
+  return chip;
+}
+
+function updateAttachHint() {
+  attachHint.replaceChildren();
+  attachHint.hidden = attached.size === 0;
+
+  // Suggestions in an empty chat depend on what's attached.
+  if (messagesEl.querySelector(".empty-state")) renderEmptyState();
+  if (attached.size === 0) return;
+
+  const isCollapsible = attached.size > MAX_CHIPS_BEFORE_COLLAPSE;
+  if (isCollapsible) {
+    const summary = document.createElement("button");
+    summary.className = "attach-summary";
+    const arrow = attachChipsExpanded ? "▴" : "▾";
+    summary.textContent = `${attached.size} files attached ${arrow}`;
+    summary.addEventListener("click", () => {
+      attachChipsExpanded = !attachChipsExpanded;
+      updateAttachHint();
+    });
+    attachHint.appendChild(summary);
+  }
+  if (!isCollapsible || attachChipsExpanded) {
+    for (const fileName of attached) {
+      attachHint.appendChild(createAttachChip(fileName));
+    }
+  }
+  const clearAll = document.createElement("button");
+  clearAll.className = "attach-clear";
+  clearAll.textContent = "clear all";
+  clearAll.addEventListener("click", () => {
+    attached.clear();
+    saveAttached();
+    updateAttachHint();
+    renderFileList();
+  });
+  attachHint.appendChild(clearAll);
 }
 
 // Full list from the server, cached so search/sort/attach-all don't need
@@ -1279,6 +1710,7 @@ function renderFileList() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || `server returned HTTP ${res.status}`);
         attached.delete(f.name);
+        removeFromSavedAttachments(f.name);
         updateAttachHint();
         saveAttached();
         await refreshFiles();
@@ -1319,17 +1751,8 @@ async function refreshFiles() {
     if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
     const { files } = await res.json();
     allFiles = files || [];
-
-    // Drop any restored attachment whose file no longer exists on disk.
-    const onDisk = new Set(allFiles.map((f) => f.name));
-    let pruned = false;
-    for (const name of attached) {
-      if (!onDisk.has(name)) {
-        attached.delete(name);
-        pruned = true;
-      }
-    }
-    if (pruned) saveAttached();
+    filesLoaded = true;
+    // An attachment whose file is gone stays listed, so its chip can say so.
     updateAttachHint();
     renderFileList();
   } catch (err) {
@@ -1340,22 +1763,34 @@ async function refreshFiles() {
   }
 }
 
+// The Files tab's status line isn't visible from the Task tab, so uploads
+// started there report here too. A success shows as chips instead.
+const taskUploadStatus = document.getElementById("task-upload-status");
+
+function setTaskUploadStatus(text) {
+  taskUploadStatus.textContent = text;
+  taskUploadStatus.hidden = !text;
+}
+
 async function uploadFiles(files) {
   if (!files.length) return;
   const form = new FormData();
   for (const f of files) form.append("files", f);
   uploadStatus.textContent = "Uploading…";
+  setTaskUploadStatus("Uploading…");
   try {
     const res = await fetch("/api/files", { method: "POST", body: form });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     uploadStatus.textContent = `Uploaded: ${data.saved.join(", ")}`;
+    setTaskUploadStatus("");
     for (const name of data.saved) attached.add(name);
     updateAttachHint();
     saveAttached();
     await refreshFiles();
   } catch (err) {
     uploadStatus.textContent = `Upload failed: ${err.message || err}`;
+    setTaskUploadStatus(`Upload failed: ${err.message || err}`);
   }
 }
 
@@ -1378,33 +1813,201 @@ fileInput.addEventListener("change", () => {
 );
 dropzone.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
+// Drag and paste anywhere on the Task tab. Dragged or pasted text is left
+// alone, so it still lands in the prompt as usual.
+const taskPanel = document.getElementById("tab-task");
+
+function dragHasFiles(event) {
+  return [...event.dataTransfer.types].includes("Files");
+}
+
+taskPanel.addEventListener("dragover", (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  taskPanel.classList.add("dragover");
+});
+taskPanel.addEventListener("dragleave", (event) => {
+  // Moving over a child element also fires dragleave on the panel.
+  if (taskPanel.contains(event.relatedTarget)) return;
+  taskPanel.classList.remove("dragover");
+});
+taskPanel.addEventListener("drop", (event) => {
+  if (!dragHasFiles(event)) return;
+  event.preventDefault();
+  taskPanel.classList.remove("dragover");
+  uploadFiles([...event.dataTransfer.files]);
+});
+
+// The panel is narrower than the window. A file dropped beside it would make
+// the browser open the file in place of the app, losing any draft.
+document.addEventListener("dragover", (event) => {
+  if (event.defaultPrevented || !dragHasFiles(event)) return;
+  event.preventDefault();
+  if (!taskPanel.classList.contains("active")) event.dataTransfer.dropEffect = "none";
+});
+document.addEventListener("drop", (event) => {
+  if (event.defaultPrevented || !dragHasFiles(event)) return;
+  event.preventDefault();
+  if (taskPanel.classList.contains("active")) uploadFiles([...event.dataTransfer.files]);
+});
+
+// Browsers call every pasted screenshot "image.png", and an upload replaces
+// any file with the same name, so each one gets its own.
+function namePastedFile(file, pasteTime, position) {
+  if (!/^image\.\w+$/.test(file.name)) return file;
+  const extension = file.name.split(".").pop();
+  return new File([file], `pasted-${pasteTime}-${position}.${extension}`, { type: file.type });
+}
+
+taskPanel.addEventListener("paste", (event) => {
+  const pastedFiles = [...event.clipboardData.files];
+  if (pastedFiles.length === 0) return;
+  // Spreadsheets copy their cells as text plus a picture of them. The text is
+  // what the user wants.
+  const pastedText = event.clipboardData.getData("text/plain");
+  if (pastedText.trim() !== "") return;
+  event.preventDefault();
+  const pasteTime = Date.now();
+  const namedFiles = [];
+  for (const [position, file] of pastedFiles.entries()) {
+    namedFiles.push(namePastedFile(file, pasteTime, position));
+  }
+  uploadFiles(namedFiles);
+});
+
 // ---- task run ----
-runBtn.addEventListener("click", () => {
+// Whether a run is going, including while its POST is still in flight (when
+// currentTaskId isn't known yet). runBtn.disabled can't answer this: it's also
+// disabled for an empty prompt, and retry buttons run with an empty prompt.
+let runInProgress = false;
+
+function updateRunEnabled() {
+  const hasPrompt = promptEl.value.trim() !== "";
+  runBtn.disabled = runInProgress || !hasPrompt;
+  runBtn.classList.toggle("nothing-to-send", !runInProgress && !hasPrompt);
+}
+
+function growPrompt() {
+  promptEl.style.height = "auto";
+  const borderHeight = promptEl.offsetHeight - promptEl.clientHeight;
+  promptEl.style.height = `${promptEl.scrollHeight + borderHeight}px`;
+}
+
+function fillPrompt(text) {
+  promptEl.value = text;
+  growPrompt();
+  updateRunEnabled();
+  promptEl.focus();
+  promptEl.setSelectionRange(text.length, text.length);
+}
+
+function clearPrompt() {
+  promptEl.value = "";
+  promptEl.style.height = "";
+  updateRunEnabled();
+}
+
+function submitPrompt() {
   const prompt = promptEl.value.trim();
   if (!prompt) return;
-  promptEl.value = "";
-  runTask(prompt);
+  runTask(prompt, { fromComposer: true });
+}
+
+runBtn.addEventListener("click", submitPrompt);
+promptEl.addEventListener("input", () => {
+  growPrompt();
+  updateRunEnabled();
 });
+promptEl.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    // Enter while composing (Japanese, Chinese…) confirms the composition.
+    // keyCode 229 covers Safari, which ends the composition first.
+    if (event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    submitPrompt();
+    return;
+  }
+  if (event.key === "ArrowUp" && promptEl.value === "" && lastUserPrompt) {
+    event.preventDefault();
+    fillPrompt(lastUserPrompt);
+  }
+});
+updateRunEnabled();
 
 const stopBtn = document.getElementById("stop");
 let currentTaskId = null;
 let activeEventSource = null; // the one live SSE connection this tab should have open
 
-stopBtn.addEventListener("click", async () => {
-  if (!currentTaskId) return;
+let stopRequestedTaskId = null; // the run the server has been asked to stop
+let stopQueued = false; // Stop was clicked before the server gave a task id
+
+function showStopping() {
   stopBtn.disabled = true;
+  stopBtn.textContent = "Stopping…";
+}
+
+function resetStopButton() {
+  stopBtn.disabled = false;
+  stopBtn.replaceChildren(faIcon("stop"), document.createTextNode(" Stop"));
+}
+
+async function requestStop(taskId) {
+  stopRequestedTaskId = taskId;
+  showStopping();
   try {
-    await fetch(`/api/tasks/${currentTaskId}/cancel`, { method: "POST" });
+    const res = await fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch {
-    /* the SSE stream will surface the outcome either way */
+    // The stop didn't reach the run: let the user try again. If the run has
+    // already ended, setRunning() has hidden this button anyway.
+    if (stopRequestedTaskId !== taskId) return;
+    stopRequestedTaskId = null;
+    resetStopButton();
   }
+}
+
+stopBtn.addEventListener("click", () => {
+  if (!runInProgress) return;
+  if (currentTaskId) {
+    requestStop(currentTaskId);
+    return;
+  }
+  // The run's POST is still in flight. attachStream() sends the stop.
+  stopQueued = true;
+  showStopping();
 });
 
+// After a reload or chat switch only the server knows a stop is pending.
+async function restoreStoppingState(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`);
+    if (!res.ok) return;
+    const snapshot = await res.json();
+    if (snapshot.cancelled && currentTaskId === taskId) {
+      stopRequestedTaskId = taskId;
+      showStopping();
+    }
+  } catch {
+    /* best effort: Stop stays available */
+  }
+}
+
 function setRunning(running) {
-  runBtn.disabled = running;
+  runInProgress = running;
+  updateRunEnabled();
   stopBtn.hidden = !running;
-  stopBtn.disabled = false;
-  if (!running) currentTaskId = null;
+  // A reconnect calls this mid-run, and must not undo a pending stop.
+  const stopPending = stopQueued || (currentTaskId && stopRequestedTaskId === currentTaskId);
+  if (running && stopPending) {
+    showStopping();
+  } else {
+    resetStopButton();
+  }
+  if (!running) {
+    currentTaskId = null;
+    stopRequestedTaskId = null;
+    stopQueued = false;
+  }
 }
 
 async function rewindAndRetry(msgId, promptText) {
@@ -1434,21 +2037,47 @@ async function rewindAndRetry(msgId, promptText) {
   runTask(promptText);
 }
 
-async function runTask(prompt) {
-  if (runBtn.disabled) return; // one task at a time
+// options.fromComposer: the text came from the prompt box, so it's cleared
+// once the server has it. A retry button leaves any draft in the box alone.
+async function runTask(prompt, options = {}) {
+  if (runInProgress) return; // one task at a time
 
   setRunning(true);
-  addMessage("user", prompt);
+  const previousUserPrompt = lastUserPrompt;
+  const userDiv = addMessage("user", prompt);
   traceStart();
 
   try {
+    // The server skips files it can't find, so say so before the run starts.
+    setTaskUploadStatus("");
+    if (attached.size > 0) {
+      await refreshFiles();
+      const missingNames = missingAttachments();
+      if (missingNames.length > 0) {
+        setTaskUploadStatus(`Sent without ${missingNames.join(", ")}: no longer on disk.`);
+      }
+    }
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt, files: [...attached], chat_id: currentChatId }),
     });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      throw new Error(errorBody.error || `HTTP ${res.status}`);
+    }
     const { task_id, chat_id, error } = await res.json();
     if (error) throw new Error(error);
+    // Suggestions for the previous answer are out of date once a prompt is
+    // sent. A failed send keeps them.
+    for (const oldFollowups of messagesEl.querySelectorAll(".followups")) {
+      oldFollowups.remove();
+    }
+    // Unless it was edited while the request was in flight.
+    if (options.fromComposer && promptEl.value.trim() === prompt) clearPrompt();
+    // These attachments now belong to this chat; left in the "new" bucket,
+    // they'd be attached to every chat started after it.
+    if (!currentChatId) localStorage.removeItem(attachedKeyFor(null));
     currentChatId = chat_id;
     localStorage.setItem("lastChatId", chat_id);
     saveAttached(); // persist under the now-real chat id, not the "new" bucket
@@ -1457,7 +2086,16 @@ async function runTask(prompt) {
   } catch (err) {
     setRunning(false);
     traceEnd();
-    addMessage("assistant", String(err), true);
+    // The message was never sent, so it goes back to the prompt box instead
+    // of staying in the chat. A draft typed since then is kept.
+    userDiv.remove();
+    lastUserPrompt = previousUserPrompt;
+    if (!promptEl.value.trim()) fillPrompt(prompt);
+    let errorText = err.message || String(err);
+    if (err instanceof TypeError) {
+      errorText = "Can't reach the server. Is it still running?";
+    }
+    addMessage("assistant", `Your message wasn't sent: ${errorText}`, true);
   }
 }
 
@@ -1474,6 +2112,12 @@ function attachStream(taskId) {
 
   currentTaskId = taskId;
   setRunning(true);
+  if (stopQueued) {
+    stopQueued = false;
+    requestStop(taskId);
+  } else {
+    restoreStoppingState(taskId);
+  }
   const source = new EventSource(`/api/tasks/${taskId}/stream`);
   activeEventSource = source;
   const isStale = () => source !== activeEventSource;
@@ -1481,6 +2125,7 @@ function attachStream(taskId) {
   source.onmessage = (event) => {
     if (isStale()) return; // a newer stream has since taken over
     const msg = JSON.parse(event.data);
+    if (msg.max_steps) runMaxSteps = msg.max_steps;
     if (msg.step) {
       // SSE replays a run's steps from the start, so the earliest step's
       // timestamp is when the run truly began — sync the elapsed ticker.
@@ -1494,8 +2139,13 @@ function attachStream(taskId) {
       setRunning(false);
       traceEnd();
       if (msg.status === "done") {
-        addMessage("assistant", msg.result, false, msg.files);
+        const answerDiv = addMessage("assistant", msg.result, false, msg.files);
+        renderFollowups(answerDiv, msg.files);
         traceEl.classList.remove("open");
+      } else if (msg.cancelled && msg.error === STOPPED_ERROR_TEXT) {
+        // Checked by text too: a real failure that lands just after the user
+        // pressed Stop should still be shown as that failure.
+        addMessage("assistant", "Stopped by user", false, msg.files, null, null, { stopped: true });
       } else {
         addMessage("assistant", msg.error || "task failed", true, msg.files);
       }
@@ -1530,6 +2180,7 @@ function attachStream(taskId) {
             if (currentTaskId !== taskId) return; // superseded meanwhile
             stepsEl.innerHTML = "";
             updateErrCount();
+            traceStart(); // clearing the panel took the live status line with it
             attachStream(taskId);
           }, 1500);
         } else {
@@ -1740,6 +2391,7 @@ refreshChats();
 {
   const last = localStorage.getItem("lastChatId");
   if (last) selectChat(last);
+  else renderEmptyState();
 }
 
 // ---- model selection ----
@@ -1749,7 +2401,9 @@ refreshChats();
 // (opus, haiku, …) and that family's versions, newest first.
 const familySelect = document.getElementById("model-family");
 const versionSelect = document.getElementById("model-version");
+const effortSelect = document.getElementById("model-effort");
 let modelFamilies = [];
+let currentEffort = null; // the level in effect on the server; null = default
 
 function option(value, text) {
   const opt = document.createElement("option");
@@ -1787,10 +2441,30 @@ function fillVersions(familyName, selectedId) {
   // Nothing to choose between: keep it visible, just inert.
   versionSelect.disabled = usable.length < 2;
   versionSelect.title = `Version — ${versionSelect.value || "none available"}`;
+  fillEfforts();
+}
+
+// Only the levels the selected model accepts. A saved level it doesn't take
+// shows as the default, which is what the run will actually use.
+function fillEfforts() {
+  const version = modelFamilies
+    .flatMap((f) => f.versions)
+    .find((v) => v.id === versionSelect.value);
+  const levels = version?.efforts || [];
+  effortSelect.replaceChildren(
+    option("", "Default effort"),
+    ...levels.map((e) => option(e, `${e} effort`)),
+  );
+  effortSelect.value = levels.includes(currentEffort) ? currentEffort : "";
+  effortSelect.disabled = !levels.length;
+  effortSelect.title = levels.length
+    ? "How hard the model works on each step; higher costs more and takes longer. Applies to the next task."
+    : "This model doesn't support effort levels.";
 }
 
 function renderModels(info) {
   modelFamilies = info.families || [];
+  currentEffort = info.effort ?? null;
   if (!modelFamilies.length) {
     showModelPlaceholder(
       "No models found",
@@ -1889,6 +2563,21 @@ familySelect.addEventListener("change", () => {
   applyModel();
 });
 versionSelect.addEventListener("change", applyModel);
+
+effortSelect.addEventListener("change", async () => {
+  try {
+    const res = await fetch("/api/effort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ effort: effortSelect.value }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    currentEffort = (await res.json()).effort;
+  } catch (err) {
+    console.warn("effort switch failed; keeping", currentEffort, err);
+  }
+  fillEfforts(); // what the server has, success or not
+});
 
 initModels();
 

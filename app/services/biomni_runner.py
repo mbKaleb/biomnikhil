@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
+from pathlib import Path
 
 # Every task runs on a background thread (see _run below), but matplotlib
 # defaults to a GUI backend (MacOSX/Qt/etc.) that only works on the main
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 from .. import auth
 from ..config import Config
-from ..providers import resolve
+from ..providers import max_output_tokens, resolve
 from . import hints
 from .tasks import registry
 
@@ -52,6 +54,27 @@ def _acquire_run_slot(task_id: str) -> None:
 # cached agent so the next task rebuilds A1 with the new model. An in-flight
 # run is unaffected — it already holds its own agent reference.
 _current_model: str | None = Config.MODEL
+
+
+# Effort for subsequent runs (None = the model's default). Read once when a
+# run starts, so switching it mid-run applies to the next run, like the model.
+_current_effort: str | None = "max"
+# (agent LLM, effort) of the run in progress. Scoped to that LLM so biomni's
+# database tools, which build their own, stay on the model's default effort.
+_run_effort: tuple | None = None
+
+
+def get_effort() -> str | None:
+    """The effort the next task will run at."""
+    return _current_effort
+
+
+def set_effort(effort: str | None) -> str | None:
+    """Switch the effort for subsequent runs. No agent rebuild needed: it's
+    applied per request in _patch_sampling_params."""
+    global _current_effort
+    _current_effort = (effort or "").strip() or None
+    return _current_effort
 
 
 def get_model() -> str | None:
@@ -115,10 +138,128 @@ def _get_agent():
 
             _patch_run_python_repl()
             _patch_sampling_params()
+            _hide_unusable_tools()
             _patch_cognito_client()
             _agent = A1(path=str(Config.DATA_PATH), **kwargs)
             _agent.llm.callbacks = [*(_agent.llm.callbacks or []), _untagged_reply_logger()]
+            _uncap_agent_llm(_agent.llm, kwargs["llm"])
         return _agent
+
+
+def _uncap_agent_llm(llm, model: str) -> None:
+    """biomni fixes max_tokens at 8192, which thinking at high effort can use
+    up before any reply is written. Give the agent LLM the model's full
+    output limit; the SDK refuses to send that much without streaming."""
+    limit = max_output_tokens(model)
+    if limit:
+        llm.max_tokens = limit
+    llm.streaming = True
+
+
+# Model calls and tokens of the run in progress (runs execute one at a time),
+# counted by the agent LLM's callback; reset when a run starts. biomni's
+# database tools make their own LLM calls, which aren't counted here.
+_run_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+
+# The latest run's usage summary, for the Integrity tab.
+last_run_usage: dict | None = None
+
+
+def _biomni_usage(texts: list[str], agent) -> dict:
+    """What a run drew on from biomni, read off its trace: the biomni tool
+    functions its code called and the data lake files its code or output
+    named. Code that only uses pandas/matplotlib shows up as nothing here —
+    that run got nothing from biomni beyond the agent loop."""
+    import re
+
+    trace = "\n".join(texts)
+    code = "\n".join(re.findall(r"<execute>(.*?)</execute>", trace, re.DOTALL))
+    tool_names = {t["name"] for tools in (agent.module2api or {}).values() for t in tools}
+    tools = sorted(n for n in tool_names if re.search(rf"\b{re.escape(n)}\s*\(", code))
+    try:
+        from biomni.env_desc import data_lake_dict
+        lake = sorted(f for f in data_lake_dict if f in trace)
+    except Exception:  # noqa: BLE001
+        lake = []
+    return {"tools": tools, "data_lake": lake, **_run_usage}
+
+
+def _usage_line(u: dict) -> str:
+    tools = ", ".join(u["tools"]) if u["tools"] else "none"
+    lake = ", ".join(u["data_lake"]) if u["data_lake"] else "none"
+    cached = f" ({u['cached_tokens']:,} cached)" if u["cached_tokens"] else ""
+    return (
+        f"biomni usage — tools: {tools} · data lake: {lake} · "
+        f"{u['calls']} model calls, {u['input_tokens']:,} input{cached} / "
+        f"{u['output_tokens']:,} output tokens"
+    )
+
+
+# Tools left out of the agent's prompt because they can't run in this install,
+# {name: why} — filled when the agent is built; shown on the Integrity tab.
+hidden_tools: dict[str, str] = {}
+
+
+def _programs_in(source: str) -> set[str]:
+    """External programs a tool's code starts: subprocess/os.system calls
+    whose command is a literal list or string."""
+    import re
+
+    found = set(re.findall(r"subprocess\.\w+\(\s*\[\s*f?[\"']([\w.\-]+)[\"']", source))
+    found |= set(re.findall(r"(?:subprocess\.\w+|os\.system)\(\s*f?[\"']([\w.\-]+)\s", source))
+    return found
+
+
+def _usable_tools(module2api: dict) -> dict:
+    """biomni's tool list minus what can't work here: whole modules that fail
+    to import (genetics and genomics need torch/esm, which aren't installed)
+    and tools that start a program this install doesn't have (samtools, R,
+    conda, …). Listing them anyway costs prompt tokens and sends the agent
+    into failures. Records what was hidden in hidden_tools."""
+    import importlib
+    import inspect
+    import shutil
+
+    hidden_tools.clear()
+    usable = {}
+    for module_name, tools in module2api.items():
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001 — any import failure hides the module
+            for tool in tools:
+                hidden_tools[tool["name"]] = f"{module_name} doesn't load ({type(exc).__name__}: {exc})"
+            continue
+        keep = []
+        for tool in tools:
+            try:
+                source = inspect.getsource(getattr(module, tool["name"]))
+            except Exception:  # noqa: BLE001 — no source to check: keep it
+                source = ""
+            missing = sorted(p for p in _programs_in(source) if not shutil.which(p))
+            if missing:
+                hidden_tools[tool["name"]] = "needs " + ", ".join(missing) + ", not installed"
+            else:
+                keep.append(tool)
+        if keep:
+            usable[module_name] = keep
+    logger.info("biomni tools: %d usable, %d hidden", sum(map(len, usable.values())), len(hidden_tools))
+    return usable
+
+
+def _hide_unusable_tools() -> None:
+    """Filter the tool list A1 reads at construction (its prompt and its
+    tool retriever both come from it). Idempotent."""
+    import biomni.agent.a1 as a1
+
+    if getattr(a1.read_module2api, "_biomnikhil_patched", False):
+        return
+    original = a1.read_module2api
+
+    def read_module2api():
+        return _usable_tools(original())
+
+    read_module2api._biomnikhil_patched = True
+    a1.read_module2api = read_module2api
 
 
 class ModelRefused(RuntimeError):
@@ -141,12 +282,20 @@ def _untagged_reply_logger():
             for gens in response.generations:
                 for gen in gens:
                     message = getattr(gen, "message", None)
+                    usage = getattr(message, "usage_metadata", None) or {}
+                    _run_usage["calls"] += 1
+                    _run_usage["input_tokens"] += usage.get("input_tokens", 0)
+                    _run_usage["output_tokens"] += usage.get("output_tokens", 0)
+                    details = usage.get("input_token_details") or {}
+                    _run_usage["cached_tokens"] += details.get("cache_read", 0) or 0
                     content = message.content if message is not None else gen.text
                     text = content if isinstance(content, str) else repr(content)
                     meta = getattr(message, "response_metadata", {}) or {}
                     if meta.get("stop_reason") == "refusal":
-                        logger.warning("model refused (model=%s)", meta.get("model"))
-                        raise ModelRefused(meta.get("model") or "the model")
+                        # "model_name" when the reply was streamed.
+                        model = meta.get("model") or meta.get("model_name")
+                        logger.warning("model refused (model=%s)", model)
+                        raise ModelRefused(model or "the model")
                     if "<execute>" not in text and "<solution>" not in text:
                         logger.warning(
                             "model reply without <execute>/<solution> (stop_reason=%s): %.1500s",
@@ -200,7 +349,7 @@ def _patch_sampling_params() -> None:
     as user turns. Idempotent."""
     from langchain_anthropic import ChatAnthropic
 
-    from ..providers import rejects_sampling_params
+    from ..providers import needs_explicit_thinking, rejects_sampling_params, supported_efforts
 
     if getattr(ChatAnthropic._get_request_payload, "_biomnikhil_patched", False):
         return
@@ -218,6 +367,23 @@ def _patch_sampling_params() -> None:
             if "extra_body" in payload and not extra:
                 payload.pop("extra_body")
         _observations_as_user_turns(payload.get("messages") or [])
+        if _run_effort and self is _run_effort[0]:
+            effort = _run_effort[1]
+            # Omitted when this model doesn't take that level, which would 400.
+            if effort in supported_efforts(payload.get("model", "")):
+                # extra_body for the same reason as above; merged so anything
+                # langchain put in output_config survives.
+                extra = payload.setdefault("extra_body", {})
+                extra["output_config"] = {
+                    **(payload.pop("output_config", None) or {}),
+                    **(extra.get("output_config") or {}),
+                    "effort": effort,
+                }
+                if needs_explicit_thinking(payload["model"]):
+                    extra["thinking"] = {"type": "adaptive"}
+                    # Thinking 400s on biomni's non-default temperature.
+                    payload.pop("temperature", None)
+                    extra.pop("temperature", None)
         return payload
 
     _get_request_payload._biomnikhil_patched = True
@@ -364,13 +530,83 @@ def _patch_run_python_repl() -> None:
 # see services/hints.py for why.
 
 
-def submit(prompt: str, chat_id: str | None = None, user: auth.User | None = None) -> str:
+def _link_input(source: Path, link: Path) -> None:
+    """Puts an attached file in a run's input folder without duplicating it
+    if possible: mzML files run to several GB. Windows only allows symlinks
+    with extra privileges and hardlinks within one volume, hence the chain."""
+    try:
+        os.symlink(source, link)
+        return
+    except OSError:
+        pass
+    try:
+        os.link(source, link)
+        return
+    except OSError:
+        pass
+    shutil.copy2(source, link)
+
+
+def _prepare_inputs(task_id: str, attached: list[str]) -> list[Path]:
+    """The run's own input folder, holding only the files attached to it."""
+    input_dir = Config.INPUT_PATH / task_id
+    input_dir.mkdir(parents=True, exist_ok=True)
+    links = []
+    for name in attached:
+        source = Path(name)
+        link = input_dir / source.name
+        if link.exists():
+            continue
+        _link_input(source, link)
+        links.append(link)
+    return links
+
+
+def _inputs_note(links: list[Path]) -> str:
+    """Tells the agent which user files this run may use. It guides the agent
+    rather than enforcing anything: its code runs with full file access."""
+    if links:
+        lines = []
+        for link in links:
+            lines.append(f"- {link}")
+        listing = "\n".join(lines)
+        intro = f"The user attached these files (local paths):\n{listing}\n\nThese are"
+    else:
+        intro = "The user attached no files to this message, so there are"
+    return (
+        f"\n\n{intro} the only user files available to this run. Don't look "
+        "for others on disk or rely on files from earlier runs. If the task "
+        "needs a file that isn't listed and the message gives no path to it, "
+        "say so and ask for it to be attached."
+    )
+
+
+def _reset_run_namespace() -> None:
+    """Empties the namespace agent code runs in, so no variable or loaded
+    dataframe from an earlier run or chat carries over. biomni re-injects
+    its custom tools into it before executing each code block."""
+    from biomni.tool import support_tools
+
+    support_tools._persistent_namespace.clear()
+
+
+def submit(
+    prompt: str,
+    chat_id: str | None = None,
+    user: auth.User | None = None,
+    attached: list[str] | None = None,
+) -> str:
     """Queue a prompt for the agent; returns a task id immediately. When a
     chat_id is given, the final answer (or error) is appended to that chat.
     `user` is the signed-in user whose credentials the run's model calls
-    are signed with."""
-    user_prompt = prompt
+    are signed with. `attached` holds the paths of the files attached to
+    this message."""
+    # The id comes first because the input folder is named after it, and the
+    # listing has to be in the task's prompt, so it's added once they exist.
     task = registry.create(prompt, chat_id=chat_id)
+    links = _prepare_inputs(task.id, attached or [])
+    prompt = prompt + _inputs_note(links)
+    user_prompt = prompt
 
     # Give this run its own output folder so generated files (reports,
     # CSVs, plots) can be found afterward and served back to the UI,
@@ -416,7 +652,9 @@ def _collect_output_files(output_dir, task_id: str) -> list[dict]:
                 size = os.path.getsize(path)
             except OSError:
                 continue
-            rel = os.path.relpath(path, output_dir)
+            # Always "/"-separated: the UI splits on "/" to build URLs and
+            # folder labels, and os.path.relpath gives "\\" on Windows.
+            rel = Path(os.path.relpath(path, output_dir)).as_posix()
             files.append({"name": name, "path": rel, "size": size, "task_id": task_id})
     files.sort(key=lambda f: f["path"])
     return files
@@ -443,11 +681,32 @@ def _run(
 
     mark("run_start", user_prompt or prompt)
     holds_slot = False
+    texts: list[str] = []  # the run's agent messages, for the usage summary
+    agent = None
+
+    def report_usage() -> None:
+        """Adds the run's biomni usage to the trace, just before it ends."""
+        global last_run_usage
+        if agent is None:
+            return
+        try:
+            last_run_usage = {**_biomni_usage(texts, agent), "task_id": task_id, "at": time.time()}
+            line = _usage_line(last_run_usage)
+            logger.info("task %s %s", task_id, line)
+            registry.append_step(task_id, "system", line)
+            if chat_id:
+                chat_store.add_message(chat_id, "trace", line)
+        except Exception:  # noqa: BLE001 — stats never break a run
+            logger.exception("usage summary failed")
     try:
         _acquire_run_slot(task_id)
         holds_slot = True
         auth.set_run_user(user)
+        _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
         agent = _get_agent()
+        _reset_run_namespace()
+        global _run_effort
+        _run_effort = (agent.llm, _current_effort)
         registry.mark_running(task_id)
         registry.append_step(task_id, "system", "agent running")
 
@@ -457,6 +716,7 @@ def _run(
             # Guardrails: a stuck model repeats itself indefinitely (burning
             # API credits), so bail on consecutive duplicates or runaway
             # step counts.
+            registry.set_max_steps(task_id, MAX_STEPS)
             last = ""
             repeats = 0
             steps = 0
@@ -469,6 +729,7 @@ def _run(
                 repeats = repeats + 1 if text == last else 0
                 last = text
                 steps += 1
+                texts.append(text)
                 registry.append_step(task_id, "agent", text)
                 if chat_id:  # persist the trace so a page refresh keeps it
                     chat_store.add_message(chat_id, "trace", text)
@@ -493,6 +754,7 @@ def _run(
                 if chat_id:
                     chat_store.add_message(chat_id, "trace", str(entry))
         files = _collect_output_files(output_dir, task_id) if output_dir else []
+        report_usage()
         mark("run_end", f"done in {_fmt_duration(time.time() - t0)}")
         registry.finish(task_id, str(answer), files=files)
         if chat_id:
@@ -512,11 +774,14 @@ def _run(
         message = _friendly_error(exc)
         verb = "stopped" if "stopped by user" in str(exc) else "failed"
         files = _collect_output_files(output_dir, task_id) if output_dir else []
+        report_usage()
         mark("run_end", f"{verb} after {_fmt_duration(time.time() - t0)}")
         registry.fail(task_id, message, files=files)
         if chat_id:
             chat_store.add_message(chat_id, "assistant", f"[error] {message}", files=files)
     finally:
+        # Removes only the links; the uploads they point at stay.
+        shutil.rmtree(Config.INPUT_PATH / task_id, ignore_errors=True)
         if holds_slot:
             auth.set_run_user(None)
             _run_lock.release()

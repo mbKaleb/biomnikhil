@@ -1,14 +1,19 @@
-# Publishes a GitHub release when a version tag is pushed:
+# Publishes a GitHub release when a version tag is pushed, once the tests pass:
 #
 #   git tag v0.2.0 && git push origin v0.2.0          release: lab installs update to it
 #   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  test build: published as a
 #     pre-release, which releases/latest (and so every install) ignores
 #
-# The release carries biomnikhil.zip: the tracked source at that tag plus
-# app/VERSION. Lab installs download it from
+# The release carries biomnikhil-<version>.zip: the tracked source at that tag
+# plus app/VERSION, for people to download. It also carries the same file as
+# biomnikhil.zip, because app/run.ps1 / app/run-mac.sh (and v0.1.0's launchers)
+# update from the fixed URL
 # https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip
-# and app/run.ps1 / app/run-mac.sh fetch the same URL to update themselves. The notes
-# are the commit subjects since the previous tag.
+# and release.txt (the version and the zip's SHA-256) with its Ed25519
+# signature, release.txt.sig, made with the RELEASE_SIGNING_KEY secret. Installs
+# only update to a release whose signature matches the public key in
+# app/installer/update.py.
+# The notes are the commit subjects since the previous tag.
 name: Release
 
 on:
@@ -19,20 +24,44 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # full history and tags, for the notes
 
-      - name: Build biomnikhil.zip
+      - name: Build the zip
         run: |
           echo "${GITHUB_REF_NAME#v}" > VERSION
           # VERSION goes in app/ (the --prefix before --add-file); the tracked
           # files go under biomnikhil/ (the last --prefix).
           git archive --format=zip --prefix=biomnikhil/app/ --add-file=VERSION \
             --prefix=biomnikhil/ -o biomnikhil.zip "$GITHUB_REF_NAME"
+          cp biomnikhil.zip "biomnikhil-${GITHUB_REF_NAME#v}.zip"
+
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::The RELEASE_SIGNING_KEY secret isn't set; see the README's Releasing section."
+            exit 1
+          fi
+          sha=$(sha256sum biomnikhil.zip | cut -d ' ' -f 1)
+          printf 'biomnikhil release\nversion: %s\nsha256: %s\n' "${GITHUB_REF_NAME#v}" "$sha" > release.txt
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -inkey "$key" -rawin -in release.txt | base64 -w0 > release.txt.sig
+          # The same check installs make, against the public key in this tag's
+          # code: a key that doesn't match fails here, not on every lab machine.
+          python3 -I -c "import sys; sys.path.insert(0, 'app/installer'); import update; \
+            print(update.parse_statement(open('release.txt', 'rb').read(), open('release.txt.sig', 'rb').read()))"
 
       - name: Write notes
         run: |
@@ -47,5 +76,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; *) pre=() ;; esac
-          gh release create "$GITHUB_REF_NAME" biomnikhil.zip "${pre[@]}" \
+          gh release create "$GITHUB_REF_NAME" "biomnikhil-${GITHUB_REF_NAME#v}.zip" biomnikhil.zip \
+            release.txt release.txt.sig "${pre[@]}" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md
