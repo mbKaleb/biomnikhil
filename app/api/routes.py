@@ -5,8 +5,10 @@ import io
 import json
 import logging
 import os
+import shutil
 import time
 import zipfile
+from pathlib import Path
 
 from flask import Blueprint, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
@@ -478,6 +480,59 @@ def zip_output_files():
         as_attachment=True,
         download_name="outputs.zip",
     )
+
+
+@bp.post("/outputs/save")
+def save_output_files():
+    """Copy a caller-chosen set of output files into one new folder in the
+    user's Downloads. The server only listens on localhost, so its home
+    folder is the user's. Same {task_id, path} pairs as /outputs/zip. The
+    folder is flat, so same-named files from different runs get a numbered
+    suffix instead of overwriting each other.
+    """
+    body = request.get_json(silent=True) or {}
+    entries = body.get("files") or []
+    if not entries:
+        return jsonify(error="no files given"), 400
+
+    sources = []
+    for entry in entries:
+        task_id = secure_filename(str(entry.get("task_id") or ""))
+        rel = str(entry.get("path") or "")
+        if not task_id or not rel:
+            continue
+        task_dir = Config.OUTPUT_PATH / task_id
+        candidate = (task_dir / rel).resolve()
+        try:
+            candidate.relative_to(task_dir.resolve())
+        except ValueError:
+            continue  # rel escaped its task dir — skip, don't error the whole batch
+        if candidate.is_file() and candidate not in sources:
+            sources.append(candidate)
+    if not sources:
+        return jsonify(error="none of the requested files exist"), 404
+
+    downloads = Path.home() / "Downloads"
+    base_name = f"biomnikhil-outputs-{time.strftime('%Y-%m-%d-%H%M%S')}"
+    folder = downloads / base_name
+    attempt = 1
+    while True:
+        try:
+            folder.mkdir(parents=True)
+            break
+        except FileExistsError:
+            attempt += 1
+            folder = downloads / f"{base_name}-{attempt}"
+
+    for source in sources:
+        target = folder / source.name
+        copy_number = 1
+        while target.exists():
+            copy_number += 1
+            target = folder / f"{source.stem} ({copy_number}){source.suffix}"
+        shutil.copy2(source, target)
+
+    return jsonify(folder=str(folder), count=len(sources))
 
 
 @bp.get("/tasks/<task_id>/stream")

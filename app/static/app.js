@@ -963,34 +963,26 @@ outputDownloadAllBtn.addEventListener("click", async () => {
   if (!visibleOutputFiles.length) return;
   const original = outputDownloadAllBtn.textContent;
   outputDownloadAllBtn.disabled = true;
-  outputDownloadAllBtn.textContent = "Zipping…";
+  outputDownloadAllBtn.textContent = "Saving…";
+  let savedMessage = null;
   try {
-    const res = await fetch("/api/outputs/zip", {
+    const res = await fetch("/api/outputs/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         files: visibleOutputFiles.map((f) => ({ task_id: f.task_id, path: f.path })),
       }),
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "outputs.zip";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    savedMessage = `Saved ${data.count} file${data.count === 1 ? "" : "s"} to ${data.folder}`;
   } catch (err) {
-    outputCountEl.textContent = `Zip failed: ${err.message || err}`;
+    savedMessage = `Save failed: ${err.message || err}`;
   } finally {
     outputDownloadAllBtn.disabled = visibleOutputFiles.length === 0;
     outputDownloadAllBtn.textContent = original;
   }
+  outputCountEl.textContent = savedMessage;
 });
 
 // ---- Markdown answers ----

@@ -1,5 +1,7 @@
 """The guards in app/__init__.py and app/api/routes.py that keep a local
 code-running API from being driven by other websites or agent-written files."""
+from pathlib import Path
+
 from app.config import Config
 
 
@@ -79,3 +81,23 @@ def test_zip_skips_paths_outside_the_task(client, signed_in, token):
 def test_harness_file_cannot_escape_its_folder(client, signed_in):
     response = client.get("/api/harness/recipes/..%2F..%2Fchats.db")
     assert response.status_code == 404
+
+
+def test_save_copies_outputs_into_one_downloads_folder(client, signed_in, token, tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _write_output("save1", "table.csv", b"first")
+    _write_output("save2", "table.csv", b"second")
+    (Config.OUTPUT_PATH / "secret.txt").write_text("secret")
+    files = [
+        {"task_id": "save1", "path": "table.csv"},
+        {"task_id": "save2", "path": "table.csv"},
+        {"task_id": "save1", "path": "../secret.txt"},
+    ]
+    response = client.post("/api/outputs/save", json={"files": files}, headers=token)
+    assert response.status_code == 200
+    assert response.get_json()["count"] == 2
+    folder = Path(response.get_json()["folder"])
+    assert folder.parent == tmp_path / "Downloads"
+    assert (folder / "table.csv").read_bytes() == b"first"
+    assert (folder / "table (2).csv").read_bytes() == b"second"
+    assert not (folder / "secret.txt").exists()
