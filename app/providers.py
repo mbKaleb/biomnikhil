@@ -17,9 +17,8 @@ import time
 logger = logging.getLogger(__name__)
 
 SOURCE = "Anthropic"
-# The fallback list, and the default model (the first): one the
-# bedrock-app-access role's policy allows.
-MODELS: tuple[str, ...] = ("anthropic.claude-haiku-4-5",)
+# The fallback list, and the default model (the first).
+MODELS: tuple[str, ...] = ("anthropic.claude-opus-5", "anthropic.claude-haiku-4-5")
 
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 

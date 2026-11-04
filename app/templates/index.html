@@ -933,6 +933,81 @@
     }
     #file-sort:focus { outline: none; border-color: #5b7fe8; }
     #file-count { margin-top: .55rem; font-size: .76rem; color: #56688c; }
+      /* ---- Task tab: chat layout with a composer docked to the window ---- */
+    #tab-task.active {
+      display: flex; flex-direction: column;
+      min-height: calc(100vh - 9rem);
+    }
+    #messages { flex: 1; margin-top: 0; padding-bottom: 1rem; }
+    .msg { margin-top: 1.4rem; font-size: .97rem; line-height: 1.65; }
+    .msg.user {
+      width: fit-content; max-width: 75%; padding: .6rem 1.1rem;
+      background: #1e2d4f; border: 0; border-radius: 20px;
+    }
+    .msg.assistant {
+      max-width: 100%; padding: 0; background: none; border: 0; border-radius: 0;
+    }
+    .msg.assistant.error, .msg.assistant.stopped {
+      padding: .7rem 1rem; border: 1px solid; border-radius: 12px;
+    }
+    .msg.assistant.error { background: #2c1420; border-color: #6e2438; }
+    .msg.assistant.stopped { background: #131f38; border-color: #2c3f63; }
+    .copy-btn { margin-left: 0; border-color: transparent; }
+
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 45vh; margin: 0; text-align: center;
+      color: #dbe4f3; font-size: 1.6rem; font-weight: 600;
+    }
+    .empty-state .prompt-chips {
+      justify-content: center; margin-top: 1.2rem; font-weight: 400;
+    }
+    .empty-state .prompt-chip { padding: .5rem .9rem; font-size: .85rem; }
+
+    #composer-dock {
+      position: sticky; bottom: 0; z-index: 5; padding: 1.5rem 0 1rem;
+      background: linear-gradient(to bottom, transparent, #0d1526 1.5rem);
+    }
+    #composer {
+      padding: .55rem .6rem; background: #182440;
+      border: 1px solid #2c3f63; border-radius: 26px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, .3);
+      transition: border-color .15s;
+    }
+    #composer:focus-within { border-color: #4a6596; }
+    #composer-row { display: flex; align-items: flex-end; gap: .4rem; }
+    #prompt {
+      flex: 1; min-width: 0; min-height: 0; margin: 0; padding: .45rem .3rem;
+      background: none; border: 0; border-radius: 0; outline: none; resize: none;
+      line-height: 1.5;
+    }
+    #composer-row > button {
+      flex: none; display: flex; align-items: center; justify-content: center;
+      width: 36px; height: 36px; margin: 0; padding: 0; border: 0; border-radius: 50%;
+    }
+    #composer-row > button[hidden] { display: none; }
+    #composer-attach { background: none; color: #a9bce0; }
+    #composer-attach:hover { background: #24345a; color: #fff; }
+    #run { background: #dbe4f3; color: #0d1526; }
+    #run:hover:not(:disabled) { background: #fff; }
+    #run:disabled { background: #2c3f63; color: #7c90b4; opacity: 1; }
+    #composer-row > #stop { margin: 0; background: #dbe4f3; color: #0d1526; font-size: .8rem; }
+    #composer-row > #stop:hover { background: #fff; }
+    /* "Stopping…" is text, so the round button widens to fit it. */
+    #composer-row > #stop:disabled {
+      width: auto; padding: 0 .9rem; border-radius: 18px;
+      background: #2c3f63; color: #a9bce0; opacity: 1;
+    }
+    /* Stop takes the send button's place during a run. */
+    #stop:not([hidden]) + #run { display: none; }
+    #composer .attach-hint { margin: 0 .3rem .45rem; }
+    #composer .attach-hint[hidden] { display: none; }
+    #composer .task-upload-status { margin: 0 .5rem .4rem; }
+    #composer .task-upload-status[hidden] { display: none; }
+    @media (max-width: 520px) {
+      .msg.user { max-width: 88%; }
+      .empty-state { font-size: 1.3rem; }
+    }
   </style>
 </head>
 <body>
@@ -1026,11 +1101,18 @@
 
     <section id="tab-task" class="panel active">
       <div id="messages"></div>
-      <textarea id="prompt" placeholder="Ask the agent something… (Enter to run, Shift+Enter for newline)"></textarea>
-      <button id="run">Run task</button>
-      <button id="stop" hidden><i class="fa-solid fa-stop"></i> Stop</button>
-      <div class="attach-hint" id="attach-hint" hidden></div>
-      <div class="task-upload-status" id="task-upload-status" hidden></div>
+      <div id="composer-dock">
+        <div id="composer">
+          <div class="attach-hint" id="attach-hint" hidden></div>
+          <div class="task-upload-status" id="task-upload-status" hidden></div>
+          <div id="composer-row">
+            <button id="composer-attach" type="button" title="Attach files" aria-label="Attach files"><i class="fa-solid fa-plus"></i></button>
+            <textarea id="prompt" rows="1" placeholder="Ask the agent something…"></textarea>
+            <button id="stop" title="Stop" aria-label="Stop" hidden><i class="fa-solid fa-stop"></i></button>
+            <button id="run" title="Run task" aria-label="Run task"><i class="fa-solid fa-arrow-up"></i></button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="tab-outputs" class="panel">

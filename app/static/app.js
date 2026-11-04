@@ -1204,7 +1204,7 @@ function renderEmptyState() {
   removeEmptyState();
   const emptyState = document.createElement("div");
   emptyState.className = "empty-state";
-  emptyState.textContent = "Try one of these, or ask your own question:";
+  emptyState.textContent = "biomnikhil";
   emptyState.appendChild(createPromptChips(examplePromptsForEmptyChat()));
   messagesEl.appendChild(emptyState);
 }
@@ -1477,6 +1477,16 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     if (btn.dataset.tab === "integrity") startIntegrity();
     else stopIntegrity();
   });
+});
+
+// Cmd+1..n (Ctrl on Windows) picks a tab by its position in the bar.
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  const tabButtons = document.querySelectorAll(".tabs button");
+  const tabButton = tabButtons[Number(e.key) - 1];
+  if (!tabButton) return;
+  e.preventDefault();
+  tabButton.click();
 });
 
 // ---- files ----
@@ -1795,6 +1805,7 @@ async function uploadFiles(files) {
 }
 
 dropzone.addEventListener("click", () => fileInput.click());
+document.getElementById("composer-attach").addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
   uploadFiles([...fileInput.files]);
   fileInput.value = "";
@@ -1919,14 +1930,6 @@ promptEl.addEventListener("input", () => {
   updateRunEnabled();
 });
 promptEl.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    // Enter while composing (Japanese, Chinese…) confirms the composition.
-    // keyCode 229 covers Safari, which ends the composition first.
-    if (event.isComposing || event.keyCode === 229) return;
-    event.preventDefault();
-    submitPrompt();
-    return;
-  }
   if (event.key === "ArrowUp" && promptEl.value === "" && lastUserPrompt) {
     event.preventDefault();
     fillPrompt(lastUserPrompt);
@@ -1948,7 +1951,7 @@ function showStopping() {
 
 function resetStopButton() {
   stopBtn.disabled = false;
-  stopBtn.replaceChildren(faIcon("stop"), document.createTextNode(" Stop"));
+  stopBtn.replaceChildren(faIcon("stop"));
 }
 
 async function requestStop(taskId) {
