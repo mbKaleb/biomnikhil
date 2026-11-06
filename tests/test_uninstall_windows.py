@@ -405,6 +405,7 @@ def test_cleanup_leaves_a_git_checkout_and_everything_in_it(tmp_path):
 def test_cleanup_does_not_follow_a_junction(tmp_path):
     outside = _make_install(tmp_path / "outside")
     link = tmp_path / "profile" / "linked"
+    link.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
     result = _cleanup(tmp_path, "y\n" * 5)
     assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
