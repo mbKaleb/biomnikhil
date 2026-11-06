@@ -2155,9 +2155,8 @@ async function runTask(prompt, options = {}) {
     });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
-      if (errorBody.needs_data_lake_location) {
-        const status = await fetch("/api/datalake").then((r) => r.json());
-        renderDlLocation(status.location);
+      if (errorBody.needs_data_lake) {
+        setDlHidden(false); // shows the download's progress if one is running
         dlModal.classList.add("show");
       }
       throw new Error(errorBody.error || `HTTP ${res.status}`);
@@ -2410,12 +2409,6 @@ function pollDl(hidden = false) {
         dlNote.textContent =
           `Download finished but failed an integrity check ` +
           `(${status.validation_error || "unknown error"}). Click "Download" to retry.`;
-      } else if (status.state === "unavailable") {
-        stopDlPolling();
-        dlModal.classList.remove("downloading");
-        setDlHidden(false);
-        renderDlLocation(status.location);
-        dlNote.textContent = `The data lake folder isn't available: ${status.path}. Reconnect its drive or choose another folder.`;
       } else if (status.state === "error") {
         stopDlPolling();
         dlModal.classList.remove("downloading");
@@ -2430,71 +2423,9 @@ function pollDl(hidden = false) {
   dlTimer = setInterval(tick, 1500);
 }
 
-const dlLocation = document.getElementById("dl-location");
-const dlLocationOptions = document.getElementById("dl-location-options");
-
-function renderDlLocation(location) {
-  dlLocationOptions.replaceChildren();
-  dlLocation.hidden = location.locked;
-  if (location.locked) return;
-  for (const choice of location.choices) {
-    const option = document.createElement("label");
-    option.className = "dl-location-option";
-
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "dl-location";
-    radio.value = choice.kind;
-    radio.checked = choice.kind === location.selected;
-
-    const text = document.createElement("span");
-    text.className = "dl-location-text";
-    text.textContent = choice.label;
-
-    if (choice.editable) {
-      const pathInput = document.createElement("input");
-      pathInput.type = "text";
-      pathInput.value = choice.path;
-      pathInput.placeholder = "Full folder path";
-      pathInput.setAttribute("aria-label", `${choice.label} path`);
-      pathInput.addEventListener("focus", () => { radio.checked = true; });
-      text.append(pathInput);
-    } else {
-      const path = document.createElement("span");
-      path.className = "dl-location-path";
-      path.textContent = choice.path;
-      text.append(path);
-    }
-    option.append(radio, text);
-    dlLocationOptions.append(option);
-  }
-}
-
-// Saves the picked folder; false if the server refused it.
-async function saveDlLocation() {
-  if (dlLocation.hidden) return true;
-  const picked = dlLocationOptions.querySelector('input[type="radio"]:checked');
-  if (!picked) return true;
-  const pathInput = picked.closest("label").querySelector('input[type="text"]');
-  const response = await fetch("/api/datalake/location", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind: picked.value, path: pathInput ? pathInput.value : "" }),
-  });
-  if (response.ok) return true;
-  const failure = await response.json().catch(() => ({}));
-  dlNote.textContent = failure.error || "Couldn't use that folder.";
-  return false;
-}
-
 document.getElementById("dl-start").addEventListener("click", async () => {
   dlNote.textContent = "";
-  if (!(await saveDlLocation())) return;
-  const started = await fetch("/api/datalake/download", { method: "POST" }).then((r) => r.json());
-  if (started.shared) {
-    dlModal.classList.remove("show");
-    return;
-  }
+  await fetch("/api/datalake/download", { method: "POST" });
   pollDl();
 });
 document.getElementById("dl-later").addEventListener("click", () => {
@@ -2530,7 +2461,7 @@ function pollValidationQuietly() {
     if (status.state === "downloading") {
       renderDl(status);
       pollDl(dlHidden);
-    } else if (status.state === "partial" && dlStartedBefore() && status.location.chosen) {
+    } else if (status.state === "partial" && dlStartedBefore()) {
       // Closing the app stopped a download the user had started: pick it
       // back up where it was (finished files are kept), modal or ring as before.
       renderDl(status);
@@ -2538,17 +2469,12 @@ function pollValidationQuietly() {
       pollDl(dlHidden);
     } else if (status.state === "missing" || status.state === "partial") {
       if (status.state === "partial") {
-        dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — keep this location to resume it.`;
+        dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — downloading resumes it.`;
       }
-      renderDlLocation(status.location);
       if (status.duplicates.length) {
         const paths = status.duplicates.map((duplicate) => duplicate.path).join(", ");
-        dlNote.textContent += ` Found another copy at ${paths}: its files will be moved to the location you pick.`;
+        dlNote.textContent += ` Found another copy at ${paths}: its files will be used rather than downloaded again.`;
       }
-      dlModal.classList.add("show");
-    } else if (status.state === "unavailable") {
-      renderDlLocation(status.location);
-      dlNote.textContent = `The data lake folder isn't available: ${status.path}. Reconnect its drive or choose another folder.`;
       dlModal.classList.add("show");
     } else if (status.state === "invalid") {
       dlNote.textContent =

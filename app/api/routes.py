@@ -53,7 +53,7 @@ def chat():
         return jsonify(error="prompt is required"), 400
     blocker = datalake.task_blocker()
     if blocker:
-        return jsonify(error=blocker, needs_data_lake_location=True), 409
+        return jsonify(error=blocker, needs_data_lake=True), 409
 
     # Optional list of previously uploaded filenames to attach to the task.
     attached = []
@@ -131,15 +131,6 @@ def datalake_status():
     return jsonify(datalake.status())
 
 
-@bp.post("/datalake/location")
-def datalake_location():
-    body = request.get_json(silent=True) or {}
-    try:
-        return jsonify(datalake.set_location(str(body.get("kind", "")), str(body.get("path", ""))))
-    except datalake.LocationError as exc:
-        return jsonify(error=str(exc)), 400
-
-
 @bp.post("/datalake/download")
 def datalake_download():
     started = datalake.start_download()
@@ -180,7 +171,6 @@ def _datalake_card() -> dict:
         "downloading": _check("Downloaded", "pending", f"downloading — {st['percent']}% ({size})"),
         "partial": _check("Downloaded", "warn", f"partial — {size}"),
         "missing": _check("Downloaded", "fail", "not downloaded yet"),
-        "unavailable": _check("Downloaded", "fail", f"folder not available: {st['path']}"),
         "error": _check("Downloaded", "fail", st["error"] or "download failed"),
     }[state]
     if state in ("ready", "invalid"):
@@ -200,7 +190,7 @@ def _datalake_card() -> dict:
             kept_note = " (may be shared, so files are copied and it's never emptied)"
         else:
             kept_note = ""
-            can_merge = state not in ("downloading", "unavailable")
+            can_merge = state != "downloading"
         checks.append(_check(
             "Duplicate", "warn",
             f"{duplicate['path']} — {_fmt_bytes(duplicate['bytes'])}, {duplicate['files']:,} files{kept_note}",
@@ -214,7 +204,7 @@ def _datalake_card() -> dict:
         "path": st["path"],
         "invalid_files": st["invalid_files"][:50],
         "validation_error": st["validation_error"],
-        "can_download": state in ("missing", "partial", "error", "invalid") and not st["shared"],
+        "can_download": state in ("missing", "partial", "error", "invalid"),
     }
 
 

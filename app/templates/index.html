@@ -695,14 +695,8 @@
     #dl-modal.downloading .dl-progress { display: block; }
     #dl-modal.downloading .dl-choices { display: none; }
     .dl-choices { display: flex; gap: .6rem; justify-content: flex-end; }
-    .dl-location { border: 0; padding: 0; margin: 0 0 1rem; min-width: 0; }
-    .dl-location legend { padding: 0; margin-bottom: .5rem; font-size: .85rem; }
-    .dl-location-option { display: flex; gap: .5rem; align-items: flex-start; margin-bottom: .5rem; font-size: .85rem; cursor: pointer; }
-    .dl-location-option input[type="radio"] { margin-top: .15rem; flex: none; }
-    .dl-location-text { min-width: 0; flex: 1; }
-    .dl-location-path { display: block; opacity: .7; font-size: .75rem; overflow-wrap: anywhere; }
-    .dl-location-text input[type="text"] { display: block; width: 100%; box-sizing: border-box; margin-top: .25rem; }
-    #dl-modal.downloading .dl-location { display: none; }
+    .dl-size { margin: 0 0 1rem; font-size: .85rem; }
+    #dl-modal.downloading .dl-size { display: none; }
     .dl-hide-row { display: none; justify-content: flex-end; }
     #dl-modal.downloading .dl-hide-row { display: flex; }
     .dl-hide-row .secondary, .dl-choices .secondary {
@@ -1173,10 +1167,7 @@
         </div>
         <div class="dl-stats"><span id="dl-files"></span><span id="dl-eta"></span></div>
       </div>
-      <fieldset class="dl-location" id="dl-location" hidden>
-        <legend>Where should it go? It needs about 14 GB.</legend>
-        <div id="dl-location-options"></div>
-      </fieldset>
+      <p class="dl-size">It needs about 14 GB.</p>
       <div class="dl-choices">
         <button class="secondary" id="dl-later">Later</button>
         <button id="dl-start">Download now</button>
