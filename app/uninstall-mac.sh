@@ -27,6 +27,9 @@ EXIT_REFUSED=2
 EXIT_CANCELLED=3
 
 CONFIRM_WORD="REMOVE"
+WHERE_STANDARD="the standard location"
+LABEL_PROGRAM="the program"
+LABEL_UNINSTALLER="the uninstaller"
 
 PLAN_PATHS=()       # what to delete, each one whole
 PLAN_LABELS=()
@@ -107,6 +110,16 @@ add_to_plan() {  # add_to_plan PATH LABEL: PATH exists and its parent is physica
   PLAN_LABELS+=("$2")
 }
 
+add_cleanup_folder() {  # once each, or a folder kept for a reason would be reported twice
+  local known
+  for known in "${CLEANUP_FOLDERS[@]}"; do
+    if [ "$known" = "$1" ]; then
+      return
+    fi
+  done
+  CLEANUP_FOLDERS+=("$1")
+}
+
 is_covered_by_plan() {
   local planned
   for planned in "${PLAN_PATHS[@]}"; do
@@ -174,7 +187,9 @@ git_tracked_files() {  # lists tracked files under the arguments; fails without 
   command -v git >/dev/null 2>&1 || return 1
   # A Mac without the developer tools has a git stub that opens an installer.
   xcode-select -p >/dev/null 2>&1 || [ -x /usr/local/bin/git ] || [ -x /opt/homebrew/bin/git ] || return 1
-  git -C "$root" ls-files -- "$@" 2>/dev/null
+  # Variables like GIT_DIR would make git answer about some other repository.
+  /usr/bin/env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+    git -C "$root" ls-files -- "$@" 2>/dev/null
 }
 
 inside_someone_elses_repository() {  # a parent folder is a git checkout tracking this folder
@@ -222,15 +237,29 @@ plan_install_entry() {
 
 plan_release_install() {
   local root="$1"
-  plan_install_entry "$root" app "the program"
+  plan_install_entry "$root" app "$LABEL_PROGRAM"
   plan_install_entry "$root" data "settings, chats, uploads, logs, browser storage and any data lake inside"
   plan_install_entry "$root" runtime "Python, uv and download cache"
+  plan_install_entry "$root" uninstall-mac.command "$LABEL_UNINSTALLER"
+  plan_install_entry "$root" uninstall-windows.cmd "$LABEL_UNINSTALLER"
   local name
-  for name in setup.log setup-mac.command setup-windows.cmd uninstall-mac.command uninstall-windows.cmd \
+  for name in setup.log setup-mac.command setup-windows.cmd \
               LICENSE run-mac.sh run.ps1 agent-ideas.md shared-data-lake.md .DS_Store; do
     plan_install_entry "$root" "$name" "launcher or log"
   done
-  CLEANUP_FOLDERS+=("$root")
+  # What releases up to v0.1.3 put at the top of the folder. The updater never removed these.
+  for name in .env .env.example .gitignore .venv README.md "Start biomnikhil.cmd" "Start biomnikhil.command" \
+              docs python requirements.lock requirements.txt scripts tests tools wsgi.py; do
+    plan_install_entry "$root" "$name" "left by an older version"
+  done
+  # An update that stopped partway leaves its temporary copies.
+  local leftover
+  for leftover in "$root"/.*.update; do
+    if [ -f "$leftover" ] && [ ! -L "$leftover" ]; then
+      add_to_plan "$leftover" "left by an interrupted update"
+    fi
+  done
+  add_cleanup_folder "$root"
 }
 
 consider_install() {  # consider_install PATH WHERE
@@ -256,13 +285,15 @@ consider_install() {  # consider_install PATH WHERE
     return
   fi
 
+  # The standard folder is ours by its name, so a setup or an uninstall that stopped
+  # partway is still found. Only known names go, whatever else is in it.
+  if [ "$where" != "$WHERE_STANDARD" ] && ! is_recognised_install "$root"; then
+    add_note "Left alone, because it doesn't look like a biomnikhil install ($where): $root"
+    return
+  fi
   if [ -e "$root/.git" ]; then
     ROOTS+=("$root")
     plan_checkout "$root"
-    return
-  fi
-  if ! is_recognised_install "$root"; then
-    add_note "Left alone, because it doesn't look like a biomnikhil install ($where): $root"
     return
   fi
   if inside_someone_elses_repository "$root"; then
@@ -295,7 +326,7 @@ plan_lake_contents() {  # the app's own names only; anything else in the lake st
       add_to_plan "$lake_dir/$name" "data lake"
     fi
   done
-  CLEANUP_FOLDERS+=("$lake_dir")
+  add_cleanup_folder "$lake_dir"
 }
 
 consider_lake() {  # consider_lake FOLDER SOURCE KIND: KIND is own, system or chosen
@@ -344,6 +375,16 @@ consider_lake() {  # consider_lake FOLDER SOURCE KIND: KIND is own, system or ch
   done
   SEEN_LAKES+=("$lake_dir")
 
+  # Checked before the look of the lake, because a merge can leave only .sizes.json.
+  if [ "$kind" != "system" ] && is_own_lake_parent "$parent"; then
+    plan_lake_contents "$lake_dir"
+    # A preset folder exists only for the lake. Its parent goes if nothing else is in it.
+    if [ "$parent" != "$HOME_FOLDER" ]; then
+      add_cleanup_folder "$parent"
+    fi
+    return
+  fi
+
   local recognised=""
   local name
   for name in data_lake benchmark; do
@@ -356,14 +397,6 @@ consider_lake() {  # consider_lake FOLDER SOURCE KIND: KIND is own, system or ch
     return
   fi
 
-  if [ "$kind" != "system" ] && is_own_lake_parent "$parent"; then
-    plan_lake_contents "$lake_dir"
-    # A preset folder exists only for the lake. Its parent goes if nothing else is in it.
-    if [ "$parent" != "$HOME_FOLDER" ]; then
-      CLEANUP_FOLDERS+=("$parent")
-    fi
-    return
-  fi
   SHARED_LAKE_DIRS+=("$lake_dir")
   SHARED_LAKE_PARENTS+=("$parent")
   if [ "$kind" = "system" ]; then
@@ -428,35 +461,103 @@ find_lakes() {
 
   local preset
   for preset in "$default_parent" "$app_data_parent"; do
-    if [ -d "$preset" ]; then
+    # A symlink may lead to a shared drive, so what it points at needs its own prompt.
+    if [ -d "$preset" ] && [ ! -L "$preset" ]; then
       OWN_LAKE_PARENTS+=("$(canonical_folder "$preset")")
     fi
   done
   local root
-  for root in "${ROOTS[@]}"; do
-    OWN_LAKE_PARENTS+=("$root/data")
-  done
 
   # Shared locations first, so a path saved as shared is never taken for an own one.
-  consider_lake "$system_parent" "the shared folder preset" system
+  # Most computers have no shared folder, so its absence isn't worth a note.
+  if [ -d "$system_parent" ]; then
+    consider_lake "$system_parent" "the shared folder preset" system
+  fi
   for root in "${ROOTS[@]}"; do
     consider_saved_lakes "$root"
   done
   for root in "${ROOTS[@]}"; do
     consider_previous_lakes "$root"
     consider_lake "$(read_env_value "$root/data/.env" BIOMNI_DATA_PATH)" "BIOMNI_DATA_PATH in data/.env" chosen
+    consider_lake "$(read_env_value "$root/.env" BIOMNI_DATA_PATH)" "BIOMNI_DATA_PATH in an older version's .env" chosen
     note_outside_data_paths "$root"
   done
   consider_lake "${BIOMNI_DATA_PATH:-}" "the BIOMNI_DATA_PATH environment variable" chosen
   consider_lake "$default_parent" "the default location" own
   consider_lake "$app_data_parent" "the app data location" own
   for root in "${ROOTS[@]}"; do
-    consider_lake "$root/data" "the app folder" own
+    # A checkout whose data/ stays keeps the lake in it too.
+    if is_covered_by_plan "$root/data"; then
+      consider_lake "$root/data" "the app folder" own
+    fi
   done
+  # A merge empties a lake but leaves the folder around it.
+  for preset in "$default_parent" "$app_data_parent"; do
+    plan_emptied_preset "$preset"
+  done
+}
+
+plan_emptied_preset() {
+  local preset="$1"
+  [ -d "$preset" ] || return 0
+  [ ! -L "$preset" ] || return 0
+  local parent
+  parent="$(canonical_folder "$preset")"
+  local lake_dir="$parent/biomni_data"
+  local shared
+  for shared in "${SHARED_LAKE_DIRS[@]}"; do
+    if [ "$shared" = "$lake_dir" ]; then
+      return 0  # not ours to tidy, and it's asked about on its own
+    fi
+  done
+  add_cleanup_folder "$parent"
 }
 
 
 # ---- shortcuts --------------------------------------------------------------------
+
+root_named_in_shortcut() {  # root_named_in_shortcut FILE SCRIPT: the install a shortcut starts
+  local file="$1"
+  local script="$2"
+  [ -f "$file" ] || return 0
+  [ ! -L "$file" ] || return 0
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "exec /bin/bash "*) line="${line#exec /bin/bash }" ;;
+      "/bin/bash "*) line="${line#/bin/bash }" ;;
+      *) continue ;;
+    esac
+    # Undoes Python's shlex.quote, without ever running what the file says.
+    local single_quote="'"
+    local quoted_quote="'\"'\"'"
+    case "$line" in
+      "'"*"'")
+        line="${line#\'}"
+        line="${line%\'}"
+        line="${line//$quoted_quote/$single_quote}"
+        ;;
+    esac
+    case "$line" in
+      /*"/app/$script") printf '%s' "${line%/app/"$script"}" ;;
+    esac
+    return 0
+  done < "$file"
+}
+
+consider_installs_named_in_shortcuts() {  # an older install can be anywhere
+  local applications="$HOME_FOLDER/Applications"
+  if /usr/bin/grep -q 'edu.ucla.biomnikhil' "$applications/biomnikhil.app/Contents/Info.plist" 2>/dev/null \
+     && [ ! -L "$applications/biomnikhil.app" ]; then
+    consider_install "$(root_named_in_shortcut "$applications/biomnikhil.app/Contents/MacOS/biomnikhil" run-mac.sh)" \
+                     "the folder the biomnikhil app starts"
+  fi
+  local uninstall_shortcut="$applications/Uninstall biomnikhil.command"
+  if /usr/bin/grep -q 'biomnikhil uninstaller shortcut' "$uninstall_shortcut" 2>/dev/null; then
+    consider_install "$(root_named_in_shortcut "$uninstall_shortcut" uninstall-mac.sh)" \
+                     "the folder the uninstaller shortcut names"
+  fi
+}
 
 find_shortcuts() {
   local app_bundle="$HOME_FOLDER/Applications/biomnikhil.app"
@@ -486,7 +587,7 @@ find_shortcuts() {
   local uninstall_shortcut="$HOME_FOLDER/Applications/Uninstall biomnikhil.command"
   if [ -f "$uninstall_shortcut" ] && [ ! -L "$uninstall_shortcut" ]; then
     if /usr/bin/grep -q 'biomnikhil uninstaller shortcut' "$uninstall_shortcut" 2>/dev/null; then
-      add_to_plan "$uninstall_shortcut" "uninstaller shortcut"
+      add_to_plan "$uninstall_shortcut" "$LABEL_UNINSTALLER"
     fi
   fi
 }
@@ -590,16 +691,29 @@ show_notes() {
 
 show_plan() {
   echo
-  if [ "${#PLAN_PATHS[@]}" -eq 0 ]; then
+  if ! has_anything_to_remove; then
     echo "Nothing would be removed without a separate confirmation."
     return
   fi
-  echo "This will permanently delete:"
+  if [ "${#PLAN_PATHS[@]}" -gt 0 ]; then
+    echo "This will permanently delete:"
+  fi
   local index=0
   while [ "$index" -lt "${#PLAN_PATHS[@]}" ]; do
     printf '  %10s  %s  (%s)\n' "$(size_of "${PLAN_PATHS[$index]}")" "${PLAN_PATHS[$index]}" "${PLAN_LABELS[$index]}"
     index=$((index + 1))
   done
+  if [ "${#CLEANUP_FOLDERS[@]}" -gt 0 ]; then
+    echo "These folders go too, if nothing else is left in them:"
+    local folder
+    for folder in "${CLEANUP_FOLDERS[@]}"; do
+      echo "  $folder"
+    done
+  fi
+}
+
+has_anything_to_remove() {
+  [ "${#PLAN_PATHS[@]}" -gt 0 ] || [ "${#CLEANUP_FOLDERS[@]}" -gt 0 ]
 }
 
 read_answer() {
@@ -622,7 +736,7 @@ ask_about_shared_lakes() {
     if [ "$ANSWER" = "$lake_dir" ]; then
       plan_lake_contents "$lake_dir"
       if [ "${SHARED_LAKE_REMOVE_PARENT[$index]}" = "yes" ]; then
-        CLEANUP_FOLDERS+=("$parent")
+        add_cleanup_folder "$parent"
       fi
     else
       add_note "Kept: $lake_dir"
@@ -673,10 +787,10 @@ remove_if_empty() {
   [ ! -L "$folder" ] || return 0
   is_safe_to_delete "$folder" || return 0
   local listing
-  listing="$(/bin/ls -A -- "$folder" 2>/dev/null)"
-  if [ "$listing" = ".DS_Store" ] || [ "$listing" = ".biomnikhil-write-test" ]; then
-    /bin/rm -f -- "$folder/$listing"
-    listing=""
+  # Finder's file and the probe an older version's location picker left don't count.
+  listing="$(/bin/ls -A -- "$folder" 2>/dev/null | /usr/bin/grep -vxE '\.DS_Store|\.biomnikhil-write-test')"
+  if [ -z "$listing" ]; then
+    /bin/rm -f -- "$folder/.DS_Store" "$folder/.biomnikhil-write-test"
   fi
   if [ -n "$listing" ]; then
     add_note "Kept because it holds files biomnikhil didn't create: $folder"
@@ -688,15 +802,36 @@ remove_if_empty() {
 }
 
 delete_everything() {
-  local path
-  for path in "${PLAN_PATHS[@]}"; do
-    echo "Removing $path"
-    delete_path "$path"
+  # The uninstaller itself goes last, and only if the rest went, so that "run this
+  # again" still works after a failure.
+  local index=0
+  while [ "$index" -lt "${#PLAN_PATHS[@]}" ]; do
+    if ! is_needed_to_run_again "${PLAN_LABELS[$index]}"; then
+      echo "Removing ${PLAN_PATHS[$index]}"
+      delete_path "${PLAN_PATHS[$index]}"
+    fi
+    index=$((index + 1))
   done
+  if [ "${#FAILURES[@]}" -gt 0 ]; then
+    return
+  fi
+  index=0
+  while [ "$index" -lt "${#PLAN_PATHS[@]}" ]; do
+    if is_needed_to_run_again "${PLAN_LABELS[$index]}"; then
+      echo "Removing ${PLAN_PATHS[$index]}"
+      delete_path "${PLAN_PATHS[$index]}"
+    fi
+    index=$((index + 1))
+  done
+  # Deepest first, so a folder isn't reported as kept for what's still to go inside it.
   local folder
-  for folder in "${CLEANUP_FOLDERS[@]}"; do
+  while IFS= read -r folder; do
     remove_if_empty "$folder"
-  done
+  done < <(printf '%s\n' "${CLEANUP_FOLDERS[@]}" | /usr/bin/awk '{ print length($0) "\t" $0 }' | /usr/bin/sort -rn | /usr/bin/cut -f 2-)
+}
+
+is_needed_to_run_again() {
+  [ "$1" = "$LABEL_PROGRAM" ] || [ "$1" = "$LABEL_UNINSTALLER" ]
 }
 
 
@@ -727,15 +862,16 @@ main() {
   fi
 
   echo "biomnikhil uninstaller"
-  consider_install "$HOME_FOLDER/Library/biomnikhil" "the standard location"
+  consider_install "$HOME_FOLDER/Library/biomnikhil" "$WHERE_STANDARD"
   consider_install "$started_root" "the folder this was started from"
+  consider_installs_named_in_shortcuts
   find_lakes
   find_shortcuts
   find_ports
 
-  add_note "macOS keeps the app window's sign-in cookies under Python's name (~/Library/WebKit/org.python.python, ~/Library/HTTPStorages/org.python.python*). Other Python programs share them, so they stay."
+  add_note "macOS keeps the app window's sign-in cookies and cache under Python's name (~/Library/WebKit/org.python.python, ~/Library/HTTPStorages/org.python.python*, ~/Library/Caches/org.python.python). Other Python programs share them, so they stay."
 
-  if [ "${#PLAN_PATHS[@]}" -eq 0 ] && [ "${#SHARED_LAKE_DIRS[@]}" -eq 0 ]; then
+  if ! has_anything_to_remove && [ "${#SHARED_LAKE_DIRS[@]}" -eq 0 ]; then
     echo
     echo "No biomnikhil files were found, so nothing was removed."
     show_notes
@@ -745,15 +881,17 @@ main() {
   refuse_if_running
 
   show_plan
-  ask_about_shared_lakes
-  show_plan
+  if [ "${#SHARED_LAKE_DIRS[@]}" -gt 0 ]; then
+    ask_about_shared_lakes
+    show_plan
+  fi
   echo
   if [ "${#NOTES[@]}" -gt 0 ]; then
     echo "Not removed:"
     show_notes
     echo
   fi
-  if [ "${#PLAN_PATHS[@]}" -eq 0 ]; then
+  if ! has_anything_to_remove; then
     echo "Nothing to remove."
     exit "$EXIT_FINISHED"
   fi

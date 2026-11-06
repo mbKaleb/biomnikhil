@@ -15,6 +15,9 @@ if [ ! -d .git ] && [ ! -f runtime/.venv/.biomnikhil-ready ] && [ "$(pwd -P)" !=
     read -r -p "Press Enter to close. " _
     exit 1
   fi
+  if [ -f uninstall-mac.command ]; then
+    /bin/cp -p uninstall-mac.command "$TARGET/" || true
+  fi
   cd "$TARGET"
 fi
 if [ -n "${BIOMNIKHIL_NO_DIALOGS:-}" ] || [ ! -x /usr/bin/perl ]; then

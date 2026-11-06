@@ -9,6 +9,14 @@ set "LAUNCHER_FOLDER=%~dp0"
 cd /d "%TEMP%"
 (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER_FOLDER%app\uninstall.ps1"
+  if errorlevel 3 (
+    pause
+    exit /b 3
+  )
+  if errorlevel 2 (
+    pause
+    exit /b 2
+  )
   if errorlevel 1 (
     pause
     exit /b 1

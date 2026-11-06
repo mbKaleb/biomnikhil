@@ -228,8 +228,8 @@ def _replace_file(source: Path, destination: Path) -> None:
     os.replace(temporary, destination)
 
 
-# Files older releases put at the top of the install. Only the setup launchers
-# belong there now.
+# Files older releases put at the top of the install. Only the setup and
+# uninstall launchers belong there now.
 RETIRED_ROOT_FILES = ("run-mac.sh", "run.ps1", "LICENSE", "agent-ideas.md", "shared-data-lake.md")
 
 

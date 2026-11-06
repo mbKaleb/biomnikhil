@@ -23,7 +23,11 @@ function Show-Failure($Message) {
     }
 }
 
-function Copy-App {  # makes $Target\app match $Source\app
+function Copy-App {  # makes $Target\app match $Source\app, and brings the uninstall launcher
+    $uninstallLauncher = Join-Path $Source "uninstall-windows.cmd"
+    if (Test-Path -LiteralPath $uninstallLauncher) {
+        Copy-Item -LiteralPath $uninstallLauncher -Destination $Target -Force
+    }
     $sourceApp = Join-Path $Source "app"
     $targetApp = Join-Path $Target "app"
     Copy-Item $sourceApp -Destination $Target -Recurse -Force

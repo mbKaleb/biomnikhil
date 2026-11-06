@@ -52,8 +52,18 @@ for a newer release and updates itself first. The server's output goes to
 
 The folder holds everything: `app/` (the program), `data/` (your settings,
 chats, uploads and the data lake) and `runtime/` (Python, uv and its download
-cache; safe to delete, setup rebuilds it). To uninstall, delete the folder and the biomnikhil
-shortcut(s).
+cache; safe to delete, setup rebuilds it).
+
+## Uninstall
+
+Close biomnikhil, then double-click **uninstall-windows** or **uninstall-mac** in the
+install folder or the extracted folder. **Uninstall biomnikhil** is also in the Start
+menu (Windows) and `~/Applications` (Mac) after a reinstall.
+
+It lists every path and size, then asks you to type `REMOVE`. It deletes the install,
+your settings, chats, uploads and logs, the shortcuts, and the data lakes the app owns.
+A shared lake or a folder you chose stays unless you type its full path at its own
+prompt, and then only the lake's own files go. A git checkout keeps its source.
 
 ## Releasing
 
@@ -89,8 +99,8 @@ git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
 ```
 
 `.github/workflows/release.yml` publishes it as a pre-release with
-`biomnikhil-0.2.0-rc1-installer.zip` (plus the same file as `biomnikhil.zip`, the name
-installs update from, and the signed `release.txt`). Lab installs ignore pre-releases, and a test install
+`biomnikhil-0.2.0-rc1-installer.zip`, which unpacks to `biomnikhil-installer/` (plus
+the same files as `biomnikhil.zip`, unpacking to `biomnikhil/`, the names installs update from, and the signed `release.txt`). Lab installs ignore pre-releases, and a test install
 doesn't self-update; download the zip from that pre-release's page. Broken?
 Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
 
@@ -127,9 +137,11 @@ instead. Settings live in `data/.env`.
 
 ```
 setup-windows.cmd, setup-mac.command   double-click launchers (all users see)
+uninstall-windows.cmd, uninstall-mac.command   double-click uninstallers
 LICENSE                 in the release zip, this is app/LICENSE
 app/
   run.ps1, run-mac.sh     launchers: fetch uv, start the installer, self-update, open the app window
+  uninstall.ps1, uninstall-mac.sh  the uninstallers the root launchers start
   installer/              the install window (pywebview + ui/index.html), same on Mac and Windows:
                           system checks, Python, packages, data/.env, shortcuts;
                           window.py is the app window (runs waitress in the background);

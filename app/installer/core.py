@@ -474,6 +474,12 @@ def _mac_app():
     if alias.is_symlink() or not alias.exists():
         alias.unlink(missing_ok=True)
         alias.symlink_to(app)
+    # Next to the app, because ~/Library is hidden in Finder. uninstall-mac.sh
+    # looks for the marker line before it deletes this.
+    uninstall = Path.home() / "Applications" / "Uninstall biomnikhil.command"
+    uninstall.write_text("#!/bin/bash\n# biomnikhil uninstaller shortcut\n"
+                         f"/bin/bash {shlex.quote(str(APP / 'uninstall-mac.sh'))}\n")
+    uninstall.chmod(0o755)
     # Shows the icon right away instead of after Finder's next refresh.
     subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                     "LaunchServices.framework/Support/lsregister", "-f", str(app)], capture_output=True)
@@ -481,7 +487,8 @@ def _mac_app():
 
 def _windows_shortcuts():
     """Desktop and Start menu shortcuts that run app\\run.ps1 in a hidden
-    PowerShell, through the WScript.Shell object every Windows has."""
+    PowerShell, and a Start menu entry for the uninstaller, through the
+    WScript.Shell object every Windows has."""
     def ps_quote(s):
         return "'" + str(s).replace("'", "''") + "'"
     script = f"""
@@ -497,6 +504,13 @@ foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFo
     $lnk.Description = 'Start biomnikhil'
     $lnk.Save()
 }}
+# Starts outside the install folder, because a window's current folder can't be deleted.
+$lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'Uninstall biomnikhil.lnk'))
+$lnk.TargetPath = 'powershell.exe'
+$lnk.Arguments = '-NoProfile -ExecutionPolicy Bypass -NoExit -File "' + {ps_quote(APP / 'uninstall.ps1')} + '"'
+$lnk.WorkingDirectory = '%TEMP%'
+$lnk.Description = 'Remove biomnikhil'
+$lnk.Save()
 """
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                         "-Command", script], capture_output=True, text=True, timeout=60,

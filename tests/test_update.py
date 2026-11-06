@@ -222,3 +222,20 @@ def test_apply_removes_old_root_files(tmp_path):
     assert not (install / "run.ps1").exists()
     assert not (install / "run-mac.sh").exists()
     assert (install / "setup-mac.command").read_text() == "new"
+
+
+def test_apply_brings_the_uninstall_launchers_to_the_install(tmp_path):
+    release = tmp_path / "release"
+    install = tmp_path / "install"
+    (release / "app").mkdir(parents=True)
+    (install / "app").mkdir(parents=True)
+    (release / "app" / "VERSION").write_text("9.9.9\n")
+    (release / "app" / "uninstall-mac.sh").write_text("new")
+    (release / "uninstall-mac.command").write_text("new")
+    (release / "uninstall-windows.cmd").write_text("new")
+
+    update.apply(release, install)
+
+    assert (install / "app" / "uninstall-mac.sh").exists()
+    assert (install / "uninstall-mac.command").exists()
+    assert (install / "uninstall-windows.cmd").exists()
