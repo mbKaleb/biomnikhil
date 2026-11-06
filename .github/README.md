@@ -60,10 +60,19 @@ Close biomnikhil, then double-click **uninstall-windows** or **uninstall-mac** i
 install folder or the extracted folder. **Uninstall biomnikhil** is also in the Start
 menu (Windows) and `~/Applications` (Mac) after a reinstall.
 
-It lists every path and size, then asks you to type `REMOVE`. It deletes the install,
-your settings, chats, uploads and logs, the shortcuts, and the data lakes the app owns.
-A shared lake or a folder you chose stays unless you type its full path at its own
-prompt, and then only the lake's own files go. A git checkout keeps its source.
+It asks which of two things to do:
+
+- **Uninstall** lists every path and size, then asks you to type `REMOVE`. It deletes the
+  install, your settings, chats, uploads and logs, the shortcuts, and the data lakes the
+  app owns. A shared lake or a folder you chose stays unless you type its full path at
+  its own prompt, and then only the lake's own files go. A git checkout keeps its source.
+- **Clean up** leaves the installed app alone and looks for biomnikhil files outside it:
+  older copies, data lakes and downloaded installers. It searches your user folder and
+  cloud folders (OneDrive, iCloud Drive), `/Applications` and `/Users/Shared` on a Mac, and
+  the Public folder and top-level `biomni*` folders on each fixed drive on Windows. It
+  doesn't search network folders, or anything else on other drives. It asks about each
+  one, and only `y` deletes it. A shared lake still needs its full path typed, the lake
+  the app is set to use isn't offered, and a git checkout stays with everything in it.
 
 ## Releasing
 

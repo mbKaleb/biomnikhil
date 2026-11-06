@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # uninstall-mac.sh - removes biomnikhil from this Mac. Started by double-clicking
 # uninstall-mac.command, or:
-#   bash ~/Library/biomnikhil/app/uninstall-mac.sh
+#   bash ~/Library/biomnikhil/app/uninstall-mac.sh [--uninstall | --cleanup]
 #
-# It lists the exact paths and sizes, then needs a typed confirmation. Confirmation
-# is read from standard input. It stays inside the rules below whatever it is told:
+# Without an option it asks which of the two to do.
+#
+# --uninstall lists the exact paths and sizes, then needs a typed confirmation.
+# --cleanup searches for biomnikhil files outside ~/Library/biomnikhil and asks about
+# each one separately: only "y" deletes, and anything else keeps it.
+#
+# Answers are read from standard input. Both stay inside the rules below whatever
+# they are told:
 #   - it deletes only known names: the install's app/, data/, runtime/ and launchers,
 #     and a lake's data_lake/, benchmark/ and .sizes.json, never the folder around them
 #   - symlinks are removed, never followed, and rm doesn't cross mount points
 #   - a lake that may be used by others (a shared folder, or a folder typed in,
 #     which is what app/services/datalake.py treats as maybe shared) stays unless
 #     its full path is typed at its own prompt
-#   - a git checkout keeps its source: only untracked data/ and runtime/ can go
+#   - a git checkout keeps its source: only untracked data/ and runtime/ can go,
+#     and --cleanup leaves a checkout and everything in it alone
 #   - it refuses to run while biomnikhil is running and never stops the app itself
 #
 # bash holds this file open, so deleting the folder it's in doesn't interrupt it.
@@ -20,6 +27,8 @@
 #
 # BIOMNIKHIL_UNINSTALL_TEST_SYSTEM_DIR is for the tests only: it replaces
 # /Library/Application Support, the one location a temporary HOME can't redirect.
+# BIOMNIKHIL_UNINSTALL_TEST_SEARCH is too: it replaces the folders outside HOME that
+# --cleanup searches.
 
 EXIT_FINISHED=0
 EXIT_INCOMPLETE=1
@@ -43,6 +52,18 @@ SHARED_LAKE_PARENTS=()
 SHARED_LAKE_REMOVE_PARENT=()
 NOTES=()            # told to the user, in the list and again at the end
 FAILURES=()
+
+STANDARD_ROOT=""       # where the install belongs; --cleanup leaves it alone
+STRAY_INSTALLS=()
+STRAY_LAKES=()
+STRAY_ZIPS=()
+FOUND_LAKES=()         # biomni_data folders the search saw, before they're checked
+CHECKED_ROOTS=()
+SHORTCUT_ROOTS=()      # stray installs a shortcut starts
+SEARCH_INCOMPLETE=""
+DELETED_COUNT=0
+KEPT_COUNT=0
+ALL_FAILURES=()
 
 
 # ---- paths ----------------------------------------------------------------------
@@ -835,9 +856,448 @@ is_needed_to_run_again() {
 }
 
 
+# ---- cleanup ----------------------------------------------------------------------
+
+is_listed() {  # is_listed VALUE ITEM...: VALUE is one of the items
+  local value="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [ "$item" = "$value" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_in_checkout() {  # git checkouts run where they are. A home folder kept in git doesn't count.
+  local folder="$1"
+  while [ "$folder" != "/" ] && [ "$folder" != "$HOME_FOLDER" ]; do
+    if [ -e "$folder/.git" ]; then
+      return 0
+    fi
+    folder="$(dirname -- "$folder")"
+  done
+  return 1
+}
+
+consider_stray_install() {
+  local given="$1"
+  [ -n "$given" ] || return 0
+  [ -d "$given" ] || return 0
+  [ ! -L "$given" ] || return 0
+  local root
+  root="$(canonical_folder "$given")"
+  [ -n "$root" ] || return 0
+  if is_listed "$root" "${CHECKED_ROOTS[@]}"; then
+    return 0
+  fi
+  CHECKED_ROOTS+=("$root")
+  if is_inside "$root" "$STANDARD_ROOT"; then
+    return 0
+  fi
+  is_recognised_install "$root" || return 0
+  if is_protected "$root"; then
+    add_note "Left alone, because it's the home folder or a system folder: $root"
+    return 0
+  fi
+  if is_in_checkout "$root"; then
+    add_note "Left alone, because it's in a git checkout: $root"
+    return 0
+  fi
+  STRAY_INSTALLS+=("$root")
+  ROOTS+=("$root")
+}
+
+consider_stray_lake() {
+  local lake_dir="$1"
+  if is_listed "$lake_dir" "${SEEN_LAKES[@]}"; then
+    return 0
+  fi
+  SEEN_LAKES+=("$lake_dir")
+  # A merge can leave only .sizes.json in a preset, so only other folders need the look of a lake.
+  if ! is_own_lake_parent "$(dirname -- "$lake_dir")"; then
+    if ! holds_lake_folders "$lake_dir"; then
+      return 0
+    fi
+  fi
+  if is_protected "$lake_dir"; then
+    add_note "Left alone, because it's a protected folder: $lake_dir"
+    return 0
+  fi
+  if is_in_checkout "$lake_dir"; then
+    add_note "Left alone, because it's in a git checkout: $lake_dir"
+    return 0
+  fi
+  STRAY_LAKES+=("$lake_dir")
+}
+
+holds_lake_folders() {
+  local name
+  for name in data_lake benchmark; do
+    if [ -d "$1/$name" ] && [ ! -L "$1/$name" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+search_folder() {  # search_folder FOLDER DEPTH: never follows a symlink or leaves the drive
+  local folder="$1"
+  local depth="$2"
+  [ -d "$folder" ] || return 0
+  [ ! -L "$folder" ] || return 0
+  local start
+  start="$(canonical_folder "$folder")"
+  [ -n "$start" ] || return 0
+  local listing
+  # Hidden folders and the media libraries can't hold an install, and reading the
+  # libraries would ask for macOS permissions this has no use for.
+  if ! listing="$(/usr/bin/find -x "$start" -mindepth 1 -maxdepth "$depth" \
+      \( -type d \( -name '.*' -o -name node_modules -o -name __pycache__ -o -name site-packages \
+         -o -path "$start/Library" -o -path "$start/Pictures" -o -path "$start/Movies" \
+         -o -path "$start/Music" \) -prune \) \
+      -o \( -type d \( -name app -o -name runtime -o -name data -o -name biomni_data \) -print \) \
+      -o \( -type f -name 'biomnikhil*.zip' -print \) 2>/dev/null)"; then
+    SEARCH_INCOMPLETE="yes"
+  fi
+  local found
+  while IFS= read -r found; do
+    [ -n "$found" ] || continue
+    case "$found" in
+      *.zip) add_stray_zip "$found" ;;
+      */biomni_data) FOUND_LAKES+=("$found") ;;
+      *) consider_stray_install "$(dirname -- "$found")" ;;
+    esac
+  done <<< "$listing"
+}
+
+add_stray_zip() {
+  local zip="$1"
+  if is_in_checkout "$zip"; then
+    return 0
+  fi
+  STRAY_ZIPS+=("$zip")
+}
+
+consider_roots_named_in_shortcuts() {  # an install can be anywhere a shortcut says
+  local applications="$HOME_FOLDER/Applications"
+  local named=""
+  if /usr/bin/grep -q 'edu.ucla.biomnikhil' "$applications/biomnikhil.app/Contents/Info.plist" 2>/dev/null \
+     && [ ! -L "$applications/biomnikhil.app" ]; then
+    named="$(root_named_in_shortcut "$applications/biomnikhil.app/Contents/MacOS/biomnikhil" run-mac.sh)"
+    remember_shortcut_root "$named"
+  fi
+  local uninstall_shortcut="$applications/Uninstall biomnikhil.command"
+  if /usr/bin/grep -q 'biomnikhil uninstaller shortcut' "$uninstall_shortcut" 2>/dev/null; then
+    named="$(root_named_in_shortcut "$uninstall_shortcut" uninstall-mac.sh)"
+    remember_shortcut_root "$named"
+  fi
+}
+
+remember_shortcut_root() {
+  local named="$1"
+  [ -n "$named" ] || return 0
+  consider_stray_install "$named"
+  if [ -d "$named" ]; then
+    SHORTCUT_ROOTS+=("$(canonical_folder "$named")")
+  fi
+}
+
+find_strays() {
+  local started_root="$1"
+  local system_support="${BIOMNIKHIL_UNINSTALL_TEST_SYSTEM_DIR:-/Library/Application Support}"
+  local default_parent="$HOME_FOLDER/biomnikhil-data"
+  local app_data_parent="$HOME_FOLDER/Library/Application Support/biomnikhil"
+
+  consider_stray_install "$started_root"
+  consider_roots_named_in_shortcuts
+  search_folder "$HOME_FOLDER" 6
+  search_folder "$HOME_FOLDER/Library/CloudStorage" 6
+  search_folder "$HOME_FOLDER/Library/Mobile Documents/com~apple~CloudDocs" 6
+  if [ -n "${BIOMNIKHIL_UNINSTALL_TEST_SEARCH:-}" ]; then
+    search_folder "$BIOMNIKHIL_UNINSTALL_TEST_SEARCH" 6
+  else
+    search_folder /Applications 3
+    search_folder /Users/Shared 6
+  fi
+
+  # Each of these goes with its install, or is in use, so it is never asked about.
+  local root
+  for root in "$STANDARD_ROOT" "${STRAY_INSTALLS[@]}"; do
+    SEEN_LAKES+=("$root/data/biomni_data")
+  done
+  remember_lake_in_use "$(read_env_value "$STANDARD_ROOT/data/.env" BIOMNI_DATA_PATH)"
+  remember_lake_in_use "${BIOMNI_DATA_PATH:-}"
+
+  # The presets belong to this user, so one question is enough for them.
+  local preset
+  for preset in "$default_parent" "$app_data_parent"; do
+    if [ -d "$preset/biomni_data" ] && [ ! -L "$preset" ] && [ ! -L "$preset/biomni_data" ]; then
+      local preset_parent
+      preset_parent="$(canonical_folder "$preset")"
+      OWN_LAKE_PARENTS+=("$preset_parent")
+      consider_stray_lake "$preset_parent/biomni_data"
+    fi
+  done
+
+  # A shared folder, or one saved in the settings, may be used by others: these
+  # join the lakes that need their full path typed.
+  if [ -d "$system_support/biomnikhil" ]; then
+    consider_lake "$system_support/biomnikhil" "the shared folder preset" system
+  fi
+  for root in "$STANDARD_ROOT" "${STRAY_INSTALLS[@]}"; do
+    consider_saved_lakes "$root"
+    consider_previous_lakes "$root"
+    consider_lake "$(read_env_value "$root/data/.env" BIOMNI_DATA_PATH)" "BIOMNI_DATA_PATH in data/.env" chosen
+    consider_lake "$(read_env_value "$root/.env" BIOMNI_DATA_PATH)" "BIOMNI_DATA_PATH in an older version's .env" chosen
+  done
+
+  local lake_dir
+  for lake_dir in "${FOUND_LAKES[@]}"; do
+    consider_stray_lake "$lake_dir"
+  done
+}
+
+remember_lake_in_use() {
+  local parent="$1"
+  [ -n "$parent" ] || return 0
+  [ -d "$parent" ] || return 0
+  local lake_dir
+  lake_dir="$(canonical_folder "$parent")/biomni_data"
+  if [ -d "$lake_dir" ]; then
+    SEEN_LAKES+=("$lake_dir")
+    add_note "Left alone, because BIOMNI_DATA_PATH points the app at it: $lake_dir"
+  fi
+}
+
+reset_plan() {
+  PLAN_PATHS=()
+  PLAN_LABELS=()
+  CLEANUP_FOLDERS=()
+  FAILURES=()
+}
+
+delete_this_item() {
+  local reason
+  reason="$(running_reason)"
+  if [ -n "$reason" ]; then
+    echo
+    echo "biomnikhil was opened, so the cleanup stopped here ($reason)."
+    echo "Close the biomnikhil window, then run this again."
+    exit "$EXIT_REFUSED"
+  fi
+  delete_everything
+  if [ "${#FAILURES[@]}" -gt 0 ]; then
+    ALL_FAILURES+=("${FAILURES[@]}")
+    return 0
+  fi
+  DELETED_COUNT=$((DELETED_COUNT + 1))
+}
+
+ask_and_delete() {  # lists the plan as one item; only y deletes it
+  show_plan
+  echo "Type y to delete this. Press Enter to keep it."
+  printf '> '
+  read_answer
+  case "$ANSWER" in
+    y|Y|yes|Yes|YES)
+      delete_this_item
+      ;;
+    *)
+      echo "Kept."
+      KEPT_COUNT=$((KEPT_COUNT + 1))
+      ;;
+  esac
+}
+
+offer_install() {
+  local root="$1"
+  [ -d "$root" ] || return 0
+  reset_plan
+  plan_release_install "$root"
+  echo
+  echo "A copy of biomnikhil outside the standard location ($STANDARD_ROOT):"
+  echo "  $root"
+  if is_listed "$root" "${SHORTCUT_ROOTS[@]}"; then
+    echo "The biomnikhil shortcut starts this copy, so the shortcut stops working without it."
+  fi
+  ask_and_delete
+}
+
+offer_lake() {
+  local lake_dir="$1"
+  [ -d "$lake_dir" ] || return 0
+  reset_plan
+  plan_lake_contents "$lake_dir"
+  local parent
+  parent="$(dirname -- "$lake_dir")"
+  # A preset folder exists only for the lake. Its parent goes if nothing else is in it.
+  if is_own_lake_parent "$parent" && [ "$parent" != "$HOME_FOLDER" ] && [ "$parent" != "$STANDARD_ROOT" ]; then
+    add_cleanup_folder "$parent"
+  fi
+  echo
+  echo "A data lake outside the install. Other Biomni programs use this folder name too, so check it isn't theirs:"
+  echo "  $lake_dir"
+  ask_and_delete
+}
+
+offer_shared_lake() {  # offer_shared_lake INDEX: these need the full path typed
+  local lake_dir="${SHARED_LAKE_DIRS[$1]}"
+  [ -d "$lake_dir" ] || return 0
+  if is_in_checkout "$lake_dir"; then
+    add_note "Left alone, because it's in a git checkout: $lake_dir"
+    return 0
+  fi
+  reset_plan
+  plan_lake_contents "$lake_dir"
+  if [ "${SHARED_LAKE_REMOVE_PARENT[$1]}" = "yes" ]; then
+    add_cleanup_folder "${SHARED_LAKE_PARENTS[$1]}"
+  fi
+  echo
+  echo "This data lake may be used by other people or computers, so it is kept unless you say otherwise:"
+  show_plan
+  echo "To delete its data lake files, type its full path: $lake_dir"
+  echo "Press Enter to keep it."
+  printf '> '
+  read_answer
+  if [ "$ANSWER" = "$lake_dir" ]; then
+    delete_this_item
+  else
+    echo "Kept."
+    KEPT_COUNT=$((KEPT_COUNT + 1))
+  fi
+}
+
+offer_zip() {
+  local zip="$1"
+  [ -f "$zip" ] || return 0
+  [ ! -L "$zip" ] || return 0
+  reset_plan
+  add_to_plan "$zip" "a downloaded installer"
+  echo
+  echo "A downloaded biomnikhil installer. Setup doesn't need it any more:"
+  ask_and_delete
+}
+
+offer_dead_shortcuts() {  # shortcuts to a folder that's gone, which this cleanup can cause
+  local applications="$HOME_FOLDER/Applications"
+  local app_bundle="$applications/biomnikhil.app"
+  local named=""
+  if /usr/bin/grep -q 'edu.ucla.biomnikhil' "$app_bundle/Contents/Info.plist" 2>/dev/null \
+     && [ ! -L "$app_bundle" ]; then
+    named="$(root_named_in_shortcut "$app_bundle/Contents/MacOS/biomnikhil" run-mac.sh)"
+    if [ -n "$named" ] && [ ! -f "$named/app/run-mac.sh" ]; then
+      reset_plan
+      add_to_plan "$app_bundle" "app shortcut"
+      local desktop_alias="$HOME_FOLDER/Desktop/biomnikhil.app"
+      if [ -L "$desktop_alias" ] && [ "$(readlink -- "$desktop_alias")" = "$app_bundle" ]; then
+        add_to_plan "$desktop_alias" "Desktop alias"
+      fi
+      echo
+      echo "A shortcut to a biomnikhil folder that no longer exists ($named):"
+      ask_and_delete
+    fi
+  fi
+  local uninstall_shortcut="$applications/Uninstall biomnikhil.command"
+  if [ -f "$uninstall_shortcut" ] && [ ! -L "$uninstall_shortcut" ] \
+     && /usr/bin/grep -q 'biomnikhil uninstaller shortcut' "$uninstall_shortcut" 2>/dev/null; then
+    named="$(root_named_in_shortcut "$uninstall_shortcut" uninstall-mac.sh)"
+    if [ -n "$named" ] && [ ! -f "$named/app/uninstall-mac.sh" ]; then
+      reset_plan
+      add_to_plan "$uninstall_shortcut" "$LABEL_UNINSTALLER"
+      echo
+      echo "A shortcut to a biomnikhil folder that no longer exists ($named):"
+      ask_and_delete
+    fi
+  fi
+}
+
+run_cleanup() {
+  local started_root="$1"
+  echo
+  echo "Searching for biomnikhil files outside $STANDARD_ROOT. This can take a minute."
+  if [ -d "$STANDARD_ROOT" ]; then
+    ROOTS+=("$STANDARD_ROOT")
+  fi
+  find_strays "$started_root"
+  find_ports
+  refuse_if_running
+
+  local item
+  for item in "${STRAY_INSTALLS[@]}"; do
+    offer_install "$item"
+  done
+  for item in "${STRAY_LAKES[@]}"; do
+    offer_lake "$item"
+  done
+  local index=0
+  while [ "$index" -lt "${#SHARED_LAKE_DIRS[@]}" ]; do
+    offer_shared_lake "$index"
+    index=$((index + 1))
+  done
+  for item in "${STRAY_ZIPS[@]}"; do
+    offer_zip "$item"
+  done
+  offer_dead_shortcuts
+
+  echo
+  if [ "$DELETED_COUNT" -eq 0 ] && [ "$KEPT_COUNT" -eq 0 ] && [ "${#ALL_FAILURES[@]}" -eq 0 ]; then
+    echo "No stray biomnikhil files were found."
+  else
+    echo "Cleanup finished: $DELETED_COUNT deleted, $KEPT_COUNT kept."
+  fi
+  if [ -n "$SEARCH_INCOMPLETE" ]; then
+    echo "Some folders couldn't be read, so stray files in them weren't found."
+  fi
+  if [ "${#NOTES[@]}" -gt 0 ]; then
+    echo "Not removed:"
+    show_notes
+  fi
+  if [ "${#ALL_FAILURES[@]}" -gt 0 ]; then
+    echo "These could not be deleted:"
+    local failure
+    for failure in "${ALL_FAILURES[@]}"; do
+      echo "  - $failure"
+    done
+    echo "Close anything using them, or ask an administrator if they need one, then run this again."
+    exit "$EXIT_INCOMPLETE"
+  fi
+  exit "$EXIT_FINISHED"
+}
+
+
 # ---- main -------------------------------------------------------------------------
 
+ask_what_to_do() {
+  echo
+  echo "  1  Uninstall: remove biomnikhil and its data from this computer"
+  echo "  2  Clean up: find biomnikhil files outside where they belong, and ask about each one"
+  echo "Type 1 or 2, or press Enter to cancel."
+  printf '> '
+  read_answer
+  case "$ANSWER" in
+    1) MODE="uninstall" ;;
+    2) MODE="cleanup" ;;
+    *)
+      echo "Cancelled. Nothing was removed."
+      exit "$EXIT_CANCELLED"
+      ;;
+  esac
+}
+
 main() {
+  MODE=""
+  case "$*" in
+    "") ;;
+    --uninstall) MODE="uninstall" ;;
+    --cleanup) MODE="cleanup" ;;
+    *)
+      echo "Unknown option: $*. Use --uninstall or --cleanup. Nothing was removed."
+      exit "$EXIT_REFUSED"
+      ;;
+  esac
+
   local script_folder
   script_folder="$(canonical_folder "$(dirname -- "$0")")"
   local started_root
@@ -862,6 +1322,16 @@ main() {
   fi
 
   echo "biomnikhil uninstaller"
+  if [ -z "$MODE" ]; then
+    ask_what_to_do
+  fi
+  if [ "$MODE" = "cleanup" ]; then
+    STANDARD_ROOT="$HOME_FOLDER/Library/biomnikhil"
+    if [ -d "$STANDARD_ROOT" ]; then
+      STANDARD_ROOT="$(canonical_folder "$STANDARD_ROOT")"
+    fi
+    run_cleanup "$started_root"
+  fi
   consider_install "$HOME_FOLDER/Library/biomnikhil" "$WHERE_STANDARD"
   consider_install "$started_root" "the folder this was started from"
   consider_installs_named_in_shortcuts

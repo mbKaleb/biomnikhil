@@ -1,5 +1,6 @@
 """app/uninstall-mac.sh, run for real on fake trees under a temporary HOME. The
 script is always a copy inside the fake tree, so it never sees a real install."""
+import http.client
 import http.server
 import json
 import os
@@ -27,6 +28,17 @@ def _free_port():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def _real_app_on_default_port():
+    connection = http.client.HTTPConnection("127.0.0.1", 8000, timeout=2)
+    try:
+        connection.request("GET", "/ping")
+        return b"biomnikhil" in connection.getresponse().read()
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def _write(path, text="x"):
@@ -68,13 +80,14 @@ def _environment(tmp_path):
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["BIOMNIKHIL_UNINSTALL_TEST_SYSTEM_DIR"] = str(tmp_path / "system-support")
+    env["BIOMNIKHIL_UNINSTALL_TEST_SEARCH"] = str(tmp_path / "elsewhere")
     env.pop("BIOMNI_DATA_PATH", None)
     return env
 
 
 def _run(tmp_path, root, answers="", extra_env=None):
     assert tmp_path in root.parents  # never a real install
-    command = ["/bin/bash", str(root / "app" / "uninstall-mac.sh")]
+    command = ["/bin/bash", str(root / "app" / "uninstall-mac.sh"), "--uninstall"]
     env = _environment(tmp_path)
     if extra_env:
         env.update(extra_env)
@@ -344,7 +357,7 @@ def test_a_broken_home_is_refused(tmp_path, install):
     env = _environment(tmp_path)
     for bad_home in ("", "relative", "/"):
         env["HOME"] = bad_home
-        command = ["/bin/bash", str(install / "app" / "uninstall-mac.sh")]
+        command = ["/bin/bash", str(install / "app" / "uninstall-mac.sh"), "--uninstall"]
         result = subprocess.run(command, env=env, input="REMOVE\n", capture_output=True, text=True, timeout=60)
         assert result.returncode == EXIT_REFUSED, bad_home
     assert (install / "app" / "config.py").exists()
@@ -582,7 +595,7 @@ def test_finishes_after_deleting_its_own_folder(tmp_path, home, install):
 def test_the_launcher_runs_it_and_passes_on_the_answer(tmp_path, home, install):
     launcher = install / "uninstall-mac.command"
     shutil.copy(REPO / "uninstall-mac.command", launcher)
-    result = subprocess.run(["/bin/bash", str(launcher)], env=_environment(tmp_path), input="REMOVE\n",
+    result = subprocess.run(["/bin/bash", str(launcher)], env=_environment(tmp_path), input="1\nREMOVE\n",
                             cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
     assert not install.exists()
@@ -673,6 +686,8 @@ def test_a_failed_run_keeps_what_it_takes_to_run_again(tmp_path, home, install):
     finally:
         subprocess.run(["/usr/bin/chflags", "nouchg", str(locked)], check=True)
 
+    # The first run took the port setting with it, and 8000 may be a real app on this computer.
+    _write(install / "data" / ".env", f"PORT={_free_port()}\n")
     second = _run(tmp_path, install, "REMOVE\n")
 
     assert second.returncode == EXIT_FINISHED, second.stdout + second.stderr
@@ -683,6 +698,7 @@ def test_a_partial_install_in_the_standard_folder_is_removed(tmp_path, home):
     standard = home / "Library" / "biomnikhil"
     _write(standard / "runtime" / "tools" / "uv")
     _write(standard / "data" / "app.log")
+    _write(standard / "data" / ".env", f"PORT={_free_port()}\n")
     result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
     assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
     assert not standard.exists()
@@ -690,6 +706,8 @@ def test_a_partial_install_in_the_standard_folder_is_removed(tmp_path, home):
 
 def test_an_empty_standard_folder_is_removed(tmp_path, home):
     """setup-mac.command makes the folder before it copies anything."""
+    if _real_app_on_default_port():
+        pytest.skip("biomnikhil is open on this computer, and a folder without settings uses its port")
     standard = home / "Library" / "biomnikhil"
     standard.mkdir(parents=True)
     result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
@@ -759,3 +777,306 @@ def test_the_uninstallers_are_not_left_out_of_the_release_zip(name):
     attribute = subprocess.run(["git", "-C", str(REPO), "check-attr", "export-ignore", "--", name],
                                capture_output=True, text=True, check=True)
     assert attribute.stdout.strip().endswith("unspecified")
+
+
+def _run_script(tmp_path, root, answers, arguments):
+    assert tmp_path in root.parents  # never a real install
+    command = ["/bin/bash", str(root / "app" / "uninstall-mac.sh"), *arguments]
+    return subprocess.run(command, env=_environment(tmp_path), input=answers, cwd=tmp_path,
+                          capture_output=True, text=True, timeout=120)
+
+
+def _tools(tmp_path):
+    """The uninstaller in a folder that isn't an install, so only the search finds things."""
+    tools = tmp_path / "tools"
+    (tools / "app").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "app" / "uninstall-mac.sh", tools / "app" / "uninstall-mac.sh")
+    return tools
+
+
+def _cleanup(tmp_path, answers=""):
+    return _run_script(tmp_path, _tools(tmp_path), answers, ["--cleanup"])
+
+
+def _write_app_shortcut(home, root):
+    bundle = home / "Applications" / "biomnikhil.app"
+    _write(bundle / "Contents" / "Info.plist", "<string>edu.ucla.biomnikhil</string>")
+    _write(bundle / "Contents" / "MacOS" / "biomnikhil", f"#!/bin/bash\nexec /bin/bash '{root}/app/run-mac.sh'\n")
+    return bundle
+
+
+def test_cleanup_keeps_everything_unless_told_otherwise(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "biomnikhil-old")
+    lake = _make_lake(home / "Documents" / "old")
+    result = _cleanup(tmp_path)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "0 deleted, 2 kept" in result.stdout
+    assert (stray / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+@pytest.mark.parametrize("answer", ["n\n", "no\n", "x\n", "REMOVE\n", "\n"])
+def test_cleanup_keeps_it_for_anything_but_y(tmp_path, home, answer):
+    stray = _make_install(home / "Desktop" / "biomnikhil-old")
+    result = _cleanup(tmp_path, answer)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (stray / "app" / "config.py").exists()
+
+
+def test_cleanup_deletes_a_stray_copy_on_y_and_keeps_unknown_files(tmp_path, home):
+    stray = _make_install(home / "Downloads" / "biomnikhil-0.1.4-installer")
+    _make_lake(stray / "data")
+    _write(stray / "my-notes.txt")
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 0 kept" in result.stdout
+    assert not (stray / "app").exists()
+    assert not (stray / "data").exists()
+    assert not (stray / "runtime").exists()
+    assert (stray / "my-notes.txt").exists()
+    assert "didn't create" in result.stdout
+
+
+def test_cleanup_removes_a_stray_copy_whole_when_nothing_else_is_in_it(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "biomnikhil-old")
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not stray.exists()
+
+
+def test_cleanup_asks_about_each_one_separately(tmp_path, home):
+    first = _make_install(home / "Desktop" / "one")
+    second = _make_install(home / "Desktop" / "two")
+    result = _cleanup(tmp_path, "y\n\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 1 kept" in result.stdout
+    still_there = [(first / "app").exists(), (second / "app").exists()]
+    assert sorted(still_there) == [False, True]
+
+
+def test_cleanup_never_touches_the_standard_install_or_its_lake(tmp_path, home, install):
+    lake = _make_lake(install / "data")
+    result = _cleanup(tmp_path, "y\n" * 10)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "No stray biomnikhil files" in result.stdout
+    assert (install / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+def test_cleanup_started_from_the_standard_install_leaves_it(tmp_path, home, install):
+    result = _run_script(tmp_path, install, "y\n" * 5, ["--cleanup"])
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "No stray biomnikhil files" in result.stdout
+    assert (install / "app" / "config.py").exists()
+
+
+def test_cleanup_offers_the_folder_it_started_from(tmp_path, home, install):
+    extracted = _make_install(tmp_path / "extracted")
+    result = _run_script(tmp_path, extracted, "y\n", ["--cleanup"])
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not extracted.exists()
+    assert (install / "app" / "config.py").exists()
+
+
+def test_cleanup_deletes_only_a_lakes_own_files_and_keeps_its_folder(tmp_path, home):
+    chosen = home / "Documents" / "old"
+    lake = _make_lake(chosen)
+    _write(lake / "mine.txt")
+    _write(chosen / "thesis.docx")
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not (lake / "data_lake").exists()
+    assert not (lake / "benchmark").exists()
+    assert not (lake / ".sizes.json").exists()
+    assert (lake / "mine.txt").exists()
+    assert (chosen / "thesis.docx").exists()
+
+
+def test_cleanup_removes_the_old_preset_lakes_and_their_folders_on_y(tmp_path, home, install):
+    default_parent = home / "biomnikhil-data"
+    app_data_parent = home / "Library" / "Application Support" / "biomnikhil"
+    _make_lake(default_parent)
+    _make_lake(app_data_parent)
+    result = _cleanup(tmp_path, "y\ny\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not default_parent.exists()
+    assert not app_data_parent.exists()
+    assert (install / "app" / "config.py").exists()
+
+
+def test_cleanup_leaves_a_lake_the_install_points_at(tmp_path, home):
+    in_use = home / "Documents" / "lake-home"
+    lake = _make_lake(in_use)
+    _make_install(home / "Library" / "biomnikhil", [f"BIOMNI_DATA_PATH={in_use}"])
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "points the app at it" in result.stdout
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+def test_cleanup_needs_the_full_path_for_a_shared_lake(tmp_path, home):
+    shared_parent = tmp_path / "system-support" / "biomnikhil"
+    lake = _make_lake(shared_parent)
+    kept = _cleanup(tmp_path, "y\n")
+    assert kept.returncode == EXIT_FINISHED, kept.stdout + kept.stderr
+    assert (lake / "data_lake" / "genes.parquet").exists()
+    deleted = _cleanup(tmp_path, f"{lake}\n")
+    assert deleted.returncode == EXIT_FINISHED, deleted.stdout + deleted.stderr
+    assert not shared_parent.exists()
+
+
+def test_cleanup_needs_the_full_path_for_a_lake_saved_in_the_settings(tmp_path, home, install):
+    chosen = tmp_path / "external drive"
+    lake = _make_lake(chosen)
+    _save_location(install, "custom", chosen)
+    kept = _cleanup(tmp_path, "y\n")
+    assert kept.returncode == EXIT_FINISHED, kept.stdout + kept.stderr
+    assert (lake / "data_lake" / "genes.parquet").exists()
+    deleted = _cleanup(tmp_path, f"{lake}\n")
+    assert deleted.returncode == EXIT_FINISHED, deleted.stdout + deleted.stderr
+    assert not (lake / "data_lake").exists()
+
+
+def test_cleanup_leaves_a_git_checkout_and_everything_in_it(tmp_path, home):
+    checkout = _make_install(home / "Code" / "biomnikhil")
+    lake = _make_lake(checkout / "data")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "git checkout" in result.stdout
+    assert "0 deleted" in result.stdout or "No stray" in result.stdout
+    assert (checkout / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+def test_cleanup_still_works_when_the_home_folder_is_in_git(tmp_path, home):
+    subprocess.run(["git", "init", "-q", str(home)], check=True)
+    stray = _make_install(home / "Desktop" / "biomnikhil-old")
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not stray.exists()
+
+
+def test_cleanup_does_not_follow_a_symlink(tmp_path, home):
+    outside = _make_install(tmp_path / "outside")
+    (home / "linked").symlink_to(outside)
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (outside / "app" / "config.py").exists()
+
+
+def test_cleanup_searches_outside_home_and_ignores_lookalikes(tmp_path, home):
+    stray = _make_install(tmp_path / "elsewhere" / "biomnikhil")
+    lookalike = home / "Documents" / "project"
+    _write(lookalike / "app" / "main.py")
+    _write(lookalike / "data" / "results.csv")
+    _write(home / "Documents" / "other" / "biomni_data" / "mine.txt")
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 0 kept" in result.stdout
+    assert not stray.exists()
+    assert (lookalike / "app" / "main.py").exists()
+    assert (lookalike / "data" / "results.csv").exists()
+    assert (home / "Documents" / "other" / "biomni_data" / "mine.txt").exists()
+
+
+def test_cleanup_does_not_search_library_or_hidden_folders(tmp_path, home):
+    in_library = _make_install(home / "Library" / "Caches" / "biomnikhil")
+    hidden = _make_install(home / ".Trash" / "biomnikhil")
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "No stray biomnikhil files" in result.stdout
+    assert (in_library / "app" / "config.py").exists()
+    assert (hidden / "app" / "config.py").exists()
+
+
+def test_cleanup_offers_downloaded_installers_only(tmp_path, home):
+    downloads = home / "Downloads"
+    installer = downloads / "biomnikhil-0.1.5-installer.zip"
+    other = downloads / "photos.zip"
+    _write(installer)
+    _write(other)
+    result = _cleanup(tmp_path, "y\ny\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not installer.exists()
+    assert other.exists()
+
+
+def test_cleanup_warns_about_a_shortcut_then_offers_to_remove_it(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "old")
+    _write(stray / "app" / "run-mac.sh")
+    bundle = _write_app_shortcut(home, stray)
+    result = _cleanup(tmp_path, "y\ny\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "shortcut starts this copy" in result.stdout
+    assert not stray.exists()
+    assert not bundle.exists()
+
+
+def test_cleanup_leaves_a_shortcut_to_a_folder_that_exists(tmp_path, home, install):
+    _write(install / "app" / "run-mac.sh")
+    bundle = _write_app_shortcut(home, install)
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert bundle.exists()
+
+
+def test_cleanup_reports_what_it_could_not_delete(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "old")
+    locked = stray / "data" / "locked.txt"
+    _write(locked)
+    subprocess.run(["/usr/bin/chflags", "uchg", str(locked)], check=True)
+    try:
+        result = _cleanup(tmp_path, "y\n")
+        assert result.returncode == EXIT_INCOMPLETE, result.stdout + result.stderr
+        assert "could not be deleted" in result.stdout
+        assert locked.exists()
+    finally:
+        subprocess.run(["/usr/bin/chflags", "nouchg", str(locked)], check=True)
+
+
+def test_cleanup_refuses_while_a_stray_copy_runs(tmp_path, home):
+    port = _free_port()
+    stray = _make_install(home / "Desktop" / "old")
+    _write(stray / "data" / ".env", f"PORT={port}\n")
+
+    class Ping(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"biomnikhil")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", port), Ping)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _cleanup(tmp_path, "y\n")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == EXIT_REFUSED, result.stdout + result.stderr
+    assert (stray / "app" / "config.py").exists()
+
+
+def test_the_menu_cancels_by_default(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "old")
+    for answer in ("", "\n", "3\n"):
+        result = _run_script(tmp_path, _tools(tmp_path), answer, [])
+        assert result.returncode == EXIT_CANCELLED, result.stdout + result.stderr
+        assert (stray / "app" / "config.py").exists()
+
+
+def test_the_menu_starts_cleanup(tmp_path, home):
+    stray = _make_install(home / "Desktop" / "old")
+    result = _run_script(tmp_path, _tools(tmp_path), "2\ny\n", [])
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not stray.exists()
+
+
+def test_an_unknown_option_is_refused(tmp_path, home, install):
+    result = _run_script(tmp_path, install, "1\nREMOVE\n", ["--everything"])
+    assert result.returncode == EXIT_REFUSED, result.stdout + result.stderr
+    assert (install / "app" / "config.py").exists()

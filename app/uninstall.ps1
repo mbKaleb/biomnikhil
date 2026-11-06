@@ -1,16 +1,23 @@
 # uninstall.ps1 - removes biomnikhil from this PC. Started by double-clicking
 # uninstall-windows.cmd, by the Start menu's Uninstall biomnikhil entry, or:
-#   powershell -ExecutionPolicy Bypass -File app\uninstall.ps1
+#   powershell -ExecutionPolicy Bypass -File app\uninstall.ps1 [-Mode uninstall|cleanup]
 #
-# It lists the exact paths and sizes, then needs a typed confirmation, read from
-# standard input. It stays inside these rules whatever it is told:
+# Without -Mode it asks which of the two to do.
+#
+# Uninstall lists the exact paths and sizes, then needs a typed confirmation.
+# Cleanup searches for biomnikhil files outside %LOCALAPPDATA%\biomnikhil and asks
+# about each one separately: only "y" deletes, and anything else keeps it.
+#
+# Answers are read from standard input. Both stay inside these rules whatever
+# they are told:
 #   - it deletes only known names: the install's app\, data\, runtime\ and launchers,
 #     and a lake's data_lake\, benchmark\ and .sizes.json, never the folder around them
 #   - junctions and symlinks are removed, never followed
 #   - a lake that may be used by others (a shared folder, or a folder typed in,
 #     which is what app\services\datalake.py treats as maybe shared) stays unless
 #     its full path is typed at its own prompt
-#   - a git checkout keeps its source: only untracked data\ and runtime\ can go
+#   - a git checkout keeps its source: only untracked data\ and runtime\ can go,
+#     and cleanup leaves a checkout and everything in it alone
 #   - it refuses to run while biomnikhil is running and never stops the app itself
 #
 # So that it can delete its own folder, it first copies itself to a temp folder
@@ -21,9 +28,12 @@
 #
 # BIOMNIKHIL_UNINSTALL_TEST_DESKTOP and BIOMNIKHIL_UNINSTALL_TEST_PROGRAMS are for
 # the tests only: Windows reports those two folders whatever the environment says.
+# BIOMNIKHIL_UNINSTALL_TEST_SEARCH is too: it replaces the folders outside the
+# profile that cleanup searches.
 
 param(
-    [string]$StartedFrom = ""
+    [string]$StartedFrom = "",
+    [string]$Mode = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +48,11 @@ $LabelProgram = "the program"
 $LabelUninstaller = "the uninstaller"
 $RemoveAttempts = 3
 
+if ($Mode -and ($Mode -ne "uninstall") -and ($Mode -ne "cleanup")) {
+    Write-Host "Unknown mode: $Mode. Use uninstall or cleanup. Nothing was removed."
+    exit $ExitRefused
+}
+
 if (-not $StartedFrom) {
     $originalRoot = Split-Path -Parent $PSScriptRoot
     $tempRoot = [IO.Path]::GetTempPath()
@@ -49,7 +64,12 @@ if (-not $StartedFrom) {
     Set-Location -LiteralPath $tempRoot
     [Environment]::CurrentDirectory = $tempRoot
     $engine = (Get-Process -Id $PID).Path
-    & $engine -NoProfile -ExecutionPolicy Bypass -File $tempCopy -StartedFrom $originalRoot
+    $childArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $tempCopy, "-StartedFrom", $originalRoot)
+    # Only when set: PowerShell 5.1 drops an empty argument, which would leave -Mode without a value.
+    if ($Mode) {
+        $childArguments += @("-Mode", $Mode)
+    }
+    & $engine @childArguments
     $childExitCode = $LASTEXITCODE
     Remove-Item -LiteralPath $tempFolder -Recurse -Force -ErrorAction SilentlyContinue
     exit $childExitCode
@@ -64,6 +84,17 @@ $script:OwnLakeParents = New-Object System.Collections.ArrayList
 $script:SharedLakes = New-Object System.Collections.ArrayList
 $script:Notes = New-Object System.Collections.ArrayList
 $script:Failures = New-Object System.Collections.ArrayList
+$script:StandardRoot = ""  # where the install belongs; cleanup leaves it alone
+$script:StrayInstalls = New-Object System.Collections.ArrayList
+$script:StrayLakes = New-Object System.Collections.ArrayList
+$script:StrayZips = New-Object System.Collections.ArrayList
+$script:FoundLakes = New-Object System.Collections.ArrayList  # what the search saw, before it's checked
+$script:CheckedRoots = New-Object System.Collections.ArrayList
+$script:ShortcutRoots = New-Object System.Collections.ArrayList  # stray installs a shortcut starts
+$script:SearchIncomplete = $false
+$script:DeletedCount = 0
+$script:KeptCount = 0
+$script:AllFailures = New-Object System.Collections.ArrayList
 
 
 # ---- paths --------------------------------------------------------------------
@@ -124,7 +155,15 @@ function Test-Entry([string]$Path) {  # only "not found" means gone: access deni
 function Test-ReparsePoint([string]$Path) {  # a junction or symlink
     $attributes = Get-EntryAttributes $Path
     if ($null -eq $attributes) { return $false }
-    return (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }
+    # OneDrive marks its synced folders and online-only files this way too, and those
+    # aren't links. Anything that can't be checked counts as a link, which is left alone.
+    try {
+        $item = Get-Item -LiteralPath (Get-LongPath $Path) -Force
+        return ($null -ne $item.LinkType)
+    } catch {
+        return $true
+    }
 }
 
 function Test-Folder([string]$Path) {
@@ -712,7 +751,7 @@ function Remove-Tree([string]$Path) {  # junctions and symlinks lose only the li
     $attributes = Get-EntryAttributes $Path
     if ($null -eq $attributes) { return }
     $isFolder = (($attributes -band [IO.FileAttributes]::Directory) -ne 0)
-    $isLink = (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    $isLink = Test-ReparsePoint $Path
 
     if ($isFolder -and -not $isLink) {
         try {
@@ -798,7 +837,456 @@ function Remove-IfEmpty([string]$Folder) {
 }
 
 
+function Remove-CurrentPlan {
+    # The uninstaller itself goes last, and only if the rest went, so that "run this
+    # again" still works after a failure.
+    foreach ($item in $script:Plan) {
+        if (($item.Label -ne $LabelProgram) -and ($item.Label -ne $LabelUninstaller)) {
+            Write-Host "Removing $($item.Path)"
+            Remove-Planned $item.Path
+        }
+    }
+    if ($script:Failures.Count -gt 0) { return }
+    foreach ($item in $script:Plan) {
+        if (($item.Label -eq $LabelProgram) -or ($item.Label -eq $LabelUninstaller)) {
+            Write-Host "Removing $($item.Path)"
+            Remove-Planned $item.Path
+        }
+    }
+    # Deepest first, so a folder isn't reported as kept for what's still to go inside it.
+    $deepestFirst = @($script:CleanupFolders | Sort-Object -Property Length -Descending)
+    foreach ($folder in $deepestFirst) {
+        Remove-IfEmpty $folder
+    }
+}
+
+
+# ---- cleanup ----------------------------------------------------------------------
+
+function Test-Listed([string]$Value, $Items) {
+    foreach ($item in $Items) {
+        if ($item -ieq $Value) { return $true }
+    }
+    return $false
+}
+
+function Test-InCheckout([string]$Path) {  # git checkouts run where they are. A profile kept in git doesn't count.
+    $folder = $Path
+    while ($folder -and ($folder -ine $script:HomeFolder)) {
+        if (Test-Entry (Join-Path $folder ".git")) { return $true }
+        $folder = Split-Path -Parent $folder
+    }
+    return $false
+}
+
+function Add-StrayInstall([string]$Given) {
+    $root = Get-CleanPath $Given
+    if (-not $root) { return }
+    if (-not (Test-Folder $root)) { return }
+    if (Test-ReparsePoint $root) { return }
+    if (Test-Listed $root $script:CheckedRoots) { return }
+    [void]$script:CheckedRoots.Add($root)
+    if (Test-Inside $root $script:StandardRoot) { return }
+    if (-not (Test-RecognisedInstall $root)) { return }
+    if (Test-Protected $root) {
+        Add-Note "Left alone, because it's a drive root, the profile folder or a system folder: $root"
+        return
+    }
+    if (Test-InCheckout $root) {
+        Add-Note "Left alone, because it's in a git checkout: $root"
+        return
+    }
+    [void]$script:StrayInstalls.Add($root)
+    [void]$script:Roots.Add($root)
+}
+
+function Test-HoldsLakeFolders([string]$LakeDir) {
+    foreach ($name in @("data_lake", "benchmark")) {
+        $inner = Join-Path $LakeDir $name
+        if ((Test-Folder $inner) -and -not (Test-ReparsePoint $inner)) { return $true }
+    }
+    return $false
+}
+
+function Add-StrayLake([string]$LakeDir) {
+    if (Test-Listed $LakeDir $script:SeenLakes) { return }
+    [void]$script:SeenLakes.Add($LakeDir)
+    # A merge can leave only .sizes.json in a preset, so only other folders need the look of a lake.
+    $isOwn = Test-OwnLakeParent (Split-Path -Parent $LakeDir)
+    if ((-not $isOwn) -and (-not (Test-HoldsLakeFolders $LakeDir))) { return }
+    if (Test-Protected $LakeDir) {
+        Add-Note "Left alone, because it's a protected folder: $LakeDir"
+        return
+    }
+    if (Test-InCheckout $LakeDir) {
+        Add-Note "Left alone, because it's in a git checkout: $LakeDir"
+        return
+    }
+    [void]$script:StrayLakes.Add($LakeDir)
+}
+
+function Add-StrayZip([string]$Zip) {
+    if (Test-Listed $Zip $script:StrayZips) { return }
+    if (Test-InCheckout $Zip) { return }
+    [void]$script:StrayZips.Add($Zip)
+}
+
+function Search-Folder([string]$Start, [int]$MaxDepth) {  # never follows a junction or symlink
+    $startPath = Get-CleanPath $Start
+    if (-not $startPath) { return }
+    if (-not (Test-Folder $startPath)) { return }
+    if (Test-ReparsePoint $startPath) { return }
+    # Hidden folders and these can't hold an install, and they would slow the search badly.
+    $skippedNames = @("node_modules", "__pycache__", "site-packages", "AppData")
+    $installNames = @("app", "runtime", "data")
+    $pending = New-Object System.Collections.Stack
+    $pending.Push([pscustomobject]@{ Path = $startPath; Depth = 1 })
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        $longFolder = Get-LongPath $current.Path
+        try {
+            $childFolders = [IO.Directory]::GetDirectories($longFolder)
+            $zipFiles = [IO.Directory]::GetFiles($longFolder, "biomnikhil*.zip")
+        } catch {
+            $script:SearchIncomplete = $true
+            continue
+        }
+        foreach ($zipFile in $zipFiles) {
+            # The file system also matches longer extensions such as .zipx.
+            if ($zipFile -like "*.zip") {
+                $zipName = $zipFile.Substring($zipFile.LastIndexOf("\") + 1)
+                Add-StrayZip ($current.Path + "\" + $zipName)
+            }
+        }
+        foreach ($childFolder in $childFolders) {
+            $name = $childFolder.Substring($childFolder.LastIndexOf("\") + 1)
+            if ($name.StartsWith(".") -or ($skippedNames -contains $name)) { continue }
+            $childPath = $current.Path + "\" + $name
+            if (Test-ReparsePoint $childPath) { continue }
+            if ($installNames -contains $name) {
+                Add-StrayInstall $current.Path
+            }
+            if ($name -ieq "biomni_data") {
+                [void]$script:FoundLakes.Add($childPath)
+            }
+            if ($current.Depth -lt $MaxDepth) {
+                $pending.Push([pscustomobject]@{ Path = $childPath; Depth = $current.Depth + 1 })
+            }
+        }
+    }
+}
+
+function Search-DriveRoots {  # only folders at the top of a drive that are named for biomni
+    foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+        if ($drive.DriveType -ne [IO.DriveType]::Fixed) { continue }
+        if (-not $drive.IsReady) { continue }
+        try {
+            $folders = [IO.Directory]::GetDirectories($drive.RootDirectory.FullName, "biomni*")
+        } catch {
+            $script:SearchIncomplete = $true
+            continue
+        }
+        foreach ($folder in $folders) {
+            if (Test-ReparsePoint $folder) { continue }
+            if ((Split-Path -Leaf $folder) -ieq "biomni_data") {
+                [void]$script:FoundLakes.Add($folder)
+            } else {
+                Search-Folder $folder 5
+            }
+        }
+    }
+}
+
+function Search-OutsideProfile {
+    $testFolder = [Environment]::GetEnvironmentVariable("BIOMNIKHIL_UNINSTALL_TEST_SEARCH")
+    if ($testFolder) {
+        Search-Folder $testFolder 6
+        return
+    }
+    $folders = @($env:PUBLIC, $env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)
+    foreach ($folder in $folders) {
+        # A OneDrive folder inside the profile has been searched already.
+        if ($folder -and -not (Test-Inside $folder $script:HomeFolder)) {
+            Search-Folder $folder 6
+        }
+    }
+    Search-DriveRoots
+}
+
+function Get-ShortcutRoot([string]$Path, [string]$Script) {  # the install a shortcut starts, or ""
+    if (-not (Test-File $Path)) { return "" }
+    if (Test-ReparsePoint $Path) { return "" }
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $arguments = [string]$shell.CreateShortcut($Path).Arguments
+    } catch {
+        return ""
+    }
+    $match = [regex]::Match($arguments, '-File\s+"([^"]*)\\app\\' + $Script + '\.ps1"')
+    if ($match.Success) { return $match.Groups[1].Value }
+    return ""
+}
+
+function Get-OurShortcuts {
+    return @(
+        [pscustomobject]@{ Path = (Join-Path $script:DesktopFolder "biomnikhil.lnk"); Script = "run"; Label = "Desktop shortcut" },
+        [pscustomobject]@{ Path = (Join-Path $script:ProgramsFolder "biomnikhil.lnk"); Script = "run"; Label = "Start menu shortcut" },
+        [pscustomobject]@{ Path = (Join-Path $script:ProgramsFolder "Uninstall biomnikhil.lnk"); Script = "uninstall"; Label = "Start menu uninstaller" }
+    )
+}
+
+function Add-RootsNamedInShortcuts {  # an install can be anywhere a shortcut says
+    foreach ($shortcut in (Get-OurShortcuts)) {
+        $named = Get-ShortcutRoot $shortcut.Path $shortcut.Script
+        if (-not $named) { continue }
+        Add-StrayInstall $named
+        [void]$script:ShortcutRoots.Add((Get-CleanPath $named))
+    }
+}
+
+function Add-LakeInUse([string]$Parent) {
+    $parentPath = Get-CleanPath $Parent
+    if (-not $parentPath) { return }
+    $lakeDir = Join-Path $parentPath "biomni_data"
+    if (Test-Folder $lakeDir) {
+        [void]$script:SeenLakes.Add($lakeDir)
+        Add-Note "Left alone, because BIOMNI_DATA_PATH points the app at it: $lakeDir"
+    }
+}
+
+function Add-LakesNamedBy([string]$Root) {  # may be used by others, so these need the full path typed
+    $saved = Read-SavedLocation $Root
+    if ($null -ne $saved) {
+        if ($saved.kind -eq "system") {
+            Add-LakeIfFound ([string]$saved.path) "the shared folder saved in the app" "system"
+        } else {
+            Add-LakeIfFound ([string]$saved.path) "the folder saved in the app" "chosen"
+        }
+        foreach ($previous in @($saved.previous)) {
+            if ($previous) { Add-LakeIfFound ([string]$previous) "a folder used earlier" "chosen" }
+        }
+    }
+    Add-LakeIfFound (Read-EnvValue (Join-Path $Root "data\.env") "BIOMNI_DATA_PATH") "BIOMNI_DATA_PATH in data\.env" "chosen"
+    Add-LakeIfFound (Read-EnvValue (Join-Path $Root ".env") "BIOMNI_DATA_PATH") "BIOMNI_DATA_PATH in an older version's .env" "chosen"
+}
+
+function Find-Strays {
+    Add-StrayInstall $StartedFrom
+    Add-RootsNamedInShortcuts
+    Search-Folder $script:HomeFolder 6
+    Search-OutsideProfile
+
+    # Each of these goes with its install, or is in use, so it is never asked about.
+    $installs = @($script:StandardRoot) + @($script:StrayInstalls)
+    foreach ($root in $installs) {
+        [void]$script:SeenLakes.Add((Join-Path $root "data\biomni_data"))
+    }
+    Add-LakeInUse (Read-EnvValue (Join-Path $script:StandardRoot "data\.env") "BIOMNI_DATA_PATH")
+    Add-LakeInUse $env:BIOMNI_DATA_PATH
+
+    # The presets belong to this user, so one question is enough for them.
+    $presets = @((Join-Path $script:HomeFolder "biomnikhil-data"), (Join-Path $env:LOCALAPPDATA "biomnikhil"))
+    foreach ($preset in $presets) {
+        $presetPath = Get-CleanPath $preset
+        $lakeDir = Join-Path $presetPath "biomni_data"
+        if ((Test-Folder $lakeDir) -and (-not (Test-ReparsePoint $presetPath)) -and (-not (Test-ReparsePoint $lakeDir))) {
+            [void]$script:OwnLakeParents.Add($presetPath)
+            Add-StrayLake $lakeDir
+        }
+    }
+
+    $programData = $env:ProgramData
+    if (-not $programData) { $programData = "C:\ProgramData" }
+    $systemParent = Join-Path $programData "biomnikhil"
+    if (Test-Folder $systemParent) {
+        Add-LakeIfFound $systemParent "the shared folder preset" "system"
+    }
+    foreach ($root in $installs) {
+        Add-LakesNamedBy $root
+    }
+
+    foreach ($lakeDir in $script:FoundLakes) {
+        Add-StrayLake $lakeDir
+    }
+}
+
+function Reset-Plan {
+    $script:Plan.Clear()
+    $script:CleanupFolders.Clear()
+    $script:Failures.Clear()
+}
+
+function Remove-ThisItem {
+    $reason = Get-RunningReason
+    if ($reason) {
+        Write-Host ""
+        Write-Host "biomnikhil was opened, so the cleanup stopped here ($reason)."
+        Write-Host "Close the biomnikhil window, then run this again."
+        exit $ExitRefused
+    }
+    Remove-CurrentPlan
+    if ($script:Failures.Count -gt 0) {
+        foreach ($failure in $script:Failures) {
+            [void]$script:AllFailures.Add($failure)
+        }
+        return
+    }
+    $script:DeletedCount = $script:DeletedCount + 1
+}
+
+function Confirm-ThenRemove {  # lists the plan as one item; only y deletes it
+    Show-Plan
+    Write-Host "Type y to delete this. Press Enter to keep it."
+    Write-Host -NoNewline "> "
+    $answer = Read-Answer
+    if (($answer -eq "y") -or ($answer -eq "yes")) {
+        Remove-ThisItem
+    } else {
+        Write-Host "Kept."
+        $script:KeptCount = $script:KeptCount + 1
+    }
+}
+
+function Invoke-StrayInstall([string]$Root) {
+    if (-not (Test-Folder $Root)) { return }
+    Reset-Plan
+    Add-ReleaseInstall $Root
+    Write-Host ""
+    Write-Host "A copy of biomnikhil outside the standard location ($($script:StandardRoot)):"
+    Write-Host "  $Root"
+    if (Test-Listed $Root $script:ShortcutRoots) {
+        Write-Host "A biomnikhil shortcut starts this copy, so the shortcut stops working without it."
+    }
+    Confirm-ThenRemove
+}
+
+function Invoke-StrayLake([string]$LakeDir) {
+    if (-not (Test-Folder $LakeDir)) { return }
+    Reset-Plan
+    Add-LakeContents $LakeDir
+    $parent = Split-Path -Parent $LakeDir
+    # A preset folder exists only for the lake. Its parent goes if nothing else is in it.
+    if ((Test-OwnLakeParent $parent) -and ($parent -ine $script:HomeFolder) -and ($parent -ine $script:StandardRoot)) {
+        Add-CleanupFolder $parent
+    }
+    Write-Host ""
+    Write-Host "A data lake outside the install. Other Biomni programs use this folder name too, so check it isn't theirs:"
+    Write-Host "  $LakeDir"
+    Confirm-ThenRemove
+}
+
+function Invoke-SharedLake($Shared) {  # these need the full path typed
+    if (-not (Test-Folder $Shared.LakeDir)) { return }
+    if (Test-InCheckout $Shared.LakeDir) {
+        Add-Note "Left alone, because it's in a git checkout: $($Shared.LakeDir)"
+        return
+    }
+    Reset-Plan
+    Add-LakeContents $Shared.LakeDir
+    if ($Shared.RemoveParent) {
+        Add-CleanupFolder $Shared.Parent
+    }
+    Write-Host ""
+    Write-Host "This data lake may be used by other people or computers, so it is kept unless you say otherwise:"
+    Show-Plan
+    Write-Host "To delete its data lake files, type its full path: $($Shared.LakeDir)"
+    Write-Host "Press Enter to keep it."
+    Write-Host -NoNewline "> "
+    $answer = Read-Answer
+    if ($answer -ceq $Shared.LakeDir) {
+        Remove-ThisItem
+    } else {
+        Write-Host "Kept."
+        $script:KeptCount = $script:KeptCount + 1
+    }
+}
+
+function Invoke-StrayZip([string]$Zip) {
+    if (-not (Test-File $Zip)) { return }
+    if (Test-ReparsePoint $Zip) { return }
+    Reset-Plan
+    Add-ToPlan $Zip "a downloaded installer"
+    Write-Host ""
+    Write-Host "A downloaded biomnikhil installer. Setup doesn't need it any more:"
+    Confirm-ThenRemove
+}
+
+function Invoke-DeadShortcuts {  # shortcuts to a folder that's gone, which this cleanup can cause
+    foreach ($shortcut in (Get-OurShortcuts)) {
+        $named = Get-ShortcutRoot $shortcut.Path $shortcut.Script
+        if (-not $named) { continue }
+        if (Test-File (Join-Path $named ("app\" + $shortcut.Script + ".ps1"))) { continue }
+        Reset-Plan
+        Add-ToPlan $shortcut.Path $shortcut.Label
+        Write-Host ""
+        Write-Host "A shortcut to a biomnikhil folder that no longer exists ($named):"
+        Confirm-ThenRemove
+    }
+}
+
+function Invoke-Cleanup {
+    $script:StandardRoot = Get-CleanPath (Join-Path $env:LOCALAPPDATA "biomnikhil")
+    Write-Host ""
+    Write-Host "Searching for biomnikhil files outside $($script:StandardRoot). This can take a minute."
+    if (Test-Folder $script:StandardRoot) {
+        [void]$script:Roots.Add($script:StandardRoot)
+    }
+    Find-Strays
+    Stop-IfRunning
+
+    foreach ($root in @($script:StrayInstalls)) {
+        Invoke-StrayInstall $root
+    }
+    foreach ($lakeDir in @($script:StrayLakes)) {
+        Invoke-StrayLake $lakeDir
+    }
+    foreach ($shared in @($script:SharedLakes)) {
+        Invoke-SharedLake $shared
+    }
+    foreach ($zip in @($script:StrayZips)) {
+        Invoke-StrayZip $zip
+    }
+    Invoke-DeadShortcuts
+
+    Write-Host ""
+    if (($script:DeletedCount -eq 0) -and ($script:KeptCount -eq 0) -and ($script:AllFailures.Count -eq 0)) {
+        Write-Host "No stray biomnikhil files were found."
+    } else {
+        Write-Host "Cleanup finished: $($script:DeletedCount) deleted, $($script:KeptCount) kept."
+    }
+    if ($script:SearchIncomplete) {
+        Write-Host "Some folders couldn't be read, so stray files in them weren't found."
+    }
+    if ($script:Notes.Count -gt 0) {
+        Write-Host "Not removed:"
+        Show-Notes
+    }
+    if ($script:AllFailures.Count -gt 0) {
+        Write-Host "These could not be deleted:"
+        foreach ($failure in $script:AllFailures) {
+            Write-Host "  - $failure"
+        }
+        Write-Host "Close anything using them, or ask an administrator if they need one, then run this again."
+        exit $ExitIncomplete
+    }
+    exit $ExitFinished
+}
+
+
 # ---- main -------------------------------------------------------------------------
+
+function Read-Mode {
+    Write-Host ""
+    Write-Host "  1  Uninstall: remove biomnikhil and its data from this computer"
+    Write-Host "  2  Clean up: find biomnikhil files outside where they belong, and ask about each one"
+    Write-Host "Type 1 or 2, or press Enter to cancel."
+    Write-Host -NoNewline "> "
+    $answer = Read-Answer
+    if ($answer -eq "1") { return "uninstall" }
+    if ($answer -eq "2") { return "cleanup" }
+    Write-Host "Cancelled. Nothing was removed."
+    exit $ExitCancelled
+}
 
 function Get-KnownFolder([string]$TestVariable, [string]$FolderName) {
     $override = [Environment]::GetEnvironmentVariable($TestVariable)
@@ -818,6 +1306,13 @@ $script:DesktopFolder = Get-KnownFolder "BIOMNIKHIL_UNINSTALL_TEST_DESKTOP" "Des
 $script:ProgramsFolder = Get-KnownFolder "BIOMNIKHIL_UNINSTALL_TEST_PROGRAMS" "Programs"
 
 Write-Host "biomnikhil uninstaller"
+$chosenMode = $Mode
+if (-not $chosenMode) {
+    $chosenMode = Read-Mode
+}
+if ($chosenMode -eq "cleanup") {
+    Invoke-Cleanup
+}
 Add-InstallIfFound (Join-Path $env:LOCALAPPDATA "biomnikhil") $WhereStandard
 Add-InstallIfFound $StartedFrom "the folder this was started from"
 Add-InstallsNamedInShortcuts
@@ -859,27 +1354,7 @@ if ($finalAnswer -cne $ConfirmWord) {
 
 Stop-IfRunning  # it could have been opened while this was waiting
 
-# The uninstaller itself goes last, and only if the rest went, so that "run this
-# again" still works after a failure.
-foreach ($item in $script:Plan) {
-    if (($item.Label -ne $LabelProgram) -and ($item.Label -ne $LabelUninstaller)) {
-        Write-Host "Removing $($item.Path)"
-        Remove-Planned $item.Path
-    }
-}
-if ($script:Failures.Count -eq 0) {
-    foreach ($item in $script:Plan) {
-        if (($item.Label -eq $LabelProgram) -or ($item.Label -eq $LabelUninstaller)) {
-            Write-Host "Removing $($item.Path)"
-            Remove-Planned $item.Path
-        }
-    }
-    # Deepest first, so a folder isn't reported as kept for what's still to go inside it.
-    $deepestFirst = @($script:CleanupFolders | Sort-Object -Property Length -Descending)
-    foreach ($folder in $deepestFirst) {
-        Remove-IfEmpty $folder
-    }
-}
+Remove-CurrentPlan
 
 Write-Host ""
 if ($script:Failures.Count -gt 0) {

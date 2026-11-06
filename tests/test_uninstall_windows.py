@@ -62,6 +62,7 @@ def _environment(tmp_path):
     env["ProgramData"] = str(program_data)
     env["BIOMNIKHIL_UNINSTALL_TEST_DESKTOP"] = str(desktop)
     env["BIOMNIKHIL_UNINSTALL_TEST_PROGRAMS"] = str(programs)
+    env["BIOMNIKHIL_UNINSTALL_TEST_SEARCH"] = str(tmp_path / "elsewhere")
     env.pop("BIOMNI_DATA_PATH", None)
     return env
 
@@ -69,7 +70,7 @@ def _environment(tmp_path):
 def _run(tmp_path, root, answers=""):
     assert tmp_path in root.parents  # never a real install
     script = root / "app" / "uninstall.ps1"
-    command = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    command = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Mode", "uninstall"]
     return subprocess.run(command, env=_environment(tmp_path), input=answers, cwd=tmp_path,
                           capture_output=True, text=True, timeout=300)
 
@@ -94,7 +95,7 @@ def test_removes_the_install_it_runs_from_and_own_lakes(tmp_path, install):
 @needs_windows
 def test_the_launcher_removes_its_own_folder(tmp_path, install):
     command = ["cmd", "/c", str(install / "uninstall-windows.cmd")]
-    result = subprocess.run(command, env=_environment(tmp_path), input="REMOVE\n\n", cwd=tmp_path,
+    result = subprocess.run(command, env=_environment(tmp_path), input="1\nREMOVE\n\n", cwd=tmp_path,
                             capture_output=True, text=True, timeout=300)
     assert "biomnikhil was removed." in result.stdout, result.stdout + result.stderr
     assert not install.exists()
@@ -288,6 +289,181 @@ def test_an_old_in_place_install_loses_what_old_releases_left(tmp_path):
     result = _run(tmp_path, old, "REMOVE\n")
     assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
     assert not old.exists()
+
+
+def _cleanup(tmp_path, answers=""):
+    """--cleanup started from a folder that isn't an install, under fake profile folders."""
+    tools = tmp_path / "tools"
+    (tools / "app").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "app" / "uninstall.ps1", tools / "app" / "uninstall.ps1")
+    return _run_script(tmp_path, tools, answers, ["-Mode", "cleanup"])
+
+
+def _run_script(tmp_path, root, answers, arguments):
+    assert tmp_path in root.parents  # never a real install
+    command = [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               str(root / "app" / "uninstall.ps1"), *arguments]
+    return subprocess.run(command, env=_environment(tmp_path), input=answers, cwd=tmp_path,
+                          capture_output=True, text=True, timeout=300)
+
+
+@needs_windows
+def test_cleanup_keeps_everything_unless_told_otherwise(tmp_path):
+    stray = _make_install(tmp_path / "profile" / "Desktop" / "biomnikhil-old")
+    lake = _make_lake(tmp_path / "profile" / "Documents" / "old")
+    result = _cleanup(tmp_path)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "0 deleted, 2 kept" in result.stdout
+    assert (stray / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+@needs_windows
+def test_cleanup_deletes_a_stray_copy_on_y_and_keeps_unknown_files(tmp_path):
+    stray = _make_install(tmp_path / "profile" / "Downloads" / "biomnikhil-0.1.4-installer")
+    _write(stray / "my-notes.txt")
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 0 kept" in result.stdout
+    assert not (stray / "app").exists()
+    assert not (stray / "data").exists()
+    assert (stray / "my-notes.txt").exists()
+
+
+@needs_windows
+def test_cleanup_asks_about_each_one_separately(tmp_path):
+    first = _make_install(tmp_path / "profile" / "Desktop" / "one")
+    second = _make_install(tmp_path / "profile" / "Desktop" / "two")
+    result = _cleanup(tmp_path, "y\n\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 1 kept" in result.stdout
+    still_there = [(first / "app").exists(), (second / "app").exists()]
+    assert sorted(still_there) == [False, True]
+
+
+@needs_windows
+def test_cleanup_never_touches_the_standard_install_or_its_lake(tmp_path):
+    install = _make_install(tmp_path / "local" / "biomnikhil")
+    lake = _make_lake(install / "data")
+    result = _cleanup(tmp_path, "y\n" * 10)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "No stray biomnikhil files" in result.stdout
+    assert (install / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+@needs_windows
+def test_cleanup_removes_the_old_preset_lakes_on_y(tmp_path):
+    install = _make_install(tmp_path / "local" / "biomnikhil")
+    in_folder_lake = _make_lake(install)
+    default_lake = _make_lake(tmp_path / "profile" / "biomnikhil-data")
+    result = _cleanup(tmp_path, "y\ny\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not in_folder_lake.exists()
+    assert not (tmp_path / "profile" / "biomnikhil-data").exists()
+    assert not default_lake.exists()
+    assert (install / "app" / "config.py").exists()
+    assert "didn't create" not in result.stdout
+
+
+@needs_windows
+def test_cleanup_leaves_a_lake_the_install_points_at(tmp_path):
+    install = _make_install(tmp_path / "local" / "biomnikhil")
+    in_use = tmp_path / "profile" / "Documents" / "lake-home"
+    lake = _make_lake(in_use)
+    with (install / "data" / ".env").open("a") as env_file:
+        env_file.write(f"BIOMNI_DATA_PATH={in_use}\n")
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+@needs_windows
+def test_cleanup_needs_the_full_path_for_a_shared_lake(tmp_path):
+    lake = _make_lake(tmp_path / "programdata" / "biomnikhil")
+    kept = _cleanup(tmp_path, "y\n")
+    assert kept.returncode == EXIT_FINISHED, kept.stdout + kept.stderr
+    assert (lake / "data_lake" / "genes.parquet").exists()
+    deleted = _cleanup(tmp_path, f"{lake}\n")
+    assert deleted.returncode == EXIT_FINISHED, deleted.stdout + deleted.stderr
+    assert not lake.exists()
+
+
+@needs_windows
+def test_cleanup_leaves_a_git_checkout_and_everything_in_it(tmp_path):
+    checkout = _make_install(tmp_path / "profile" / "Code" / "biomnikhil")
+    lake = _make_lake(checkout / "data")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "git checkout" in result.stdout
+    assert (checkout / "app" / "config.py").exists()
+    assert (lake / "data_lake" / "genes.parquet").exists()
+
+
+@needs_windows
+def test_cleanup_does_not_follow_a_junction(tmp_path):
+    outside = _make_install(tmp_path / "outside")
+    link = tmp_path / "profile" / "linked"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (outside / "app" / "config.py").exists()
+
+
+@needs_windows
+def test_cleanup_searches_outside_the_profile_and_ignores_lookalikes(tmp_path):
+    stray = _make_install(tmp_path / "elsewhere" / "biomnikhil")
+    lookalike = tmp_path / "profile" / "Documents" / "project"
+    _write(lookalike / "app" / "main.py")
+    _write(lookalike / "data" / "results.csv")
+    _write(tmp_path / "profile" / "Documents" / "other" / "biomni_data" / "mine.txt")
+    result = _cleanup(tmp_path, "y\n" * 5)
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "1 deleted, 0 kept" in result.stdout
+    assert not (stray / "app").exists()
+    assert (lookalike / "app" / "main.py").exists()
+    assert (lookalike / "data" / "results.csv").exists()
+
+
+@needs_windows
+def test_cleanup_offers_downloaded_installers_only(tmp_path):
+    downloads = tmp_path / "profile" / "Downloads"
+    installer = downloads / "biomnikhil-0.1.5-installer.zip"
+    other = downloads / "photos.zip"
+    _write(installer)
+    _write(other)
+    result = _cleanup(tmp_path, "y\ny\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not installer.exists()
+    assert other.exists()
+
+
+@needs_windows
+def test_the_menu_starts_cleanup_or_cancels(tmp_path):
+    stray = _make_install(tmp_path / "profile" / "Desktop" / "old")
+    tools = tmp_path / "tools"
+    (tools / "app").mkdir(parents=True)
+    shutil.copy(REPO / "app" / "uninstall.ps1", tools / "app" / "uninstall.ps1")
+    cancelled = _run_script(tmp_path, tools, "", [])
+    assert cancelled.returncode == EXIT_CANCELLED, cancelled.stdout + cancelled.stderr
+    assert (stray / "app" / "config.py").exists()
+    cleaned = _run_script(tmp_path, tools, "2\ny\n", [])
+    assert cleaned.returncode == EXIT_FINISHED, cleaned.stdout + cleaned.stderr
+    assert not (stray / "app").exists()
+
+
+def test_only_real_links_count_as_links():
+    """OneDrive marks its folders as reparse points, so the attribute alone would skip them."""
+    script = (REPO / "app" / "uninstall.ps1").read_text()
+    assert "$null -ne $item.LinkType" in script
+    assert "$isLink = Test-ReparsePoint $Path" in script
+
+
+def test_the_relaunch_passes_the_mode_on():
+    script = (REPO / "app" / "uninstall.ps1").read_text()
+    assert '$childArguments += @("-Mode", $Mode)' in script
+    assert "& $engine @childArguments" in script
 
 
 def test_the_launcher_passes_on_every_exit_code():
