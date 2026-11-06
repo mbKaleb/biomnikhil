@@ -6,12 +6,17 @@ while we watch the data directory grow on disk.
 """
 from __future__ import annotations
 
+import filecmp
 import json
 import logging
 import os
+import shutil
+import stat
+import sys
 import threading
 from pathlib import Path
 
+from .. import config
 from ..config import Config
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,7 @@ def _lake_dir() -> Path:
     return Config.DATA_PATH / "biomni_data"
 
 
-def _manifest_complete() -> bool | None:
+def _manifest_complete(lake_dir: Path | None = None) -> bool | None:
     """The real "is the data lake done" check — mirrors exactly what
     biomni.agent.A1.__init__ itself checks before deciding whether to
     download: every filename in biomni.env_desc.data_lake_dict present
@@ -60,7 +65,8 @@ def _manifest_complete() -> bool | None:
     except Exception:  # noqa: BLE001 — biomni not installed/importable yet
         return None
 
-    lake_dir = _lake_dir()
+    if lake_dir is None:
+        lake_dir = _lake_dir()
     data_lake_subdir = lake_dir / "data_lake"
     if not data_lake_subdir.is_dir():
         return False
@@ -87,6 +93,9 @@ _validation_error: str | None = None
 # a corrupt-but-present file actually gets replaced instead of skipped.
 _invalid_files: list[str] = []
 
+# Files the last merge left in a duplicate, and why, for the UI.
+_merge_problems: list[dict] = []
+
 
 def _check_file(path: Path) -> str | None:
     """Return None if the file looks structurally intact, else an error
@@ -103,10 +112,13 @@ def _check_file(path: Path) -> str | None:
             with open(path) as f:
                 json.load(f)
         elif suffix == ".pkl":
-            import pickle
-
+            # Structure only: unpickling would run whatever the file contains.
             with open(path, "rb") as f:
-                pickle.load(f)
+                header = f.read(1)
+                f.seek(-1, os.SEEK_END)
+                last_byte = f.read(1)
+            if header != b"\x80" or last_byte != b".":
+                return "not a complete pickle file"
         else:  # csv/tsv/txt/obo/etc — just confirm it's non-empty and readable
             with open(path, "rb") as f:
                 if not f.read(4096):
@@ -214,12 +226,13 @@ def _measure_sizes(filenames) -> None:
         logger.warning("couldn't measure the data lake's size", exc_info=True)
 
 
-def _dir_stats() -> tuple[int, int]:
+def _dir_stats(lake_dir: Path | None = None) -> tuple[int, int]:
     """(total bytes, file count) under the data lake directory specifically —
     not all of Config.DATA_PATH, which also holds unrelated user data."""
     total = 0
     count = 0
-    lake_dir = _lake_dir()
+    if lake_dir is None:
+        lake_dir = _lake_dir()
     if lake_dir.exists():
         for root, _dirs, files in os.walk(lake_dir):
             for name in files:
@@ -317,6 +330,7 @@ def _download() -> None:
 
     lake_dir = _lake_dir()
     (lake_dir / "data_lake").mkdir(parents=True, exist_ok=True)
+    _merge_duplicates()
     _measure_sizes(data_lake_dict)
 
     # Which files are corrupt right now? We need the actual bad-file set, not
@@ -377,11 +391,343 @@ def _download() -> None:
         )
 
 
+class LocationError(ValueError):
+    """A data lake location that can't be used; the message is for the user."""
+
+
+def _location_presets() -> dict[str, Path]:
+    """The suggested folder for each kind of location on this OS."""
+    home = Path.home()
+    if sys.platform == "win32":
+        local_app = Path(os.getenv("LOCALAPPDATA") or home / "AppData" / "Local")
+        system = Path(os.getenv("ProgramData") or "C:/ProgramData")
+    elif sys.platform == "darwin":
+        local_app = home / "Library" / "Application Support"
+        system = Path("/Library/Application Support")
+    else:
+        local_app = Path(os.getenv("XDG_DATA_HOME") or home / ".local" / "share")
+        system = Path("/var/lib")
+    return {
+        "default": home / "biomnikhil-data",
+        "custom": home,
+        "system": system / "biomnikhil",
+        "local_app": local_app / "biomnikhil",
+    }
+
+
+def _saved_location() -> dict:
+    try:
+        saved = json.loads(config.DATA_LOCATION_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def _saved_location_kind() -> str | None:
+    return _saved_location().get("kind")
+
+
+def _own_lake_dirs() -> set[Path]:
+    """Lakes only this user's install should be using, so files may be moved
+    out of them. A folder someone typed in may be shared, so it's only copied."""
+    presets = _location_presets()
+    own = set()
+    for data_path in (config._DATA_ROOT, presets["default"], presets["local_app"]):
+        own.add((data_path / "biomni_data").resolve())
+    return own
+
+
+def _duplicate_lake_dirs() -> list[Path]:
+    """Other data lakes in the places this app could have put one: the app
+    folder, the per-user presets, and every folder picked before. Shared
+    system folders are left out, and a lake in one merges nothing: other
+    people's installs may be reading those files."""
+    if _saved_location_kind() == "system":
+        return []
+    presets = _location_presets()
+    candidates = [config._DATA_ROOT, presets["default"], presets["local_app"]]
+    for previous in _saved_location().get("previous", []):
+        candidates.append(Path(previous))
+
+    current = _lake_dir().resolve()
+    found: list[Path] = []
+    for candidate in candidates:
+        lake_dir = (candidate / "biomni_data").resolve()
+        if lake_dir == current or lake_dir in found:
+            continue
+        if (lake_dir / "data_lake").is_dir() or (lake_dir / "benchmark").is_dir():
+            found.append(lake_dir)
+    return found
+
+
+def duplicates() -> list[dict]:
+    found = []
+    own = _own_lake_dirs()
+    for lake_dir in _duplicate_lake_dirs():
+        size, files = _dir_stats(lake_dir)
+        found.append({
+            "path": str(lake_dir), "bytes": size, "files": files,
+            "kept": lake_dir not in own,
+        })
+    return found
+
+
+def _bring_file(source: Path, dest: Path, keep_source: bool) -> None:
+    """Move or copy without ever leaving a partial file at dest, even across drives."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not keep_source:
+        try:
+            os.replace(source, dest)
+            return
+        except OSError:
+            pass  # a different drive: copy instead
+    tmp = dest.with_name(f".{dest.name}.merging")
+    shutil.copy2(source, tmp)
+    os.replace(tmp, dest)
+    if not keep_source:
+        source.unlink()
+
+
+def _merge_one_file(source: Path, dest: Path, keep_source: bool = False) -> str | None:
+    """Bring one file from a duplicate into the current lake. Returns why it
+    wasn't merged, or None if the current lake now has it."""
+    source_error = _check_file(source)
+    if source_error:
+        return f"damaged ({source_error})"
+    if not dest.is_file() or _check_file(dest):
+        _bring_file(source, dest, keep_source)
+        return None
+    if filecmp.cmp(source, dest, shallow=False):
+        if not keep_source:
+            source.unlink()
+        return None
+    return "differs from the copy already in the chosen location"
+
+
+def _merge_duplicates() -> None:
+    """Move other lakes' files into the current one, so they needn't be
+    downloaded again. Only copies proven identical are deleted; anything else
+    stays in place, and the duplicate keeps being reported."""
+    lake_dir = _lake_dir()
+    _merge_problems.clear()
+    own = _own_lake_dirs()
+    for duplicate in _duplicate_lake_dirs():
+        keep_source = duplicate not in own
+        for root, _dirs, files in os.walk(duplicate):
+            for name in files:
+                if name.startswith("."):  # our .part downloads and .sizes.json
+                    continue
+                source = Path(root) / name
+                rel = source.relative_to(duplicate)
+                try:
+                    left_behind = _merge_one_file(source, lake_dir / rel, keep_source)
+                except OSError as exc:
+                    left_behind = str(exc)
+                if left_behind:
+                    logger.warning("left %s in place: %s", source, left_behind)
+                    _merge_problems.append({"path": str(source), "reason": left_behind})
+
+        if keep_source:
+            continue
+        (duplicate / ".sizes.json").unlink(missing_ok=True)
+        for root, _dirs, _files in os.walk(duplicate, topdown=False):
+            try:
+                os.rmdir(root)
+            except OSError:
+                pass  # still holds something left behind
+
+
+def location() -> dict:
+    """Where the data lake lives and the choices for moving it. An install
+    that already has data in its own folder keeps that folder on offer, so
+    the picker can't strand a partial download."""
+    saved_kind = _saved_location_kind()
+    presets = _location_presets()
+    choices = [
+        {"kind": "default", "label": "Default", "path": str(presets["default"]), "editable": False},
+        {"kind": "custom", "label": "Choose a folder", "path": "", "editable": True},
+        {"kind": "system", "label": "Shared folder installed by an administrator", "path": str(presets["system"]), "editable": True},
+        {"kind": "local_app", "label": "App data folder", "path": str(presets["local_app"]), "editable": False},
+    ]
+    bytes_here = _dir_stats()[0]
+    selected = saved_kind or "default"
+    if saved_kind == "install" or (saved_kind is None and bytes_here > 0):
+        selected = "install"
+        choices.insert(0, {
+            "kind": "install", "label": "Keep in the app folder",
+            "path": str(Config.DATA_PATH), "editable": False,
+        })
+    for choice in choices:
+        if choice["kind"] == selected and choice["editable"]:
+            choice["path"] = str(Config.DATA_PATH)
+    return {
+        "locked": bool(os.getenv("BIOMNI_DATA_PATH")),
+        "chosen": saved_kind is not None,
+        "selected": selected,
+        "choices": choices,
+    }
+
+
+def _shared_lake_problem(data_path: Path) -> str | None:
+    """Why this can't be used as a shared lake, or None. Biomni unpickles
+    lake files, so a file another user can replace could run code as whoever
+    opens the app. Windows ACLs aren't visible in st_mode, so there this only
+    checks that the lake is complete."""
+    lake_dir = data_path / "biomni_data"
+    if _manifest_complete(lake_dir) is not True:
+        return (
+            f"{lake_dir} isn't a complete data lake. An administrator needs to "
+            "install it there first, because the app won't download into a shared folder."
+        )
+    if sys.platform == "win32":
+        return None
+    # Above the lake only an open, non-sticky folder lets anyone swap it out.
+    # Group write is normal there: /Library is admin-writable on a Mac.
+    for parent in data_path.resolve().parents:
+        mode = parent.stat().st_mode
+        if mode & stat.S_IWOTH and not mode & stat.S_ISVTX:
+            return f"{parent} can be changed by any user, so the shared lake inside it could be replaced."
+    paths = [data_path, lake_dir]
+    for root, dirs, files in os.walk(lake_dir):
+        for name in dirs + files:
+            paths.append(Path(root) / name)
+    for path in paths:
+        try:
+            mode = path.stat().st_mode
+        except OSError as exc:
+            return f"Can't check {path}: {exc.strerror or exc}."
+        if mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return f"{path} can be changed by other users. An administrator needs to make the shared lake read-only."
+    return None
+
+
+def _usable_location(kind: str, requested_path: str) -> Path:
+    """The folder for this choice, created and checked, or LocationError."""
+    presets = _location_presets()
+    if kind == "install":
+        target = Config.DATA_PATH
+    elif kind in ("default", "local_app"):
+        target = presets[kind]
+    elif kind in ("custom", "system"):
+        expanded = os.path.expandvars(os.path.expanduser(requested_path.strip()))
+        if not expanded or not os.path.isabs(expanded):
+            raise LocationError("Enter the full path of a folder.")
+        target = Path(expanded)
+    else:
+        raise LocationError(f"Unknown location type: {kind}")
+    target = target.resolve()
+
+    known_lakes = [_lake_dir().resolve(), *_duplicate_lake_dirs()]
+    for lake_dir in known_lakes:
+        if target == lake_dir or lake_dir in target.parents:
+            raise LocationError(
+                f"{target} is inside an existing data lake. Choose a folder outside {lake_dir}."
+            )
+
+    if kind == "system":
+        problem = _shared_lake_problem(target)
+        if problem:
+            raise LocationError(problem)
+        return target
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe = target / ".biomnikhil-write-test"
+        probe.write_text("")
+        probe.unlink()
+    except OSError as exc:
+        raise LocationError(
+            f"Can't write to {target} ({exc.strerror or exc}). Choose another "
+            "folder, or have an administrator create it and give you write access."
+        ) from exc
+
+    still_needed = EXPECTED_BYTES - _dir_stats(target / "biomni_data")[0]
+    # Merging from the same drive moves files, which takes no new space.
+    target_device = target.stat().st_dev
+    for duplicate in _duplicate_lake_dirs():
+        if duplicate.stat().st_dev == target_device and duplicate != target / "biomni_data":
+            still_needed -= _dir_stats(duplicate)[0]
+    free = shutil.disk_usage(target).free
+    if free < still_needed:
+        raise LocationError(
+            f"{target} has {free / 1024**3:.1f} GB free, but the data lake "
+            f"needs about {still_needed / 1024**3:.1f} GB more."
+        )
+    return target
+
+
+def set_location(kind: str, requested_path: str = "") -> dict:
+    """Point the data lake at a folder. Files already downloaded elsewhere
+    stay where they are."""
+    global _download_thread, _download_error, _validated, _valid, _validation_error
+    if os.getenv("BIOMNI_DATA_PATH"):
+        raise LocationError("BIOMNI_DATA_PATH sets the data lake location on this install.")
+    with _state_lock:
+        if _download_thread is not None and _download_thread.is_alive():
+            raise LocationError("Wait for the current download to finish.")
+        target = _usable_location(kind, requested_path)
+        config.DATA_LOCATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        previous = _saved_location().get("previous", [])
+        leaving_shared = _saved_location_kind() == "system"
+        if Config.DATA_PATH != target and str(Config.DATA_PATH) not in previous and not leaving_shared:
+            previous.append(str(Config.DATA_PATH))
+        config.DATA_LOCATION_FILE.write_text(
+            json.dumps({"kind": kind, "path": str(target), "previous": previous})
+        )
+        Config.DATA_PATH = target
+        _download_thread = None
+        _download_error = None
+        with _validate_lock:
+            _validated = False
+            _valid = None
+            _validation_error = None
+            _invalid_files.clear()
+
+    # A cached agent still reads from the old folder.
+    from . import biomni_runner
+
+    with biomni_runner._agent_lock:
+        biomni_runner._agent = None
+    return status()
+
+
+def needs_location() -> bool:
+    """True until someone picks a folder, unless a complete lake is already
+    in place. Starting the agent now would let biomni download on its own."""
+    if os.getenv("BIOMNI_DATA_PATH") or _saved_location_kind():
+        return False
+    return _manifest_complete() is not True
+
+
+def location_unavailable() -> bool:
+    """A picked folder that's gone, like an unplugged drive. Recreating it
+    could put 14 GB somewhere nobody chose."""
+    return bool(
+        not os.getenv("BIOMNI_DATA_PATH")
+        and _saved_location_kind()
+        and not Config.DATA_PATH.is_dir()
+    )
+
+
+def task_blocker() -> str | None:
+    """Why a task can't start, or None. An agent started on an incomplete
+    lake would have biomni download into it on its own."""
+    if needs_location():
+        return "Choose where to put the data lake before running a task."
+    if location_unavailable():
+        return f"The data lake folder {Config.DATA_PATH} isn't available. Reconnect its drive or choose another folder."
+    if _saved_location_kind() == "system":
+        return _shared_lake_problem(Config.DATA_PATH)
+    return None
+
+
 def start_download() -> bool:
     """Kick off the download thread; returns False if already running/done."""
     global _download_thread, _download_error, _validated, _valid, _validation_error
     with _state_lock:
         if _download_thread is not None and _download_thread.is_alive():
+            return False
+        if location_unavailable() or _saved_location_kind() == "system":
             return False
         _download_error = None
         with _validate_lock:  # stale from a prior run — recheck once this finishes
@@ -409,6 +755,8 @@ def status() -> dict:
 
     if downloading:
         state = "downloading"
+    elif location_unavailable():
+        state = "unavailable"
     elif _download_error:
         state = "error"
     elif manifest_ok is True:
@@ -445,4 +793,8 @@ def status() -> dict:
         "valid": valid,
         "validation_error": _validation_error,
         "invalid_files": list(_invalid_files),
+        "location": location(),
+        "shared": _saved_location_kind() == "system",
+        "duplicates": duplicates(),
+        "merge_problems": list(_merge_problems),
     }

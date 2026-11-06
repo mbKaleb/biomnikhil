@@ -22,6 +22,8 @@
     body {
       margin: 0; background: #0d1526; color: #dbe4f3;
       font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+      /* Lets the Task tab fill exactly the height left under the header. */
+      display: flex; flex-direction: column; min-height: 100vh;
     }
     header {
       position: sticky; top: 0; z-index: 10;
@@ -62,8 +64,9 @@
     header .model-select.saving { opacity: .5; cursor: wait; }
     header .model-select option,
     #file-sort option { background: #0e1729; color: #dbe4f3; }
-    .content { display: flex; justify-content: center; padding: 1.5rem 1rem; }
-    main { width: min(760px, 100%); }
+    .content { flex: 1; display: flex; justify-content: center; padding: 1.5rem 1rem; }
+    main { width: min(760px, 100%); display: flex; flex-direction: column; }
+    main > .panel { min-width: 0; }
     textarea {
       margin-top: 1rem; width: 100%; min-height: 90px; box-sizing: border-box; resize: vertical;
       background: #131f38; color: inherit; border: 1px solid #2c3f63;
@@ -511,6 +514,28 @@
     #output-download-all:disabled {
       opacity: .45; cursor: default; border-color: #24365a; color: #56688c;
     }
+    #citation-search {
+      width: 100%; margin-top: .9rem; padding: .5rem .7rem; box-sizing: border-box;
+      background: #111c33; border: 1px solid #2c3f63; border-radius: 8px;
+      color: #dbe4f3; font: inherit; font-size: .85rem;
+    }
+    #citation-search::placeholder { color: #56688c; }
+    #citation-search:focus { outline: none; border-color: #5b7fe8; }
+    #citation-note { margin: .6rem 0 0; font-size: .76rem; color: #7c90b4; }
+    #citation-count { margin-top: .55rem; font-size: .76rem; color: #56688c; }
+    #citation-list { list-style: none; margin: 1.1rem 0 0; padding: 0; }
+    #citation-list li.empty { text-align: center; color: #56688c; padding: 2rem 0; }
+    .citation-item {
+      padding: .65rem .8rem; margin-bottom: .5rem;
+      background: #111c33; border: 1px solid #22314f; border-radius: 8px;
+    }
+    .citation-head { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+    .citation-link { color: #8fb0f5; font-size: .85rem; overflow-wrap: anywhere; }
+    .citation-kind { color: #7c90b4; font-size: .72rem; }
+    .citation-cited { color: #6fcf97; font-size: .72rem; }
+    .citation-use { margin-top: .45rem; font-size: .76rem; color: #a9b8d3; overflow-wrap: anywhere; }
+    .citation-use b { font-weight: 600; color: #cdd6e4; }
+    .citation-use q { display: block; margin-top: .15rem; color: #7c90b4; quotes: none; }
     #output-count { margin-top: .55rem; font-size: .76rem; color: #56688c; }
     #output-list { list-style: none; margin: 1.1rem 0 0; padding: 0; }
     #output-list li.empty {
@@ -670,6 +695,14 @@
     #dl-modal.downloading .dl-progress { display: block; }
     #dl-modal.downloading .dl-choices { display: none; }
     .dl-choices { display: flex; gap: .6rem; justify-content: flex-end; }
+    .dl-location { border: 0; padding: 0; margin: 0 0 1rem; min-width: 0; }
+    .dl-location legend { padding: 0; margin-bottom: .5rem; font-size: .85rem; }
+    .dl-location-option { display: flex; gap: .5rem; align-items: flex-start; margin-bottom: .5rem; font-size: .85rem; cursor: pointer; }
+    .dl-location-option input[type="radio"] { margin-top: .15rem; flex: none; }
+    .dl-location-text { min-width: 0; flex: 1; }
+    .dl-location-path { display: block; opacity: .7; font-size: .75rem; overflow-wrap: anywhere; }
+    .dl-location-text input[type="text"] { display: block; width: 100%; box-sizing: border-box; margin-top: .25rem; }
+    #dl-modal.downloading .dl-location { display: none; }
     .dl-hide-row { display: none; justify-content: flex-end; }
     #dl-modal.downloading .dl-hide-row { display: flex; }
     .dl-hide-row .secondary, .dl-choices .secondary {
@@ -753,6 +786,89 @@
       border: 1px solid #24365a; border-radius: 9px; background: #fff;
     }
     #viewer-frame[hidden] { display: none; }
+    /* ---- Spending tab ---- */
+    #spending-summary {
+      display: flex; align-items: center; gap: .6rem;
+      padding: .75rem 1rem; border-radius: 12px; border: 1px solid #24365a;
+      background: #0e1729; font-size: .9rem;
+    }
+    #spending-summary .when { color: #7c90b4; font-size: .76rem; }
+    #spending-summary .refresh {
+      margin: 0 0 0 auto; padding: .3rem .7rem; font-size: .76rem;
+      background: transparent; border: 1px solid #35507f; color: #a9bce0;
+    }
+    #spending-summary .refresh:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .spend-skeleton {
+      border-radius: 6px; background: #1a2946; animation: spend-pulse 1.4s ease-in-out infinite;
+    }
+    .spend-skeleton.line { width: 40%; height: .8rem; margin-bottom: .6rem; }
+    .spend-skeleton.value { width: 60%; height: 1.8rem; }
+    .spend-skeleton.plot { height: 180px; }
+    @keyframes spend-pulse { 50% { opacity: .45; } }
+    @media (prefers-reduced-motion: reduce) { .spend-skeleton { animation: none; } }
+    .spend-message .refresh {
+      padding: .3rem .7rem; font-size: .76rem;
+      background: transparent; border: 1px solid #35507f; color: #a9bce0;
+    }
+    .spend-message .refresh:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .spend-tiles {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: .9rem; margin-top: .9rem;
+    }
+    .spend-tile {
+      padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
+      background: linear-gradient(180deg, #111c33, #0e1729);
+    }
+    .spend-tile .label { color: #a9bce0; font-size: .8rem; }
+    .spend-tile .value { font-size: 1.7rem; font-weight: 600; line-height: 1.3; }
+    .spend-tile.hero .value { font-size: 3rem; line-height: 1.15; }
+    .spend-tile .note { color: #7c90b4; font-size: .76rem; }
+    .spend-tiles .hero { grid-column: 1 / -1; }
+    .spend-card {
+      margin-top: .9rem; padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
+      background: linear-gradient(180deg, #111c33, #0e1729);
+    }
+    .spend-card h2 { font-size: .95rem; margin: 0; font-weight: 600; }
+    .spend-card .note { color: #7c90b4; font-size: .76rem; margin: .1rem 0 .7rem; }
+    .spend-plot { position: relative; display: flex; height: 180px; padding-left: 3.4rem; }
+    .spend-grid {
+      position: absolute; left: 0; right: 0; height: 0;
+      border-top: 1px solid #1d2b48; color: #7c90b4; font-size: .7rem;
+    }
+    .spend-grid span { position: absolute; left: 0; top: -.55rem; background: #101a30; padding-right: .3rem; }
+    .spend-column {
+      position: relative; flex: 1 1 0; min-width: 0; height: 100%; padding: 0 1px;
+      display: flex; align-items: flex-end; background: none; border: 0; margin: 0; border-radius: 0;
+    }
+    .spend-column:hover, .spend-column:focus-visible { background: #1a2946; outline: none; }
+    .spend-bar { width: 100%; background: #3987e5; border-radius: 4px 4px 0 0; }
+    .spend-bar.partial { opacity: .5; }
+    .spend-axis {
+      display: flex; justify-content: space-between; padding: .3rem 0 0 3.4rem;
+      color: #7c90b4; font-size: .7rem; border-top: 1px solid #35507f;
+    }
+    .spend-tooltip {
+      position: absolute; z-index: 5; top: 0; transform: translateX(-50%); pointer-events: none;
+      padding: .3rem .5rem; border: 1px solid #35507f; border-radius: 6px;
+      background: #0d1526; font-size: .76rem; white-space: nowrap;
+    }
+    .spend-service {
+      display: grid; grid-template-columns: minmax(0, 15rem) 1fr 5.5rem; gap: .7rem;
+      align-items: center; padding: .25rem 0; font-size: .82rem;
+    }
+    .spend-service .name { color: #a9bce0; overflow-wrap: anywhere; }
+    .spend-service .amount { text-align: right; font-variant-numeric: tabular-nums; }
+    .spend-service .track { height: 10px; }
+    .spend-service .fill { height: 100%; min-width: 2px; background: #3987e5; border-radius: 0 4px 4px 0; }
+    @media (max-width: 520px) {
+      .spend-service { grid-template-columns: 1fr 5.5rem; }
+      .spend-service .track { grid-column: 1 / -1; grid-row: 2; }
+    }
+    .spend-table { margin-top: .7rem; font-size: .8rem; color: #a9bce0; }
+    .spend-table summary { cursor: pointer; }
+    .spend-table table { margin-top: .4rem; border-collapse: collapse; }
+    .spend-table td, .spend-table th { padding: .1rem 1.2rem .1rem 0; text-align: left; font-weight: 400; }
+    .spend-message code { color: #a9bce0; overflow-wrap: anywhere; }
     /* ---- Integrity tab ---- */
     #integrity-badge:empty { display: none; }
     #integrity-badge {
@@ -935,8 +1051,7 @@
     #file-count { margin-top: .55rem; font-size: .76rem; color: #56688c; }
       /* ---- Task tab: chat layout with a composer docked to the window ---- */
     #tab-task.active {
-      display: flex; flex-direction: column;
-      min-height: calc(100vh - 9rem);
+      display: flex; flex-direction: column; flex: 1;
     }
     #messages { flex: 1; margin-top: 0; padding-bottom: 1rem; }
     .msg { margin-top: 1.4rem; font-size: .97rem; line-height: 1.65; }
@@ -1058,6 +1173,10 @@
         </div>
         <div class="dl-stats"><span id="dl-files"></span><span id="dl-eta"></span></div>
       </div>
+      <fieldset class="dl-location" id="dl-location" hidden>
+        <legend>Where should it go? It needs about 14 GB.</legend>
+        <div id="dl-location-options"></div>
+      </fieldset>
       <div class="dl-choices">
         <button class="secondary" id="dl-later">Later</button>
         <button id="dl-start">Download now</button>
@@ -1094,9 +1213,11 @@
     <nav class="tabs">
       <button class="active" data-tab="task">Task</button>
       <button data-tab="outputs">Outputs <span id="output-count-badge"></span></button>
+      <button data-tab="citations">Citations <span id="citation-badge"></span></button>
       <button data-tab="files">Files</button>
       <button data-tab="viewer">Viewer</button>
       <button data-tab="integrity">Integrity <span id="integrity-badge"></span></button>
+      <button data-tab="spending">Spending</button>
     </nav>
 
     <section id="tab-task" class="panel active">
@@ -1124,6 +1245,13 @@
       <ul id="output-list"></ul>
     </section>
 
+    <section id="tab-citations" class="panel">
+      <input type="search" id="citation-search" placeholder="Search citations…">
+      <p id="citation-note">Sources that appeared in this chat's answers and agent traces. Appearing here means the agent saw or cited a source, not that it relied on it, and nothing here has been checked against the source.</p>
+      <div id="citation-count"></div>
+      <ul id="citation-list"></ul>
+    </section>
+
     <!-- Viewer: renders a webpage the agent generated (index.html by
          default) by URL, so its relative CSS/JS/images load too. Sandboxed
          twice — the iframe here and the CSP header on the served file —
@@ -1144,6 +1272,13 @@
     <section id="tab-integrity" class="panel">
       <div id="integrity-summary"></div>
       <div id="integrity-cards"></div>
+    </section>
+
+    <!-- Spending: AWS costs. Built by renderSpending() in app.js from
+         GET /api/spending. -->
+    <section id="tab-spending" class="panel">
+      <div id="spending-summary"></div>
+      <div id="spending-body"></div>
     </section>
 
     <section id="tab-files" class="panel">

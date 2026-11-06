@@ -471,6 +471,17 @@ document.getElementById("trace-btn").addEventListener("click", () =>
 document.getElementById("close-trace").addEventListener("click", () =>
   traceEl.classList.remove("open")
 );
+// Esc closes whatever is on top, so the trace waits if a dialog or the chat
+// list is open. Runs before their own Esc handlers, which are added later.
+// Text inputs like chat rename use Esc to cancel, so they keep it too.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (e.target.tagName === "INPUT") return;
+  if (confirmModalEl.classList.contains("show")) return;
+  if (previewModal.classList.contains("show")) return;
+  if (sidebar.classList.contains("open")) return;
+  traceEl.classList.remove("open");
+});
 
 let currentChatId = null;
 
@@ -794,6 +805,8 @@ let chatOutputFiles = []; // {name, path, size, task_id, prompt, ts}
 let lastUserPrompt = "";
 
 function resetOutputTray() {
+  chatCitations = [];
+  renderCitations();
   chatOutputFiles = [];
   viewerChoice = null; // a new chat starts back on its newest index.html
   renderOutputTray();
@@ -1238,7 +1251,88 @@ const STOPPED_ERROR_TEXT = "Stopped by user.";
 
 // options.noScroll: replaying history, which scrolls once at the end.
 // options.stopped: the user stopped the run, which isn't a failure.
+// ---- citations: sources that appeared in this chat's answers and traces,
+// worked out by the server from the stored messages (services/citations.py).
+// ----
+const citationListEl = document.getElementById("citation-list");
+const citationSearchEl = document.getElementById("citation-search");
+const citationCountEl = document.getElementById("citation-count");
+const citationBadgeEl = document.getElementById("citation-badge");
+let chatCitations = [];
+let citationTimer = null;
+
+// Debounced: replaying a chat calls this once per answer.
+function refreshCitations() {
+  clearTimeout(citationTimer);
+  citationTimer = setTimeout(async () => {
+    const chatId = currentChatId;
+    let found = [];
+    if (chatId) {
+      try {
+        const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}/citations`);
+        if (res.ok) found = (await res.json()).citations;
+      } catch { /* keep the tab empty rather than break the chat */ }
+    }
+    if (chatId !== currentChatId) return; // the user moved on meanwhile
+    chatCitations = found;
+    renderCitations();
+  }, 300);
+}
+
+function renderCitations() {
+  citationBadgeEl.textContent = chatCitations.length || "";
+  const term = citationSearchEl.value.trim().toLowerCase();
+  const visible = chatCitations.filter((c) => !term || JSON.stringify(c).toLowerCase().includes(term));
+  citationCountEl.textContent = chatCitations.length ? `${visible.length} of ${chatCitations.length} citations` : "";
+  citationListEl.replaceChildren();
+  if (!visible.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = chatCitations.length ? "No citations match your search" : "No citations in this chat yet";
+    citationListEl.appendChild(li);
+    return;
+  }
+  for (const c of visible) {
+    const li = document.createElement("li");
+    li.className = "citation-item";
+    const head = document.createElement("div");
+    head.className = "citation-head";
+    const link = document.createElement("a");
+    link.className = "citation-link";
+    link.href = c.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = c.label;
+    const kind = document.createElement("span");
+    kind.className = "citation-kind";
+    kind.textContent = c.kind;
+    head.append(link, kind);
+    if (c.in_answer) {
+      const cited = document.createElement("span");
+      cited.className = "citation-cited";
+      cited.textContent = "In an answer";
+      head.appendChild(cited);
+    }
+    li.appendChild(head);
+    for (const u of c.uses) {
+      const use = document.createElement("div");
+      use.className = "citation-use";
+      const where = document.createElement("b");
+      where.textContent = u.where;
+      use.appendChild(where);
+      if (u.prompt) use.append(` · asked: "${u.prompt.slice(0, 80)}${u.prompt.length > 80 ? "…" : ""}"`);
+      const excerpt = document.createElement("q");
+      excerpt.textContent = u.excerpt;
+      use.appendChild(excerpt);
+      li.appendChild(use);
+    }
+    citationListEl.appendChild(li);
+  }
+}
+citationSearchEl.addEventListener("input", renderCitations);
+
 function addMessage(role, text, isError = false, files = [], ts = null, msgId = null, options = {}) {
+  if (role === "assistant") refreshCitations();
   removeEmptyState();
   const wasNearBottom = messagesNearBottom();
   const div = document.createElement("div");
@@ -1466,8 +1560,10 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
     if (btn.dataset.tab === "files") refreshFiles();
     if (btn.dataset.tab === "outputs") renderOutputTray();
+    if (btn.dataset.tab === "citations") refreshCitations();
     if (btn.dataset.tab === "integrity") startIntegrity();
     else stopIntegrity();
+    if (btn.dataset.tab === "spending") refreshSpending();
   });
 });
 
@@ -2059,6 +2155,11 @@ async function runTask(prompt, options = {}) {
     });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
+      if (errorBody.needs_data_lake_location) {
+        const status = await fetch("/api/datalake").then((r) => r.json());
+        renderDlLocation(status.location);
+        dlModal.classList.add("show");
+      }
       throw new Error(errorBody.error || `HTTP ${res.status}`);
     }
     const { task_id, chat_id, error } = await res.json();
@@ -2276,6 +2377,15 @@ function pollDl(hidden = false) {
         // Byte count matched, and the background integrity check (parquet
         // footers, json/pkl parse, non-empty text files) came back clean.
         stopDlPolling();
+        if (status.merge_problems.length) {
+          dlModal.classList.remove("downloading");
+          setDlHidden(false);
+          dlNote.textContent =
+            `Data lake ready, but ${status.merge_problems.length} file(s) couldn't be merged and stayed in place: ` +
+            status.merge_problems.slice(0, 5).map((problem) => `${problem.path} (${problem.reason})`).join("; ") +
+            ". See the Integrity tab.";
+          return;
+        }
         dlFill.style.width = "100%";
         dlPercent.textContent = "100%";
         dlNote.textContent = "Data lake ready — you're all set.";
@@ -2300,6 +2410,12 @@ function pollDl(hidden = false) {
         dlNote.textContent =
           `Download finished but failed an integrity check ` +
           `(${status.validation_error || "unknown error"}). Click "Download" to retry.`;
+      } else if (status.state === "unavailable") {
+        stopDlPolling();
+        dlModal.classList.remove("downloading");
+        setDlHidden(false);
+        renderDlLocation(status.location);
+        dlNote.textContent = `The data lake folder isn't available: ${status.path}. Reconnect its drive or choose another folder.`;
       } else if (status.state === "error") {
         stopDlPolling();
         dlModal.classList.remove("downloading");
@@ -2314,9 +2430,71 @@ function pollDl(hidden = false) {
   dlTimer = setInterval(tick, 1500);
 }
 
+const dlLocation = document.getElementById("dl-location");
+const dlLocationOptions = document.getElementById("dl-location-options");
+
+function renderDlLocation(location) {
+  dlLocationOptions.replaceChildren();
+  dlLocation.hidden = location.locked;
+  if (location.locked) return;
+  for (const choice of location.choices) {
+    const option = document.createElement("label");
+    option.className = "dl-location-option";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "dl-location";
+    radio.value = choice.kind;
+    radio.checked = choice.kind === location.selected;
+
+    const text = document.createElement("span");
+    text.className = "dl-location-text";
+    text.textContent = choice.label;
+
+    if (choice.editable) {
+      const pathInput = document.createElement("input");
+      pathInput.type = "text";
+      pathInput.value = choice.path;
+      pathInput.placeholder = "Full folder path";
+      pathInput.setAttribute("aria-label", `${choice.label} path`);
+      pathInput.addEventListener("focus", () => { radio.checked = true; });
+      text.append(pathInput);
+    } else {
+      const path = document.createElement("span");
+      path.className = "dl-location-path";
+      path.textContent = choice.path;
+      text.append(path);
+    }
+    option.append(radio, text);
+    dlLocationOptions.append(option);
+  }
+}
+
+// Saves the picked folder; false if the server refused it.
+async function saveDlLocation() {
+  if (dlLocation.hidden) return true;
+  const picked = dlLocationOptions.querySelector('input[type="radio"]:checked');
+  if (!picked) return true;
+  const pathInput = picked.closest("label").querySelector('input[type="text"]');
+  const response = await fetch("/api/datalake/location", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: picked.value, path: pathInput ? pathInput.value : "" }),
+  });
+  if (response.ok) return true;
+  const failure = await response.json().catch(() => ({}));
+  dlNote.textContent = failure.error || "Couldn't use that folder.";
+  return false;
+}
+
 document.getElementById("dl-start").addEventListener("click", async () => {
   dlNote.textContent = "";
-  await fetch("/api/datalake/download", { method: "POST" });
+  if (!(await saveDlLocation())) return;
+  const started = await fetch("/api/datalake/download", { method: "POST" }).then((r) => r.json());
+  if (started.shared) {
+    dlModal.classList.remove("show");
+    return;
+  }
   pollDl();
 });
 document.getElementById("dl-later").addEventListener("click", () => {
@@ -2352,7 +2530,7 @@ function pollValidationQuietly() {
     if (status.state === "downloading") {
       renderDl(status);
       pollDl(dlHidden);
-    } else if (status.state === "partial" && dlStartedBefore()) {
+    } else if (status.state === "partial" && dlStartedBefore() && status.location.chosen) {
       // Closing the app stopped a download the user had started: pick it
       // back up where it was (finished files are kept), modal or ring as before.
       renderDl(status);
@@ -2360,8 +2538,17 @@ function pollValidationQuietly() {
       pollDl(dlHidden);
     } else if (status.state === "missing" || status.state === "partial") {
       if (status.state === "partial") {
-        dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — it will resume.`;
+        dlNote.textContent = `Found a partial download (${formatBytes(status.bytes)}) — keep this location to resume it.`;
       }
+      renderDlLocation(status.location);
+      if (status.duplicates.length) {
+        const paths = status.duplicates.map((duplicate) => duplicate.path).join(", ");
+        dlNote.textContent += ` Found another copy at ${paths}: its files will be moved to the location you pick.`;
+      }
+      dlModal.classList.add("show");
+    } else if (status.state === "unavailable") {
+      renderDlLocation(status.location);
+      dlNote.textContent = `The data lake folder isn't available: ${status.path}. Reconnect its drive or choose another folder.`;
       dlModal.classList.add("show");
     } else if (status.state === "invalid") {
       dlNote.textContent =
@@ -2641,6 +2828,17 @@ function datalakeExtra(d) {
     for (const f of d.invalid_files) ul.append(el("li", null, typeof f === "string" ? f : JSON.stringify(f)));
     extra.append(ul);
   }
+  if (d.can_merge) {
+    const mergeBtn = el("button", null, "Merge duplicates");
+    mergeBtn.addEventListener("click", async () => {
+      mergeBtn.disabled = true;
+      dlNote.textContent = "";
+      await fetch("/api/datalake/download", { method: "POST" });
+      pollDl();
+      refreshIntegrity();
+    });
+    extra.append(mergeBtn);
+  }
   if (d.can_download) {
     const btn = el("button", null, d.state === "invalid" ? "Repair data lake" : "Download data lake");
     btn.addEventListener("click", async () => {
@@ -2813,3 +3011,250 @@ function stopIntegrity() {
 }
 
 refreshIntegrity(); // fill the tab badge on load, without polling
+
+// ---- spending tab: AWS costs from GET /api/spending. Fetched when the tab
+// is opened rather than polled: the server caches because Cost Explorer
+// charges per request, and its data only updates a few times a day.
+const spendingSummaryEl = document.getElementById("spending-summary");
+const spendingBodyEl = document.getElementById("spending-body");
+let spendingLoaded = false; // real figures are on screen
+let spendingRequest = 0; // bumped per action, so a slow fetch can't overwrite a newer one
+
+function formatMoney(amount, currency) {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
+}
+
+function spendingTile(label, value, note, isHero) {
+  const tile = el("div", isHero ? "spend-tile hero" : "spend-tile");
+  tile.append(el("div", "label", label), el("div", "value", value));
+  if (note) tile.append(el("div", "note", note));
+  return tile;
+}
+
+// Evenly spaced axis steps with a round size: 1, 2 or 5 times a power of ten.
+function spendingAxisStep(max) {
+  const rough = max / 3;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  for (const multiple of [1, 2, 5]) {
+    if (multiple * power >= rough) return multiple * power;
+  }
+  return 10 * power;
+}
+
+function dayLabel(isoDate) {
+  // Parsed as UTC and shown as UTC: these are Cost Explorer's UTC days.
+  return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString(undefined, {
+    month: "short", day: "numeric", timeZone: "UTC",
+  });
+}
+
+function spendingDailyCard(daily, currency) {
+  const card = el("section", "spend-card");
+  card.append(
+    el("h2", null, "Daily spend"),
+    el("p", "note", "Last 30 days, UTC. The faded bar is today, which is still incomplete."),
+  );
+
+  let highest = 0;
+  for (const day of daily) highest = Math.max(highest, day.amount);
+  const step = highest > 0 ? spendingAxisStep(highest) : 1;
+  const top = Math.max(Math.ceil(highest / step), 1) * step;
+
+  const plot = el("div", "spend-plot");
+  for (let value = step; value <= top + step / 1000; value += step) {
+    const line = el("div", "spend-grid");
+    line.style.bottom = `${(value / top) * 100}%`;
+    line.append(el("span", null, formatMoney(value, currency)));
+    plot.append(line);
+  }
+
+  const tooltip = el("div", "spend-tooltip");
+  tooltip.hidden = true;
+  daily.forEach((day, index) => {
+    const column = el("button", "spend-column");
+    const text = `${dayLabel(day.date)}: ${formatMoney(day.amount, currency)}`;
+    column.setAttribute("aria-label", text);
+    const bar = el("div", "spend-bar");
+    if (index === daily.length - 1) bar.classList.add("partial");
+    bar.style.height = `${(day.amount / top) * 100}%`;
+    column.append(bar);
+    const show = () => {
+      tooltip.textContent = text;
+      tooltip.hidden = false;
+      const plotBox = plot.getBoundingClientRect();
+      const columnBox = column.getBoundingClientRect();
+      const halfWidth = tooltip.offsetWidth / 2;
+      const center = columnBox.left - plotBox.left + columnBox.width / 2;
+      tooltip.style.left = `${Math.min(Math.max(center, halfWidth), plotBox.width - halfWidth)}px`;
+    };
+    const hide = () => { tooltip.hidden = true; };
+    column.addEventListener("mouseenter", show);
+    column.addEventListener("focus", show);
+    column.addEventListener("mouseleave", hide);
+    column.addEventListener("blur", hide);
+    plot.append(column);
+  });
+  plot.append(tooltip);
+
+  const axis = el("div", "spend-axis");
+  if (daily.length) {
+    axis.append(el("span", null, dayLabel(daily[0].date)), el("span", null, dayLabel(daily[daily.length - 1].date)));
+  }
+
+  const tableWrap = el("details", "spend-table");
+  tableWrap.append(el("summary", null, "Show as table"));
+  const table = el("table");
+  for (const day of daily) {
+    const row = el("tr");
+    row.append(el("td", null, dayLabel(day.date)), el("td", null, formatMoney(day.amount, currency)));
+    table.append(row);
+  }
+  tableWrap.append(table);
+
+  card.append(plot, axis, tableWrap);
+  return card;
+}
+
+function spendingServicesCard(services, currency) {
+  const card = el("section", "spend-card");
+  card.append(el("h2", null, "By service"), el("p", "note", "This month so far."));
+  let highest = 0;
+  for (const service of services) highest = Math.max(highest, service.amount);
+  if (!services.length) card.append(el("p", "note", "No spend recorded yet this month."));
+  for (const service of services) {
+    const row = el("div", "spend-service");
+    const track = el("div", "track");
+    const fill = el("div", "fill");
+    fill.style.width = `${highest > 0 ? (service.amount / highest) * 100 : 0}%`;
+    track.append(fill);
+    row.append(
+      el("div", "name", service.name), track,
+      el("div", "amount", formatMoney(service.amount, currency)),
+    );
+    card.append(row);
+  }
+  return card;
+}
+
+// Grey shapes in the layout of the real tab, while the first fetch runs.
+function renderSpendingLoading() {
+  spendingSummaryEl.replaceChildren(
+    faIcon("coins"), el("strong", null, "AWS spending"), el("span", "when", "Loading…"),
+  );
+  const tiles = el("div", "spend-tiles");
+  for (const className of ["spend-tile hero", "spend-tile", "spend-tile"]) {
+    const tile = el("div", className);
+    tile.append(el("div", "spend-skeleton line"), el("div", "spend-skeleton value"));
+    tiles.append(tile);
+  }
+  const card = el("section", "spend-card");
+  card.append(el("div", "spend-skeleton line"), el("div", "spend-skeleton plot"));
+  spendingBodyEl.replaceChildren(tiles, card);
+  spendingBodyEl.setAttribute("aria-busy", "true");
+}
+
+// Made-up figures in the API's shape, for checking the tab's layout before
+// the AWS permission exists. Always labelled as examples on screen.
+function spendingExampleData() {
+  const daily = [];
+  const now = new Date();
+  for (let daysAgo = 29; daysAgo >= 0; daysAgo--) {
+    const day = new Date(now.getTime() - daysAgo * 86400000);
+    // A weekly rhythm, so the bars look like real usage; today is incomplete.
+    let amount = 38 + 14 * Math.sin(daysAgo * 0.9) + (daysAgo % 7 === 2 ? 22 : 0);
+    if (daysAgo === 0) amount = 11;
+    daily.push({ date: day.toISOString().slice(0, 10), amount });
+  }
+  return {
+    currency: "USD",
+    month_to_date: 412.58,
+    projected_month: 1236.4,
+    previous_month: 1184.92,
+    previous_by_this_day: 386.17,
+    daily,
+    services: [
+      { name: "Amazon Bedrock", amount: 248.31 },
+      { name: "Amazon S3", amount: 71.12 },
+      { name: "Amazon EC2", amount: 54.76 },
+      { name: "AWS Lambda", amount: 21.4 },
+      { name: "Other", amount: 16.99 },
+    ],
+    fetched_at: Date.now() / 1000,
+  };
+}
+
+function showSpendingExample() {
+  spendingRequest += 1; // a fetch still running shouldn't replace the example
+  renderSpending(spendingExampleData(), true);
+}
+
+function renderSpending(data, isExample = false) {
+  spendingBodyEl.removeAttribute("aria-busy");
+  spendingLoaded = !isExample;
+  const money = (amount) => formatMoney(amount, data.currency);
+  const fetched = new Date(data.fetched_at * 1000).toLocaleTimeString();
+  const refresh = el("button", "refresh", isExample ? "Back to live data" : "Refresh");
+  refresh.addEventListener("click", () => refreshSpending(true));
+  if (isExample) {
+    spendingSummaryEl.replaceChildren(
+      statusIcon("warn"), el("strong", null, "Example data"),
+      el("span", "when", "made-up figures, not your AWS costs"), refresh,
+    );
+  } else {
+    spendingSummaryEl.replaceChildren(
+      faIcon("coins"), el("strong", null, "AWS spending"),
+      el("span", "when", `whole account, before credits · fetched ${fetched}`), refresh,
+    );
+  }
+
+  const tiles = el("div", "spend-tiles");
+  tiles.append(
+    spendingTile("This month so far", money(data.month_to_date),
+      `${money(data.previous_by_this_day)} by this day last month`, true),
+    spendingTile("Projected this month",
+      data.projected_month === null ? "—" : money(data.projected_month),
+      data.projected_month === null ? "AWS has no forecast yet" : "AWS forecast"),
+    spendingTile("Last month", money(data.previous_month), "Full month"),
+  );
+  spendingBodyEl.replaceChildren(
+    tiles,
+    spendingDailyCard(data.daily, data.currency),
+    spendingServicesCard(data.services, data.currency),
+  );
+}
+
+async function refreshSpending(force = false) {
+  spendingRequest += 1;
+  const request = spendingRequest;
+  // Real figures stay on screen while they update; otherwise show the shapes.
+  if (!spendingLoaded) renderSpendingLoading();
+  try {
+    const res = await fetch(`/api/spending${force ? "?refresh=1" : ""}`);
+    const data = await res.json();
+    if (request !== spendingRequest) return; // a newer action took over
+    if (!res.ok) {
+      const error = new Error(data.error || `HTTP ${res.status}`);
+      error.code = data.code;
+      throw error;
+    }
+    renderSpending(data);
+  } catch (err) {
+    if (request !== spendingRequest) return;
+    spendingLoaded = false;
+    spendingBodyEl.removeAttribute("aria-busy");
+    const retry = el("button", "refresh", "Try again");
+    retry.addEventListener("click", () => refreshSpending(true));
+    spendingSummaryEl.replaceChildren(
+      statusIcon(err.code === "permission" ? "warn" : "fail"),
+      el("strong", null, err.message || String(err)), retry,
+    );
+    const body = el("section", "spend-card spend-message");
+    if (err.code === "permission") {
+      body.append(el("p", "note", "Add ce:GetCostAndUsage and ce:GetCostForecast to the role, then try again. Permission changes can take a minute to apply."));
+    }
+    const example = el("button", "refresh", "Preview with example data");
+    example.addEventListener("click", showSpendingExample);
+    body.append(example);
+    spendingBodyEl.replaceChildren(body);
+  }
+}

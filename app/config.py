@@ -13,6 +13,7 @@ uploads, chat history — is one deletable tree:
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -30,13 +31,27 @@ def _env(name: str, default: str) -> str:
     return os.getenv(name) or default
 
 
+# The data lake location picked in the app (services/datalake.py writes it).
+DATA_LOCATION_FILE = _DATA_ROOT / "datalake-location.json"
+
+
+def _saved_data_path() -> str | None:
+    try:
+        return json.loads(DATA_LOCATION_FILE.read_text())["path"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 class Config:
     # Optional: the Bedrock model to start on (else app/providers.py's default).
     MODEL: str | None = os.getenv("BIOMNI_MODEL") or None
 
     # Passed straight to A1(path=...); A1 creates/expects a "biomni_data"
     # subfolder under this path, so this is data/, not data/biomni_data.
-    DATA_PATH: Path = Path(_env("BIOMNI_DATA_PATH", str(_DATA_ROOT))).resolve()
+    # BIOMNI_DATA_PATH beats the location picked in the app.
+    DATA_PATH: Path = Path(
+        _env("BIOMNI_DATA_PATH", _saved_data_path() or str(_DATA_ROOT))
+    ).resolve()
 
     # User-uploaded files the agent can read.
     UPLOAD_PATH: Path = Path(

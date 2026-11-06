@@ -15,7 +15,7 @@ from werkzeug.utils import secure_filename
 
 from .. import auth
 from ..config import Config
-from ..services import biomni_runner, chat_store, datalake
+from ..services import biomni_runner, chat_store, citations, datalake, spending
 from ..services.tasks import registry
 
 bp = Blueprint("api", __name__)
@@ -51,6 +51,9 @@ def chat():
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         return jsonify(error="prompt is required"), 400
+    blocker = datalake.task_blocker()
+    if blocker:
+        return jsonify(error=blocker, needs_data_lake_location=True), 409
 
     # Optional list of previously uploaded filenames to attach to the task.
     attached = []
@@ -128,6 +131,15 @@ def datalake_status():
     return jsonify(datalake.status())
 
 
+@bp.post("/datalake/location")
+def datalake_location():
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(datalake.set_location(str(body.get("kind", "")), str(body.get("path", ""))))
+    except datalake.LocationError as exc:
+        return jsonify(error=str(exc)), 400
+
+
 @bp.post("/datalake/download")
 def datalake_download():
     started = datalake.start_download()
@@ -168,6 +180,7 @@ def _datalake_card() -> dict:
         "downloading": _check("Downloaded", "pending", f"downloading — {st['percent']}% ({size})"),
         "partial": _check("Downloaded", "warn", f"partial — {size}"),
         "missing": _check("Downloaded", "fail", "not downloaded yet"),
+        "unavailable": _check("Downloaded", "fail", f"folder not available: {st['path']}"),
         "error": _check("Downloaded", "fail", st["error"] or "download failed"),
     }[state]
     if state in ("ready", "invalid"):
@@ -180,13 +193,28 @@ def _datalake_card() -> dict:
             verify = _check("Files verified", "fail", f"{n} file(s) failed — Repair re-downloads them")
     else:
         verify = _check("Files verified", "pending", "runs once the download is complete")
+    checks = [download, verify]
+    can_merge = False
+    for duplicate in st["duplicates"]:
+        if duplicate["kept"]:
+            kept_note = " (may be shared, so files are copied and it's never emptied)"
+        else:
+            kept_note = ""
+            can_merge = state not in ("downloading", "unavailable")
+        checks.append(_check(
+            "Duplicate", "warn",
+            f"{duplicate['path']} — {_fmt_bytes(duplicate['bytes'])}, {duplicate['files']:,} files{kept_note}",
+        ))
+    for problem in st["merge_problems"]:
+        checks.append(_check("Not merged", "warn", f"{problem['path']} — {problem['reason']}"))
     return {
-        "checks": [download, verify],
+        "checks": checks,
+        "can_merge": can_merge,
         "state": state,
         "path": st["path"],
         "invalid_files": st["invalid_files"][:50],
         "validation_error": st["validation_error"],
-        "can_download": state in ("missing", "partial", "error", "invalid"),
+        "can_download": state in ("missing", "partial", "error", "invalid") and not st["shared"],
     }
 
 
@@ -254,6 +282,18 @@ def _harness_card() -> dict:
     return {"checks": checks, "items": items, "path": str(Config.HARNESS_PATH)}
 
 
+@bp.get("/spending")
+def spending_route():
+    """AWS spending for the Spending tab; see services/spending.py."""
+    user = auth.current_user()
+    try:
+        data = spending.get_spending(user.credentials, refresh=request.args.get("refresh") == "1")
+    except spending.SpendingUnavailable as exc:
+        status = 403 if exc.code == "permission" else 502
+        return jsonify(code=exc.code, error=str(exc)), status
+    return jsonify(data)
+
+
 @bp.get("/integrity")
 def integrity():
     """Pass/fail health of the data lake, the agent, and its harness (saved
@@ -290,6 +330,14 @@ def get_chat(chat_id: str):
     if chat is None:
         return jsonify(error="unknown chat"), 404
     return jsonify(chat)
+
+
+@bp.get("/chats/<chat_id>/citations")
+def get_chat_citations(chat_id: str):
+    chat = chat_store.get_chat(chat_id)
+    if chat is None:
+        return jsonify(error="unknown chat"), 404
+    return jsonify(citations=citations.collect(chat["messages"]))
 
 
 @bp.patch("/chats/<chat_id>")
