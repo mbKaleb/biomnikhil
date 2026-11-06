@@ -125,7 +125,7 @@ instead. Settings live in `data/.env`.
 
 ```
 setup-windows.cmd, setup-mac.command   double-click launchers (all users see)
-LICENSE
+LICENSE                 in the release zip, this is app/LICENSE
 app/
   run.ps1, run-mac.sh     launchers: fetch uv, start the installer, self-update, open the app window
   installer/              the install window (pywebview + ui/index.html), same on Mac and Windows:

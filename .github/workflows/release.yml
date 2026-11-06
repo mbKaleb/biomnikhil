@@ -6,7 +6,7 @@
 #
 # The release carries biomnikhil-<version>.zip: the tracked source at that tag
 # plus app/VERSION, for people to download. It also carries the same file as
-# biomnikhil.zip, because app/run.ps1 / app/run-mac.sh (and v0.1.0's launchers)
+# biomnikhil.zip, because app/run.ps1 / app/run-mac.sh
 # update from the fixed URL
 # https://github.com/mbKaleb/biomnikhil/releases/latest/download/biomnikhil.zip
 # and release.txt (the version and the zip's SHA-256) with its Ed25519
@@ -38,9 +38,10 @@ jobs:
       - name: Build the zip
         run: |
           echo "${GITHUB_REF_NAME#v}" > VERSION
-          # VERSION goes in app/ (the --prefix before --add-file); the tracked
+          # VERSION and LICENSE go in app/ (the --prefix before --add-file), so
+          # the zip's top level is only the setup launchers; the tracked
           # files go under biomnikhil/ (the last --prefix).
-          git archive --format=zip --prefix=biomnikhil/app/ --add-file=VERSION \
+          git archive --format=zip --prefix=biomnikhil/app/ --add-file=VERSION --add-file=LICENSE \
             --prefix=biomnikhil/ -o biomnikhil.zip "$GITHUB_REF_NAME"
           cp biomnikhil.zip "biomnikhil-${GITHUB_REF_NAME#v}.zip"
 

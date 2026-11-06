@@ -205,3 +205,20 @@ def test_update_leaves_git_checkouts_alone(release):
     (install / ".git").mkdir()
     assert update.update(install, release["url"]) == update.UP_TO_DATE
     assert (install / "app" / "old_module" / "gone.py").exists()
+
+
+def test_apply_removes_old_root_files(tmp_path):
+    release = tmp_path / "release"
+    install = tmp_path / "install"
+    (release / "app").mkdir(parents=True)
+    (install / "app").mkdir(parents=True)
+    (release / "app" / "VERSION").write_text("9.9.9\n")
+    (release / "setup-mac.command").write_text("new")
+    (install / "run.ps1").write_text("old")
+    (install / "run-mac.sh").write_text("old")
+
+    update.apply(release, install)
+
+    assert not (install / "run.ps1").exists()
+    assert not (install / "run-mac.sh").exists()
+    assert (install / "setup-mac.command").read_text() == "new"

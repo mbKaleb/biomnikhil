@@ -228,6 +228,11 @@ def _replace_file(source: Path, destination: Path) -> None:
     os.replace(temporary, destination)
 
 
+# Files older releases put at the top of the install. Only the setup launchers
+# belong there now.
+RETIRED_ROOT_FILES = ("run-mac.sh", "run.ps1", "LICENSE", "agent-ideas.md", "shared-data-lake.md")
+
+
 def apply(release_root: Path, install_root: Path) -> None:
     """Makes install_root's files match release_root's: copies every release
     file in, then deletes files under app/ the release doesn't have. app/VERSION
@@ -249,6 +254,10 @@ def apply(release_root: Path, install_root: Path) -> None:
         if "__pycache__" in relative.split("/"):
             continue
         (app_dir / relative).unlink()
+
+    for name in RETIRED_ROOT_FILES:
+        if name not in release_files:
+            (install_root / name).unlink(missing_ok=True)
 
     # Folders the deletions emptied, deepest first.
     folders = [p for p in app_dir.rglob("*") if p.is_dir()]
