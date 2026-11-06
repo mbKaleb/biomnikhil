@@ -16,7 +16,7 @@ $Log = Join-Path $Target "setup.log"
 function Show-Failure($Message) {
     Write-Host ""
     Write-Host "!! biomnikhil setup failed: $Message" -ForegroundColor Red
-    Write-Host "   Details are in $Log"
+    Write-Host "   Details are in $Log and $Target\data\diagnostics.log"
     if (-not $env:BIOMNIKHIL_NO_DIALOGS) {
         Add-Type -AssemblyName System.Windows.Forms
         [void][System.Windows.Forms.MessageBox]::Show("$Message`n`nDetails are in $Log", "biomnikhil setup", "OK", "Error")

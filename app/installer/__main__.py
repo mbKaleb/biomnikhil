@@ -13,6 +13,10 @@ Exit codes, read by the launch scripts: 0 = installed, start biomnikhil now;
 import os
 import sys
 
+import diagnostics
+
+diagnostics.enable()
+
 from core import Installer, InstallFailed, welcome_info
 
 START, INSTALLED, STOPPED = 0, 3, 1

@@ -15,6 +15,10 @@ import time
 import urllib.request
 import webbrowser
 
+import diagnostics
+
+diagnostics.enable()
+
 import webview
 
 from core import APP, DATA, ROOT, VENV, WINDOWS
