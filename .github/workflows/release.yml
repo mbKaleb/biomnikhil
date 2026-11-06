@@ -4,7 +4,7 @@
 #   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  test build: published as a
 #     pre-release, which releases/latest (and so every install) ignores
 #
-# The release carries biomnikhil-<version>.zip: the tracked source at that tag
+# The release carries biomnikhil-<version>-installer.zip: the tracked source at that tag
 # plus app/VERSION, for people to download. It also carries the same file as
 # biomnikhil.zip, because app/run.ps1 / app/run-mac.sh
 # update from the fixed URL
@@ -43,7 +43,7 @@ jobs:
           # files go under biomnikhil/ (the last --prefix).
           git archive --format=zip --prefix=biomnikhil/app/ --add-file=VERSION --add-file=LICENSE \
             --prefix=biomnikhil/ -o biomnikhil.zip "$GITHUB_REF_NAME"
-          cp biomnikhil.zip "biomnikhil-${GITHUB_REF_NAME#v}.zip"
+          cp biomnikhil.zip "biomnikhil-${GITHUB_REF_NAME#v}-installer.zip"
 
       - name: Sign
         env:
@@ -77,6 +77,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease) ;; *) pre=() ;; esac
-          gh release create "$GITHUB_REF_NAME" "biomnikhil-${GITHUB_REF_NAME#v}.zip" biomnikhil.zip \
+          gh release create "$GITHUB_REF_NAME" "biomnikhil-${GITHUB_REF_NAME#v}-installer.zip" biomnikhil.zip \
             release.txt release.txt.sig "${pre[@]}" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md

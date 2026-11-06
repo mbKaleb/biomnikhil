@@ -19,10 +19,12 @@ Needs a 64-bit Intel/AMD Windows PC, or an Apple Silicon Mac on macOS 15 or
 newer; about 16 GB free; and internet access to PyPI, GitHub, the Biomni
 data lake (S3), Bedrock and Cognito. Setup checks all of these first.
 
-1. Download `biomnikhil-<version>.zip` from the
+1. Download `biomnikhil-<version>-installer.zip` from the
    [latest release](https://github.com/mbKaleb/biomnikhil/releases/latest)
-   and extract it somewhere that isn't synced (not OneDrive or iCloud
-   Desktop/Documents), e.g. `C:\biomnikhil` or `~/biomnikhil`.
+   and extract it anywhere, OneDrive included. Setup copies biomnikhil to
+   `%LOCALAPPDATA%\biomnikhil` (Windows) or `~/Library/biomnikhil` (Mac) and
+   runs it from there, so you can delete the zip and the extracted folder
+   afterwards. On Windows, setup's log is `setup.log` in that folder.
 2. Double-click **setup-windows** or **setup-mac**.
    - Windows may warn about a downloaded file: choose **Run** (or
      **More info → Run anyway**).
@@ -87,7 +89,7 @@ git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
 ```
 
 `.github/workflows/release.yml` publishes it as a pre-release with
-`biomnikhil-0.2.0-rc1.zip` (plus the same file as `biomnikhil.zip`, the name
+`biomnikhil-0.2.0-rc1-installer.zip` (plus the same file as `biomnikhil.zip`, the name
 installs update from, and the signed `release.txt`). Lab installs ignore pre-releases, and a test install
 doesn't self-update; download the zip from that pre-release's page. Broken?
 Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:

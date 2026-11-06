@@ -158,8 +158,17 @@ if ($portLine) { $Port = [int]$portLine.Matches[0].Groups[1].Value }
 if (-not $env:BIOMNIKHIL_NO_DIALOGS) {
     # The app window (app\installer\window.py) starts the server in the
     # background and stops it when the window closes. pythonw: no console.
-    Start-Process "$iv\Scripts\pythonw.exe" -ArgumentList "`"$Root\app\installer\window.py`"", $Port -WorkingDirectory $Root
-    exit 0
+    # pythonw has no console, so a crash would be invisible: keep its errors and
+    # report it if it dies right away. A temp file, because a window that's
+    # already open keeps its own file locked.
+    $windowErrors = [IO.Path]::GetTempFileName()
+    $window = Start-Process "$iv\Scripts\pythonw.exe" -ArgumentList "`"$Root\app\installer\window.py`"", $Port -WorkingDirectory $Root -RedirectStandardError $windowErrors -PassThru
+    $null = $window.Handle  # without this, ExitCode can come back empty
+    if (-not $window.WaitForExit(5000)) { exit 0 }
+    if ($window.ExitCode -eq 0) { exit 0 }
+    Copy-Item $windowErrors "$Root\data\window-error.log" -Force
+    Get-Content $windowErrors | ForEach-Object { Write-Host $_ }
+    Fail "The biomnikhil window closed as soon as it started." "Details are in $Root\data\window-error.log"
 }
 
 # Without dialogs: the server runs in this window, in a browser tab.
