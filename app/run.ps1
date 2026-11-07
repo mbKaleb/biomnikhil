@@ -88,15 +88,14 @@ function Test-App($Url) {
 
 # --- update: release installs (app\VERSION from the release zip, no .git
 # folder) update themselves from the latest GitHub release. data\ and runtime\
-# aren't in the zip, so they're kept. Git checkouts update with git; test
-# builds (versions like 0.2.0-rc1) stay on the build being tested. Only signed
+# aren't in the zip, so they're kept. Git checkouts update with git. Test builds
+# (versions like 0.2.0-rc1) are only taken with "Beta releases" on in Settings. Only signed
 # releases are taken: app\installer\update.py checks the signature, the version
 # and the zip's checksum before it swaps any file in. It needs a Python, so a
 # first run (nothing installed yet, and the zip was just downloaded) skips it.
 if ((Test-Path "$Root\app\VERSION") -and -not (Test-Path "$Root\.git") -and -not $env:BIOMNIKHIL_NO_UPDATE) {
-    $current = (Get-Content "$Root\app\VERSION" -Raw).Trim()
     $updatePy = @("$Tools\installer\Scripts\python.exe", $VenvPy) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $current.Contains("-") -and $updatePy) {
+    if ($updatePy) {
         $code = Invoke-Native { & $updatePy "$Root\app\installer\update.py" }
         if ($code -eq 0) {
             & "$Root\app\run.ps1" @PSBoundParameters  # restart on the new script

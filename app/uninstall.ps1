@@ -619,7 +619,7 @@ function Get-RunningReason {  # why biomnikhil seems to be running; "" if it isn
         if ($process.ProcessId -eq $PID) { continue }
         $commandLine = [string]$process.CommandLine
         $executable = [string]$process.ExecutablePath
-        if ($commandLine -match 'uninstall\.ps1|uninstall-windows\.cmd') { continue }
+        if ($commandLine -match 'uninstall\.ps1|uninstall-windows\.cmd|maintenance\.ps1') { continue }
         foreach ($root in $script:Roots) {
             $inCommand = $commandLine.IndexOf($root + "\", [StringComparison]::OrdinalIgnoreCase) -ge 0
             $isExecutable = $executable -and (Test-Inside $executable $root)

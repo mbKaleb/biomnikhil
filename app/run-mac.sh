@@ -58,14 +58,13 @@ ensure_uv() {  # the pinned uv in runtime/tools
 
 # --- update: release installs (app/VERSION from the release zip, no .git
 # folder) update themselves from the latest GitHub release. data/ and runtime/
-# aren't in the zip, so they're kept. Git checkouts update with git; test
-# builds (versions like 0.2.0-rc1) stay on the build being tested. Only signed
+# aren't in the zip, so they're kept. Git checkouts update with git. Test builds
+# (versions like 0.2.0-rc1) are only taken with "Beta releases" on in Settings. Only signed
 # releases are taken: app/installer/update.py checks the signature, the version
 # and the zip's checksum before it swaps any file in. It needs a Python, so a
 # first run (nothing installed yet, and the zip was just downloaded) skips it.
 IV=runtime/tools/installer  # the installer's Python environment, with pywebview; it runs the app window too
-if [ -f app/VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ] \
-   && [[ "$(cat app/VERSION)" != *-* ]]; then
+if [ -f app/VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ]; then
   update_py=""
   for candidate in "$IV/bin/python" "$VENV/bin/python"; do
     if [ -x "$candidate" ]; then update_py=$candidate; break; fi

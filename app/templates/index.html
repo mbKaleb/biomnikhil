@@ -864,6 +864,29 @@
     .spend-table td, .spend-table th { padding: .1rem 1.2rem .1rem 0; text-align: left; font-weight: 400; }
     .spend-message code { color: #a9bce0; overflow-wrap: anywhere; }
     /* ---- Integrity tab ---- */
+    .settings-card {
+      margin-top: .9rem; border: 1px solid #24365a; border-radius: 12px;
+      background: linear-gradient(180deg, #111c33, #0e1729); padding: .9rem 1rem;
+    }
+    #tab-settings .settings-card:first-child { margin-top: 0; }
+    .settings-card h2 { font-size: .95rem; margin: 0 0 .6rem; font-weight: 600; }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+      padding: .6rem 0; font-size: .88rem;
+    }
+    .settings-row + .settings-row { border-top: 1px solid #16233d; }
+    .settings-row .hint { display: block; margin-top: .15rem; color: #7c90b4; font-size: .78rem; }
+    .settings-row .value { color: #a9bce0; overflow-wrap: anywhere; text-align: right; }
+    .settings-row button, .settings-row .button-link {
+      flex: none; margin: 0; padding: .35rem .8rem; font-size: .8rem; border-radius: 8px;
+      background: transparent; border: 1px solid #35507f; color: #a9bce0; text-decoration: none;
+    }
+    .settings-row button:hover:not(:disabled), .settings-row .button-link:hover {
+      border-color: #5b7fe8; color: #dbe4f3;
+    }
+    .settings-row input[type="checkbox"] { flex: none; width: 1.1rem; height: 1.1rem; accent-color: #3b5bdb; }
+    #settings-message:empty { display: none; }
+    #settings-message { margin-top: .9rem; color: #e0a458; font-size: .85rem; }
     #integrity-badge:empty { display: none; }
     #integrity-badge {
       display: inline-block; min-width: 1.1rem; padding: 0 .3rem; margin-left: .25rem;
@@ -1134,7 +1157,7 @@
     <select id="model-effort" class="model-select" title="Effort" disabled>
       <option value="">Default effort</option>
     </select>
-    {% if user %}<a id="user-link" href="/logout" title="Sign out">{{ user.email }}</a>{% endif %}
+    {% if user %}<a id="user-link" href="#" title="Settings">{{ user.email }}</a>{% endif %}
     <button id="trace-btn" title="Agent trace">&gt;_</button>
   </header>
 
@@ -1209,6 +1232,7 @@
       <button data-tab="viewer">Viewer</button>
       <button data-tab="integrity">Integrity <span id="integrity-badge"></span></button>
       <button data-tab="spending">Spending</button>
+      <button data-tab="settings">Settings</button>
     </nav>
 
     <section id="tab-task" class="panel active">
@@ -1270,6 +1294,51 @@
     <section id="tab-spending" class="panel">
       <div id="spending-summary"></div>
       <div id="spending-body"></div>
+    </section>
+
+    <!-- Settings: the signed-in user, updates, and setup/cleanup. Filled in by
+         refreshSettings() in app.js from GET /api/settings. -->
+    <section id="tab-settings" class="panel">
+      <div class="settings-card">
+        <h2>Profile</h2>
+        <div class="settings-row">
+          <span>Signed in as</span>
+          <span class="value">{% if user %}{{ user.email }}{% endif %}</span>
+        </div>
+        <div class="settings-row">
+          <span>Sign out of biomnikhil on this computer.</span>
+          <a class="button-link" href="/logout">Sign out</a>
+        </div>
+      </div>
+      <div class="settings-card">
+        <h2>Updates</h2>
+        <div class="settings-row">
+          <span>Installed version</span>
+          <span class="value" id="settings-version">…</span>
+        </div>
+        <label class="settings-row">
+          <span>Beta releases
+            <span class="hint" id="settings-beta-hint"></span>
+          </span>
+          <input type="checkbox" id="settings-beta" disabled>
+        </label>
+      </div>
+      <div class="settings-card">
+        <h2>Maintenance</h2>
+        <div class="settings-row">
+          <span>Run setup again
+            <span class="hint">Rebuilds the app's Python environment, for when something's broken. Chats, settings and the data lake stay.</span>
+          </span>
+          <button id="settings-setup" type="button">Run setup</button>
+        </div>
+        <div class="settings-row">
+          <span>Clean up
+            <span class="hint">Looks for old copies, data lakes and installers outside this install, and asks about each one before deleting it.</span>
+          </span>
+          <button id="settings-cleanup" type="button">Clean up</button>
+        </div>
+      </div>
+      <div id="settings-message" role="status"></div>
     </section>
 
     <section id="tab-files" class="panel">

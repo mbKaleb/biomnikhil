@@ -543,6 +543,10 @@ def task_blocker() -> str | None:
     return "The data lake isn't fully downloaded yet. Tasks can run once it is."
 
 
+def is_downloading() -> bool:
+    return _download_thread is not None and _download_thread.is_alive()
+
+
 def start_download() -> bool:
     """Kick off the download thread; returns False if already running/done."""
     global _download_thread, _download_error, _validated, _valid, _validation_error

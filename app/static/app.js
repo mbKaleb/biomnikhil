@@ -1564,6 +1564,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     if (btn.dataset.tab === "integrity") startIntegrity();
     else stopIntegrity();
     if (btn.dataset.tab === "spending") refreshSpending();
+    if (btn.dataset.tab === "settings") refreshSettings();
   });
 });
 
@@ -3184,3 +3185,90 @@ async function refreshSpending(force = false) {
     spendingBodyEl.replaceChildren(body);
   }
 }
+
+// ---- settings ----
+const settingsVersionEl = document.getElementById("settings-version");
+const settingsBetaEl = document.getElementById("settings-beta");
+const settingsBetaHintEl = document.getElementById("settings-beta-hint");
+const settingsMessageEl = document.getElementById("settings-message");
+const settingsSetupBtn = document.getElementById("settings-setup");
+const settingsCleanupBtn = document.getElementById("settings-cleanup");
+
+const BETA_HINT = "Each start updates to the newest release, test builds included. They can be less stable. Turning this off keeps your version until a newer full release comes out.";
+const BETA_HINT_CHECKOUT = "This copy runs from a git checkout, which updates with git, so this has no effect here.";
+
+async function refreshSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    settingsVersionEl.textContent = data.version;
+    settingsBetaEl.checked = data.beta_updates;
+    settingsBetaEl.disabled = data.git_checkout;
+    settingsBetaHintEl.textContent = data.git_checkout ? BETA_HINT_CHECKOUT : BETA_HINT;
+  } catch (err) {
+    settingsMessageEl.textContent = `Couldn't load settings: ${err.message || err}`;
+  }
+}
+
+settingsBetaEl.addEventListener("change", async () => {
+  const wanted = settingsBetaEl.checked;
+  settingsBetaEl.disabled = true;
+  settingsMessageEl.textContent = "";
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beta_updates: wanted }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    settingsMessageEl.textContent = wanted
+      ? "Beta releases are on. This applies the next time you open biomnikhil."
+      : "Beta releases are off.";
+  } catch (err) {
+    settingsBetaEl.checked = !wanted;
+    settingsMessageEl.textContent = `Couldn't save that: ${err.message || err}`;
+  }
+  settingsBetaEl.disabled = false;
+});
+
+async function runMaintenance(action, confirmation, closingMessage) {
+  const ok = await confirmModal(confirmation.message, {
+    title: confirmation.title, confirmLabel: confirmation.label,
+  });
+  if (!ok) return;
+  settingsSetupBtn.disabled = true;
+  settingsCleanupBtn.disabled = true;
+  settingsMessageEl.textContent = "";
+  try {
+    const res = await fetch(`/api/maintenance/${action}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    settingsMessageEl.textContent = closingMessage;
+  } catch (err) {
+    settingsMessageEl.textContent = err.message || String(err);
+    settingsSetupBtn.disabled = false;
+    settingsCleanupBtn.disabled = false;
+  }
+}
+
+settingsSetupBtn.addEventListener("click", () => {
+  runMaintenance("setup", {
+    title: "Run setup again?",
+    message: "biomnikhil will close, rebuild its Python environment and reopen. This needs an internet connection and can take a few minutes. Your chats, settings and data lake stay.",
+    label: "Run setup",
+  }, "Closing biomnikhil to run setup. It reopens when setup is done.");
+});
+
+settingsCleanupBtn.addEventListener("click", () => {
+  runMaintenance("cleanup", {
+    title: "Clean up?",
+    message: "biomnikhil will close and a separate window will open. It lists files found outside this install and asks about each one, and nothing is deleted unless you say yes there. biomnikhil reopens when you're done.",
+    label: "Continue",
+  }, "Closing biomnikhil to clean up. Answer the questions in the window that opens.");
+});
+
+document.getElementById("user-link")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  document.querySelector('.tabs button[data-tab="settings"]').click();
+});

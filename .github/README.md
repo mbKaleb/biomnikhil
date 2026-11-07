@@ -54,6 +54,17 @@ The folder holds everything: `app/` (the program), `data/` (your settings,
 chats, uploads and the data lake) and `runtime/` (Python, uv and its download
 cache; safe to delete, setup rebuilds it).
 
+The **Settings** tab shows who you're signed in as and the installed version, and has
+three controls:
+
+- **Beta releases** makes each start update to the newest release, test builds included.
+  Turning it off keeps your version until a newer full release comes out. It applies to
+  this whole install, and a git checkout ignores it.
+- **Run setup again** closes biomnikhil, rebuilds its Python environment and reopens it.
+  Your chats, settings and data lake stay.
+- **Clean up** closes biomnikhil, opens the cleanup described below in a console or
+  Terminal window, and reopens biomnikhil when you're done.
+
 ## Uninstall
 
 Close biomnikhil, then double-click **uninstall-windows** or **uninstall-mac** in the
@@ -109,9 +120,9 @@ git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
 
 `.github/workflows/release.yml` publishes it as a pre-release with
 `biomnikhil-0.2.0-rc1-installer.zip`, which unpacks to `biomnikhil-installer/` (plus
-the same files as `biomnikhil.zip`, unpacking to `biomnikhil/`, the names installs update from, and the signed `release.txt`). Lab installs ignore pre-releases, and a test install
-doesn't self-update; download the zip from that pre-release's page. Broken?
-Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
+the same files as `biomnikhil.zip`, unpacking to `biomnikhil/`, the names installs update from, and the signed `release.txt`). Lab installs ignore pre-releases unless
+**Beta releases** is on in their Settings tab. To try one without that, download the
+zip from the pre-release's page. Broken? Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
@@ -151,6 +162,7 @@ LICENSE                 in the release zip, this is app/LICENSE
 app/
   run.ps1, run-mac.sh     launchers: fetch uv, start the installer, self-update, open the app window
   uninstall.ps1, uninstall-mac.sh  the uninstallers the root launchers start
+  maintenance.ps1, maintenance-mac.sh, cleanup-mac.command  setup and cleanup from the Settings tab
   installer/              the install window (pywebview + ui/index.html), same on Mac and Windows:
                           system checks, Python, packages, data/.env, shortcuts;
                           window.py is the app window (runs waitress in the background);

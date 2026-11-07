@@ -15,7 +15,7 @@ from werkzeug.utils import secure_filename
 
 from .. import auth
 from ..config import Config
-from ..services import biomni_runner, chat_store, citations, datalake, spending
+from ..services import biomni_runner, chat_store, citations, datalake, maintenance, settings, spending
 from ..services.tasks import registry
 
 bp = Blueprint("api", __name__)
@@ -124,6 +124,44 @@ def set_effort_route():
     if effort and effort not in EFFORTS:
         return jsonify(error=f"effort must be one of {', '.join(EFFORTS)}"), 400
     return jsonify(effort=biomni_runner.set_effort(effort))
+
+
+@bp.get("/settings")
+def get_settings():
+    return jsonify(
+        version=settings.version(),
+        beta_updates=settings.beta_updates(),
+        git_checkout=settings.is_git_checkout(),
+    )
+
+
+@bp.post("/settings")
+def update_settings():
+    body = request.get_json(silent=True) or {}
+    beta_updates = body.get("beta_updates")
+    if not isinstance(beta_updates, bool):
+        return jsonify(error="beta_updates must be true or false"), 400
+    settings.set_beta_updates(beta_updates)
+    return jsonify(beta_updates=settings.beta_updates())
+
+
+@bp.post("/maintenance/<action>")
+def run_maintenance(action: str):
+    """Closes the app and runs setup or cleanup. Fixed scripts with no input from
+    the request, opened on this machine, so only someone at this machine can
+    answer them."""
+    if action not in maintenance.ACTIONS:
+        abort(404)
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return jsonify(error="This only works on the computer running biomnikhil."), 403
+    blocker = maintenance.blocker()
+    if blocker:
+        return jsonify(error=blocker), 409
+    try:
+        maintenance.run(action)
+    except maintenance.MaintenanceError as exc:
+        return jsonify(error=str(exc)), 500
+    return jsonify(ok=True), 202
 
 
 @bp.get("/datalake")

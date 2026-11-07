@@ -1,5 +1,6 @@
 """The signed self-update (app/installer/update.py)."""
 import base64
+import json
 import shutil
 import subprocess
 import sys
@@ -60,9 +61,26 @@ def test_malformed_inputs_fail():
     ("0.1.0", "0.2.0", False),  # never downgrades
     ("0.3.0-rc1", "0.2.0", False),  # never takes a test build
     ("0.3.0", "dev", False),
+    ("0.3.0", "0.3.0-rc1", True),  # a test build moves on to its full release
+    ("0.2.9", "0.3.0-rc1", False),
 ])
 def test_is_newer(candidate, current, newer):
     assert update.is_newer(candidate, current) is newer
+
+
+@pytest.mark.parametrize("candidate, current, newer", [
+    ("0.3.0-rc1", "0.2.0", True),
+    ("0.3.0-rc2", "0.3.0-rc1", True),
+    ("0.3.0-rc10", "0.3.0-rc2", True),  # by number, not by alphabet
+    ("0.3.0-rc1", "0.3.0-beta1", True),
+    ("0.3.0", "0.3.0-rc2", True),
+    ("0.3.0-rc2", "0.3.0", False),  # never back from the full release
+    ("0.3.0-rc1", "0.3.0-rc1", False),
+    ("0.2.0-rc1", "0.3.0", False),
+    ("0.3.0-rc1", "dev", False),
+])
+def test_is_newer_taking_test_builds(candidate, current, newer):
+    assert update.is_newer(candidate, current, take_test_builds=True) is newer
 
 
 # ---- signing with openssl, as the release workflow does -----------------------
@@ -205,6 +223,139 @@ def test_update_leaves_git_checkouts_alone(release):
     (install / ".git").mkdir()
     assert update.update(install, release["url"]) == update.UP_TO_DATE
     assert (install / "app" / "old_module" / "gone.py").exists()
+
+
+# ---- beta releases ------------------------------------------------------------
+
+def _set_beta(install: Path, value) -> None:
+    (install / "data" / "settings.json").write_text(json.dumps({"beta_updates": value}))
+
+
+def _publish(tagged: Path, key: Path, version: str, tmp_path: Path) -> None:
+    """A signed release in a folder named by its tag."""
+    folder = tagged / f"v{version}"
+    folder.mkdir(parents=True)
+    zip_path = folder / "biomnikhil.zip"
+    _make_release_zip(zip_path, version, {"app/routes.py": version.encode()})
+    statement = _statement(version, update.sha256_of(zip_path))
+    (folder / "release.txt").write_bytes(statement)
+    (folder / "release.txt.sig").write_bytes(_sign(key, statement, tmp_path))
+
+
+@pytest.fixture
+def beta_releases(release, signing_key, tmp_path, monkeypatch):
+    """The release list the GitHub API would give, with these tags published."""
+    key, _public = signing_key
+    tagged = tmp_path / "tagged"
+    listing = tmp_path / "releases.json"
+    monkeypatch.setattr(update, "RELEASE_LIST", listing.as_uri())
+    monkeypatch.setattr(update, "TAGGED_RELEASES", tagged.as_uri())
+
+    def publish(*versions):
+        entries = []
+        for version in versions:
+            _publish(tagged, key, version, tmp_path)
+            entries.append({"tag_name": f"v{version}", "draft": False})
+        listing.write_text(json.dumps(entries))
+
+    return {"publish": publish, "listing": listing}
+
+
+def test_beta_is_off_without_a_readable_setting(tmp_path):
+    (tmp_path / "data").mkdir()
+    assert update.beta_updates_on(tmp_path) is False
+    (tmp_path / "data" / "settings.json").write_text("not json")
+    assert update.beta_updates_on(tmp_path) is False
+    (tmp_path / "data" / "settings.json").write_text("[1]")
+    assert update.beta_updates_on(tmp_path) is False
+    (tmp_path / "data" / "settings.json").write_text('{"beta_updates": "yes"}')
+    assert update.beta_updates_on(tmp_path) is False
+    (tmp_path / "data" / "settings.json").write_text('{"beta_updates": true}')
+    assert update.beta_updates_on(tmp_path) is True
+
+
+def test_beta_install_takes_the_newest_test_build(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    beta_releases["publish"]("0.3.0", "0.4.0-rc10", "0.4.0-rc2")
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert (install / "app" / "VERSION").read_text().strip() == "0.4.0-rc10"
+    assert (install / "app" / "routes.py").read_text() == "0.4.0-rc10"
+    assert update.beta_updates_on(install) is True  # updating keeps the setting
+
+
+def test_beta_install_moves_from_a_test_build_to_its_full_release(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    (install / "app" / "VERSION").write_text("0.4.0-rc2\n")
+    beta_releases["publish"]("0.4.0-rc2", "0.4.0")
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert (install / "app" / "VERSION").read_text().strip() == "0.4.0"
+
+
+def test_beta_install_is_up_to_date_on_the_newest(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    (install / "app" / "VERSION").write_text("0.4.0-rc2\n")
+    beta_releases["publish"]("0.3.0", "0.4.0-rc2")
+    assert update.update(install, release["url"]) == update.UP_TO_DATE
+    assert (install / "app" / "routes.py").read_text() == "old"
+
+
+def test_beta_install_falls_back_to_the_full_release(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    beta_releases["listing"].write_text("rate limited")
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert (install / "app" / "VERSION").read_text().strip() == "0.3.0"
+
+
+def test_beta_install_refuses_an_unsigned_test_build(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    beta_releases["publish"]("0.4.0-rc1")
+    tag_folder = Path(update.TAGGED_RELEASES.removeprefix("file://")) / "v0.4.0-rc1"
+    (tag_folder / "release.txt.sig").write_bytes(base64.b64encode(b"x" * 64))
+    assert update.update(install, release["url"]) == update.NOT_UPDATED
+    assert (install / "app" / "VERSION").read_text().strip() == "0.2.0"
+
+
+def test_a_tag_that_is_not_a_version_is_not_used(release, beta_releases):
+    install = release["install"]
+    _set_beta(install, True)
+    beta_releases["publish"]("0.3.0")
+    entries = json.loads(beta_releases["listing"].read_text())
+    entries.append({"tag_name": "v9.9.9/../../evil", "draft": False})
+    entries.append({"tag_name": "v9.9.9", "draft": True})
+    beta_releases["listing"].write_text(json.dumps(entries))
+    assert update.newest_release_url().endswith("/v0.3.0")
+
+
+def test_install_without_beta_refuses_a_test_build_served_as_latest(release, signing_key, tmp_path):
+    key, _public = signing_key
+    install = release["install"]
+    _make_release_zip(release["dir"] / "biomnikhil.zip", "0.4.0-rc1", {"app/routes.py": b"test build"})
+    statement = _statement("0.4.0-rc1", update.sha256_of(release["dir"] / "biomnikhil.zip"))
+    (release["dir"] / "release.txt").write_bytes(statement)
+    (release["dir"] / "release.txt.sig").write_bytes(_sign(key, statement, tmp_path))
+    assert update.update(install, release["url"]) == update.UP_TO_DATE
+    assert (install / "app" / "routes.py").read_text() == "old"
+
+
+def test_turning_beta_off_keeps_a_test_build_until_a_newer_full_release(release):
+    install = release["install"]
+    _set_beta(install, False)
+    (install / "app" / "VERSION").write_text("0.3.0-rc1\n")
+    assert update.update(install, release["url"]) == update.UPDATED  # the fixture's 0.3.0
+    assert (install / "app" / "VERSION").read_text().strip() == "0.3.0"
+    (install / "app" / "VERSION").write_text("0.4.0-rc1\n")
+    assert update.update(install, release["url"]) == update.UP_TO_DATE
+
+
+def test_launchers_check_for_updates_on_test_builds():
+    repo = Path(__file__).resolve().parents[1]
+    assert "!= *-*" not in (repo / "app" / "run-mac.sh").read_text()
+    assert 'Contains("-")' not in (repo / "app" / "run.ps1").read_text()
 
 
 def test_apply_removes_old_root_files(tmp_path):

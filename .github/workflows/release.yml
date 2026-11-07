@@ -2,7 +2,8 @@
 #
 #   git tag v0.2.0 && git push origin v0.2.0          release: lab installs update to it
 #   git tag v0.2.0-rc1 && git push origin v0.2.0-rc1  test build: published as a
-#     pre-release, which releases/latest (and so every install) ignores
+#     pre-release, which releases/latest ignores; only installs with "Beta
+#     releases" on in Settings update to it, downloading by tag
 #
 # The release carries biomnikhil-<version>-installer.zip: the tracked source at that tag
 # plus app/VERSION, for people to download, with everything in a

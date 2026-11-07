@@ -11,6 +11,11 @@ files replace this install's (each file swapped in whole, app/VERSION last, so
 an interrupted update runs again on the next start), and files a release
 removed are deleted from app/. data/ and runtime/ aren't touched.
 
+An install only takes full releases, unless "Beta releases" is on in the app's
+Settings tab (data/settings.json). Then it takes the newest release of any kind,
+test builds like 0.2.0-rc1 included. Turning that off never downgrades: the
+install keeps its version until a newer full release comes out.
+
 Standard library only: it runs with whichever Python the install has.
 
 Exit codes, read by the launch scripts: 0 = updated, restart on the new
@@ -19,6 +24,7 @@ release), start the current version.
 """
 import base64
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -32,6 +38,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VERSION_FILE = ROOT / "app" / "VERSION"
 RELEASES = "https://github.com/mbKaleb/biomnikhil/releases/latest/download"
+# For beta installs: releases/latest skips pre-releases, so they look through
+# the list and download by tag.
+RELEASE_LIST = "https://api.github.com/repos/mbKaleb/biomnikhil/releases?per_page=30"
+TAGGED_RELEASES = "https://github.com/mbKaleb/biomnikhil/releases/download"
 
 # Ed25519 public key that signs releases (raw 32 bytes, hex). The private key
 # is the RELEASE_SIGNING_KEY secret of the GitHub repo. To rotate it, ship a
@@ -143,7 +153,7 @@ def verify_signature(public_key: bytes, message: bytes, signature: bytes) -> boo
 
 _STATEMENT = re.compile(
     r"biomnikhil release\n"
-    # Test builds (0.2.0-rc1) are signed too, though is_newer never takes one.
+    # Test builds (0.2.0-rc1) are signed too; only beta installs take them.
     r"version: (?P<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)\n"
     r"sha256: (?P<sha256>[0-9a-f]{64})\n"
 )
@@ -176,12 +186,33 @@ def version_tuple(version: str) -> tuple[int, ...] | None:
     return tuple(parts)
 
 
-def is_newer(candidate: str, current: str) -> bool:
-    candidate_parts = version_tuple(candidate)
-    current_parts = version_tuple(current)
-    if candidate_parts is None or current_parts is None:
+def version_key(version: str) -> tuple | None:
+    """Sorts versions: 0.2.0-rc2 < 0.2.0-rc10 < 0.2.0 < 0.2.1. None for anything
+    that isn't a version ("dev")."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.]+))?", version)
+    if match is None:
+        return None
+    numbers = (int(match[1]), int(match[2]), int(match[3]))
+    test_label = match[4]
+    if test_label is None:
+        return (*numbers, 1, ())
+    pieces = []
+    for piece in re.findall(r"\d+|[A-Za-z]+", test_label):
+        if piece.isdigit():
+            pieces.append((0, int(piece), ""))
+        else:
+            pieces.append((1, 0, piece.lower()))
+    return (*numbers, 0, tuple(pieces))
+
+
+def is_newer(candidate: str, current: str, take_test_builds: bool = False) -> bool:
+    candidate_key = version_key(candidate)
+    current_key = version_key(current)
+    if candidate_key is None or current_key is None:
         return False
-    return candidate_parts > current_parts
+    if version_tuple(candidate) is None and not take_test_builds:
+        return False
+    return candidate_key > current_key
 
 
 # ---- unpacking and swapping in ------------------------------------------------
@@ -277,12 +308,54 @@ def _download(url: str, timeout: int) -> bytes:
         return response.read()
 
 
+def beta_updates_on(install_root: Path) -> bool:
+    """The "Beta releases" setting. A missing or unreadable file means off."""
+    try:
+        settings = json.loads((install_root / "data" / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(settings, dict) and settings.get("beta_updates") is True
+
+
+def newest_release_url() -> str:
+    """Where the newest published release's files are, test builds included.
+    This only picks where to look: the signed statement still decides whether
+    to take what's there."""
+    releases = json.loads(_download(RELEASE_LIST, timeout=10))
+    if not isinstance(releases, list):
+        raise ValueError("the release list isn't a list")
+    newest_tag = None
+    newest_key = None
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        tag = release.get("tag_name")
+        if not isinstance(tag, str) or not tag.startswith("v"):
+            continue
+        key = version_key(tag[1:])
+        if key is None:
+            continue
+        if newest_key is None or key > newest_key:
+            newest_tag = tag
+            newest_key = key
+    if newest_tag is None:
+        raise ValueError("the release list has no releases")
+    return f"{TAGGED_RELEASES}/{newest_tag}"
+
+
 def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
     # A git checkout updates with git; applying a release would delete every
     # untracked file under app/.
     if (install_root / ".git").exists():
         return UP_TO_DATE
     current = (install_root / "app" / "VERSION").read_text().strip()
+    beta = beta_updates_on(install_root)
+    if beta:
+        try:
+            releases = newest_release_url()
+        except (OSError, ValueError) as exc:
+            # Still gets full releases, so a rate limit doesn't strand the install.
+            print(f">> Couldn't look for beta releases ({exc}), checking for a full release.")
     try:
         statement = _download(f"{releases}/release.txt", timeout=10)
         signature = _download(f"{releases}/release.txt.sig", timeout=10)
@@ -301,7 +374,7 @@ def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
     except UpdateRefused as exc:
         print(f">> Not updating: {exc}.")
         return NOT_UPDATED
-    if not is_newer(release["version"], current):
+    if not is_newer(release["version"], current, take_test_builds=beta):
         return UP_TO_DATE
 
     print(f">> Updating biomnikhil {current} -> {release['version']}")

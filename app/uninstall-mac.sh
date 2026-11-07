@@ -649,7 +649,7 @@ running_reason() {  # prints why biomnikhil seems to be running; nothing if it i
     [ -n "$pid" ] || continue
     [ "$pid" != "$$" ] || continue
     case "$command_line" in
-      *uninstall-mac*|*"Uninstall biomnikhil"*) continue ;;
+      *uninstall-mac*|*"Uninstall biomnikhil"*|*maintenance-mac*|*cleanup-mac.command*) continue ;;
     esac
     local root
     for root in "${ROOTS[@]}"; do

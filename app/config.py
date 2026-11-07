@@ -75,6 +75,13 @@ class Config:
         _env("BIOMNI_HARNESS_PATH", str(_DATA_ROOT / "user" / "harness"))
     ).resolve()
 
+    # Settings the self-update reads too, before the app starts, so this one
+    # stays in data/ (see services/settings.py).
+    SETTINGS_FILE: Path = _DATA_ROOT / "settings.json"
+
+    # Appearing asks the app window to close (see services/maintenance.py).
+    CLOSE_REQUEST_FILE: Path = _DATA_ROOT / ".close-request"
+
     HOST: str = _env("HOST", "127.0.0.1")
     PORT: int = int(_env("PORT", "8000"))
 

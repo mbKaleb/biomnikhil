@@ -6,6 +6,8 @@ Python environment (it has pywebview) once biomnikhil is installed:
 It starts the server (waitress, from runtime/.venv) in the background and shows
 the app in its own window instead of a browser tab. Closing the window stops
 the server. When biomnikhil is already running, it just opens another window.
+The window also closes when data/.close-request appears: the Settings tab does
+that to run setup or cleanup (app/services/maintenance.py).
 """
 import os
 import subprocess
@@ -27,6 +29,7 @@ from gui import _mac_branding
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 URL = f"http://localhost:{PORT}"
 LOG = DATA / "server.log"
+CLOSE_REQUEST = DATA / ".close-request"
 
 PAGE = """<!doctype html><html><body style="margin:0;height:100vh;display:flex;
 align-items:center;justify-content:center;background:#0d1526;color:#cbd5e1;
@@ -92,7 +95,14 @@ def wait_and_load(window, server):
         f"{LOG} to the lab's biomnikhil contact."))
 
 
+def close_when_asked(window):
+    while not CLOSE_REQUEST.exists():
+        time.sleep(0.5)
+    window.destroy()
+
+
 def main():
+    CLOSE_REQUEST.unlink(missing_ok=True)
     server = None
     page = STARTING
     if not running():
@@ -116,6 +126,7 @@ def main():
         os._exit(0)
 
     window.events.closed += closed
+    threading.Thread(target=close_when_asked, args=(window,), daemon=True).start()
     try:
         if page is STARTING:
             threading.Thread(target=wait_and_load, args=(window, server), daemon=True).start()
