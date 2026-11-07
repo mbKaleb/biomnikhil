@@ -2,6 +2,7 @@
 is first imported, so they're pointed at a throwaway folder here, before any
 test imports the app: tests never touch a real install's data/."""
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -20,6 +21,18 @@ os.environ["BIOMNI_OUTPUT_PATH"] = str(_DATA / "user" / "outputs")
 os.environ["BIOMNI_INPUT_PATH"] = str(_DATA / "user" / "inputs")
 os.environ["BIOMNI_HARNESS_PATH"] = str(_DATA / "user" / "harness")
 os.environ["MPLBACKEND"] = "Agg"
+
+
+def pytest_runtest_logreport(report):
+    """On GitHub Actions, each failure also becomes an annotation, which anyone
+    can read on the run's page and through the API, unlike the full log."""
+    if not os.environ.get("GITHUB_ACTIONS") or not report.failed:
+        return
+    message = re.sub(r"\x1b\[[0-9;]*m", "", str(report.longrepr))[-3000:]
+    # Workflow commands end at a newline, and these characters are escaped.
+    message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    title = report.nodeid.replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
+    print(f"\n::error title={title}::{message}", flush=True)
 
 
 class FakeUser:
