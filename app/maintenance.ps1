@@ -2,7 +2,7 @@
 # closed itself (app\services\maintenance.py starts this in its own console, then
 # closes the app):
 #
-#   -Action setup     installs again, then opens the app
+#   -Action setup     installs again in the setup window, which can open the app
 #   -Action cleanup   app\uninstall.ps1 -Mode cleanup in this console, then opens the app
 
 param(

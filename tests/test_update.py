@@ -223,6 +223,70 @@ def test_update_leaves_git_checkouts_alone(release):
     (install / ".git").mkdir()
     assert update.update(install, release["url"]) == update.UP_TO_DATE
     assert (install / "app" / "old_module" / "gone.py").exists()
+    assert not update._status_file(install).exists()
+
+
+def _status(install):
+    return json.loads(update._status_file(install).read_text())
+
+
+def test_status_keeps_the_update_when_the_restart_finds_nothing_newer(release):
+    install = release["install"]
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert _status(install)["outcome"] == "updated"
+    # The launch script runs the updater again on the new version.
+    assert update.update(install, release["url"]) == update.UP_TO_DATE
+    status = _status(install)
+    assert status["outcome"] == "up_to_date"
+    assert status["updated_to"] == "0.3.0"
+    assert status["updated_at"] > 0
+    assert status["checked_at"] >= status["updated_at"]
+
+
+def test_status_says_why_an_update_was_refused(release):
+    install = release["install"]
+    (release["dir"] / "release.txt.sig").write_bytes(b"not a signature")
+    assert update.update(install, release["url"]) == update.NOT_UPDATED
+    status = _status(install)
+    assert status["outcome"] == "failed"
+    assert status["message"].startswith("Not updating: ")
+
+
+def test_status_says_when_the_check_could_not_run(release):
+    install = release["install"]
+    shutil.rmtree(release["dir"])
+    assert update.update(install, release["url"]) == update.NOT_UPDATED
+    assert _status(install)["outcome"] == "failed"
+
+
+def test_success_clears_the_last_failure(release):
+    install = release["install"]
+    update._record_status(install, {"outcome": "failed", "message": "an old problem"})
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert _status(install)["message"] == ""
+
+
+def test_a_damaged_status_file_is_replaced(release):
+    install = release["install"]
+    status_file = update._status_file(install)
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    status_file.write_text("not json")
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert _status(install)["outcome"] == "updated"
+
+
+def test_an_update_still_works_when_the_status_cannot_be_saved(release, monkeypatch):
+    install = release["install"]
+
+    def cannot_replace(source, target):
+        if Path(target).name == update._status_file(install).name:
+            raise OSError("disk full")
+        real_replace(source, target)
+
+    real_replace = update.os.replace
+    monkeypatch.setattr(update.os, "replace", cannot_replace)
+    assert update.update(install, release["url"]) == update.UPDATED
+    assert (install / "app" / "VERSION").read_text().strip() == "0.3.0"
 
 
 # ---- beta releases ------------------------------------------------------------
@@ -356,6 +420,14 @@ def test_launchers_check_for_updates_on_test_builds():
     repo = Path(__file__).resolve().parents[1]
     assert "!= *-*" not in (repo / "app" / "run-mac.sh").read_text()
     assert 'Contains("-")' not in (repo / "app" / "run.ps1").read_text()
+
+
+def test_windows_launcher_does_not_update_under_a_running_app():
+    # tests/test_launch_mac.py runs the Mac launcher; this is the same rule in run.ps1.
+    launcher = (Path(__file__).resolve().parents[1] / "app" / "run.ps1").read_text()
+    update_check = launcher[launcher.index("if ((Test-Path \"$Root\\app\\VERSION\")"):]
+    update_check = update_check[:update_check.index("{")]
+    assert '-not (Test-App "http://localhost:$(Get-Port)")' in update_check
 
 
 def test_apply_removes_old_root_files(tmp_path):

@@ -32,6 +32,18 @@ def set_beta_updates(enabled: bool) -> None:
     os.replace(temporary, Config.SETTINGS_FILE)
 
 
+def update_status() -> dict | None:
+    """What the self-update last did (_record_status in app/installer/update.py),
+    or None if it hasn't run here."""
+    try:
+        status = json.loads(Config.UPDATE_STATUS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(status, dict):
+        return None
+    return status
+
+
 def version() -> str:
     """The installed version, as app/installer/core.py shows it; "dev" in a checkout."""
     try:

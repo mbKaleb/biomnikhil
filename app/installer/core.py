@@ -158,6 +158,7 @@ def welcome_info():
     blocked = unsupported()
     return {
         "version": version(),
+        "reinstall": bool(os.environ.get("BIOMNIKHIL_REINSTALL")),
         "location": home_path(ROOT),
         "free_gb": free,
         "need_gb": NEED_GB,

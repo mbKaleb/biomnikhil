@@ -17,7 +17,7 @@ def _upload(name):
 def _submitted_prompt(monkeypatch, client, token, files):
     captured = {}
 
-    def fake_submit(prompt, chat_id=None, user=None, attached=None):
+    def fake_submit(prompt, chat_id=None, user=None, attached=None, features=None):
         captured["attached"] = attached
         return "task"
 

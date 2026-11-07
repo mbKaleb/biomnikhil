@@ -6,7 +6,7 @@
 # Without an option it asks which of the two to do.
 #
 # --uninstall lists the exact paths and sizes, then needs a typed confirmation.
-# --cleanup searches for biomnikhil files outside ~/Library/biomnikhil and asks about
+# --cleanup searches for biomnikhil files outside the install and asks about
 # each one separately: only "y" deletes, and anything else keeps it.
 #
 # Answers are read from standard input. Both stay inside the rules below whatever
@@ -200,6 +200,32 @@ is_recognised_install() {
   [ -f "$root/runtime/.venv/.biomnikhil-ready" ] && return 0
   [ -f "$root/data/datalake-location.json" ] && return 0
   return 1
+}
+
+saved_location_file() {  # setup-mac.command writes this; it says where setup put the install
+  printf '%s\n' "$HOME_FOLDER/Library/biomnikhil-location"
+}
+
+saved_install_root() {  # that folder, if it's still an install. It can't widen what gets deleted.
+  local file
+  file="$(saved_location_file)"
+  [ -f "$file" ] || return 0
+  [ ! -L "$file" ] || return 0
+  local saved=""
+  IFS= read -r saved <"$file" || true
+  case "$saved" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  has_dot_dot_segment "$saved" && return 0
+  [ -d "$saved" ] || return 0
+  [ ! -L "$saved" ] || return 0
+  local root
+  root="$(canonical_folder "$saved")"
+  [ -n "$root" ] || return 0
+  is_protected "$root" && return 0
+  is_recognised_install "$root" || return 0
+  printf '%s\n' "$root"
 }
 
 git_tracked_files() {  # lists tracked files under the arguments; fails without a usable git
@@ -1011,6 +1037,8 @@ find_strays() {
   local app_data_parent="$HOME_FOLDER/Library/Application Support/biomnikhil"
 
   consider_stray_install "$started_root"
+  # The search skips ~/Library, and setup may have put the install somewhere else.
+  consider_stray_install "$HOME_FOLDER/Library/biomnikhil"
   consider_roots_named_in_shortcuts
   search_folder "$HOME_FOLDER" 6
   search_folder "$HOME_FOLDER/Library/CloudStorage" 6
@@ -1117,7 +1145,7 @@ offer_install() {
   reset_plan
   plan_release_install "$root"
   echo
-  echo "A copy of biomnikhil outside the standard location ($STANDARD_ROOT):"
+  echo "A copy of biomnikhil outside the install location ($STANDARD_ROOT):"
   echo "  $root"
   if is_listed "$root" "${SHORTCUT_ROOTS[@]}"; then
     echo "The biomnikhil shortcut starts this copy, so the shortcut stops working without it."
@@ -1325,16 +1353,25 @@ main() {
   if [ -z "$MODE" ]; then
     ask_what_to_do
   fi
+  local saved_root
+  saved_root="$(saved_install_root)"
   if [ "$MODE" = "cleanup" ]; then
-    STANDARD_ROOT="$HOME_FOLDER/Library/biomnikhil"
+    STANDARD_ROOT="$saved_root"
+    if [ -z "$STANDARD_ROOT" ]; then
+      STANDARD_ROOT="$HOME_FOLDER/Library/biomnikhil"
+    fi
     if [ -d "$STANDARD_ROOT" ]; then
       STANDARD_ROOT="$(canonical_folder "$STANDARD_ROOT")"
     fi
     run_cleanup "$started_root"
   fi
   consider_install "$HOME_FOLDER/Library/biomnikhil" "$WHERE_STANDARD"
+  consider_install "$saved_root" "the folder chosen during setup"
   consider_install "$started_root" "the folder this was started from"
   consider_installs_named_in_shortcuts
+  if [ -e "$(saved_location_file)" ] || [ -L "$(saved_location_file)" ]; then
+    add_to_plan "$(saved_location_file)" "the note of where setup put biomnikhil"
+  fi
   find_lakes
   find_shortcuts
   find_ports

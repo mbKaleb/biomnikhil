@@ -1465,6 +1465,7 @@ async function selectChat(chatId) {
     updateErrCount();
     resetOutputTray();
     loadAttachedForChat(chatId);
+    loadFeaturesForChat(chatId);
     refreshFiles(); // a file may have gone since the list was last fetched
     for (const m of chat.messages) {
       if (m.role === "trace") {
@@ -1541,6 +1542,7 @@ function startNewChat() {
   updateErrCount();
   resetOutputTray();
   loadAttachedForChat(null);
+  loadFeaturesForChat(null);
   refreshFiles(); // a file may have gone since the list was last fetched
   renderEmptyState();
   promptEl.focus();
@@ -1607,6 +1609,156 @@ function loadAttachedForChat(chatId) {
 function saveAttached() {
   localStorage.setItem(attachedKeyFor(currentChatId), JSON.stringify([...attached]));
 }
+
+// ---- workflow icons: each chat remembers which stages are on ----
+const DEFAULT_FEATURES = { context: true, preprocess: false, review: false };
+let features = { ...DEFAULT_FEATURES };
+
+function featuresKeyFor(chatId) {
+  return `features:${chatId || "new"}`;
+}
+
+function renderFeatures() {
+  for (const button of document.querySelectorAll(".feature-toggle")) {
+    button.setAttribute("aria-pressed", features[button.dataset.feature] ? "true" : "false");
+  }
+}
+
+function loadFeaturesForChat(chatId) {
+  features = { ...DEFAULT_FEATURES };
+  try {
+    const saved = JSON.parse(localStorage.getItem(featuresKeyFor(chatId)) || "{}");
+    for (const name of Object.keys(DEFAULT_FEATURES)) {
+      if (typeof saved[name] === "boolean") features[name] = saved[name];
+    }
+  } catch {
+    /* blocked or corrupt storage: use the defaults */
+  }
+  renderFeatures();
+}
+
+function saveFeatures() {
+  try {
+    localStorage.setItem(featuresKeyFor(currentChatId), JSON.stringify(features));
+  } catch {
+    /* blocked storage: the choice lasts until the page reloads */
+  }
+}
+
+for (const button of document.querySelectorAll(".feature-toggle")) {
+  button.addEventListener("click", () => {
+    const name = button.dataset.feature;
+    features[name] = !features[name];
+    saveFeatures();
+    renderFeatures();
+  });
+}
+loadFeaturesForChat(currentChatId); // the HTML starts every icon off
+
+const labContextModal = document.getElementById("lab-context-modal");
+const labContextText = document.getElementById("lab-context-text");
+const labContextStatus = document.getElementById("lab-context-status");
+const labContextCount = document.getElementById("lab-context-count");
+const labContextCondense = document.getElementById("lab-context-condense");
+const labContextUndo = document.getElementById("lab-context-undo");
+let labContextMaxChars = 20000;
+let textBeforeCondense = null;
+
+function setLabContextStatus(message, isNotice = false) {
+  labContextStatus.textContent = message;
+  labContextStatus.classList.toggle("notice", isNotice);
+}
+
+function renderLabContextCount() {
+  const length = labContextText.value.length;
+  labContextCount.textContent = `${length.toLocaleString()} of ${labContextMaxChars.toLocaleString()} characters`;
+  labContextCount.classList.toggle("over", length > labContextMaxChars);
+}
+
+function forgetCondense() {
+  textBeforeCondense = null;
+  labContextUndo.hidden = true;
+}
+
+labContextText.addEventListener("input", () => {
+  renderLabContextCount();
+  forgetCondense(); // Undo would otherwise throw away these edits
+});
+
+labContextCondense.addEventListener("click", async () => {
+  const source = labContextText.value;
+  setLabContextStatus("Condensing…", true);
+  labContextCondense.disabled = true;
+  labContextText.readOnly = true;
+  try {
+    const res = await fetch("/api/lab-context/condense", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: source }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    textBeforeCondense = source;
+    labContextText.value = body.text;
+    labContextUndo.hidden = false;
+    renderLabContextCount();
+    let message = "Not saved yet. Compare it with your original, because a summary can drop or change details.";
+    if (body.new_numbers.length) {
+      message = `Check these numbers, which aren't in your original: ${body.new_numbers.join(", ")}. ${message}`;
+    }
+    setLabContextStatus(message, true);
+  } catch (err) {
+    setLabContextStatus(`Couldn't condense it: ${err.message}`);
+  } finally {
+    labContextCondense.disabled = false;
+    labContextText.readOnly = false;
+  }
+});
+
+labContextUndo.addEventListener("click", () => {
+  labContextText.value = textBeforeCondense;
+  forgetCondense();
+  renderLabContextCount();
+  setLabContextStatus("");
+});
+
+document.getElementById("lab-context-edit").addEventListener("click", async () => {
+  setLabContextStatus("");
+  forgetCondense();
+  labContextText.value = "";
+  renderLabContextCount();
+  labContextModal.classList.add("show");
+  try {
+    const res = await fetch("/api/lab-context");
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    labContextText.value = body.text;
+    labContextMaxChars = body.max_chars;
+    renderLabContextCount();
+  } catch (err) {
+    setLabContextStatus(`Couldn't load it: ${err.message}`);
+  }
+});
+
+document.getElementById("lab-context-cancel").addEventListener("click", () => {
+  labContextModal.classList.remove("show");
+});
+
+document.getElementById("lab-context-save").addEventListener("click", async () => {
+  setLabContextStatus("");
+  try {
+    const res = await fetch("/api/lab-context", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: labContextText.value }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    labContextModal.classList.remove("show");
+  } catch (err) {
+    setLabContextStatus(`Couldn't save it: ${err.message}`);
+  }
+});
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -2152,7 +2304,7 @@ async function runTask(prompt, options = {}) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, files: [...attached], chat_id: currentChatId }),
+      body: JSON.stringify({ prompt, files: [...attached], chat_id: currentChatId, features }),
     });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
@@ -2177,6 +2329,7 @@ async function runTask(prompt, options = {}) {
     currentChatId = chat_id;
     localStorage.setItem("lastChatId", chat_id);
     saveAttached(); // persist under the now-real chat id, not the "new" bucket
+    saveFeatures();
     refreshChats();
     attachStream(task_id);
   } catch (err) {
@@ -2409,7 +2562,7 @@ function pollDl(hidden = false) {
         setDlHidden(false); // needs the user: bring the modal back
         dlNote.textContent =
           `Download finished but failed an integrity check ` +
-          `(${status.validation_error || "unknown error"}). Click "Download" to retry.`;
+          `(${status.validation_error || "unknown error"}). Click "Download now" to retry.`;
       } else if (status.state === "error") {
         stopDlPolling();
         dlModal.classList.remove("downloading");
@@ -2445,7 +2598,7 @@ function pollValidationQuietly() {
         clearInterval(timer);
         dlNote.textContent =
           `Data lake failed an integrity check ` +
-          `(${status.validation_error || "unknown error"}). Click "Download" to re-fetch it.`;
+          `(${status.validation_error || "unknown error"}). Click "Download now" to re-fetch it.`;
         dlModal.classList.add("show");
       } else if (status.validated) {
         clearInterval(timer); // valid — nothing to show the user
@@ -2480,7 +2633,7 @@ function pollValidationQuietly() {
     } else if (status.state === "invalid") {
       dlNote.textContent =
         `Data lake failed an integrity check ` +
-        `(${status.validation_error || "unknown error"}). Click "Download" to re-fetch it.`;
+        `(${status.validation_error || "unknown error"}). Click "Download now" to re-fetch it.`;
       dlModal.classList.add("show");
     } else if (status.state === "ready" && !status.validated) {
       // Size looks right — verify in the background before trusting it,
@@ -3188,6 +3341,7 @@ async function refreshSpending(force = false) {
 
 // ---- settings ----
 const settingsVersionEl = document.getElementById("settings-version");
+const settingsUpdateStatusEl = document.getElementById("settings-update-status");
 const settingsBetaEl = document.getElementById("settings-beta");
 const settingsBetaHintEl = document.getElementById("settings-beta-hint");
 const settingsMessageEl = document.getElementById("settings-message");
@@ -3197,12 +3351,32 @@ const settingsCleanupBtn = document.getElementById("settings-cleanup");
 const BETA_HINT = "Each start updates to the newest release, test builds included. They can be less stable. Turning this off keeps your version until a newer full release comes out.";
 const BETA_HINT_CHECKOUT = "This copy runs from a git checkout, which updates with git, so this has no effect here.";
 
+function formatWhen(seconds) {
+  return new Date(seconds * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function updateStatusText(gitCheckout, status) {
+  if (gitCheckout) return "This copy updates with git.";
+  if (!status || !status.checked_at) return "biomnikhil checks each time it starts.";
+  const lines = [];
+  if (status.outcome === "failed") {
+    lines.push(`${status.message} (${formatWhen(status.checked_at)})`);
+  } else {
+    lines.push(`Up to date (${formatWhen(status.checked_at)})`);
+  }
+  if (status.updated_to && status.updated_at) {
+    lines.push(`Updated to ${status.updated_to} on ${formatWhen(status.updated_at)}`);
+  }
+  return lines.join(". ");
+}
+
 async function refreshSettings() {
   try {
     const res = await fetch("/api/settings");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     settingsVersionEl.textContent = data.version;
+    settingsUpdateStatusEl.textContent = updateStatusText(data.git_checkout, data.update_status);
     settingsBetaEl.checked = data.beta_updates;
     settingsBetaEl.disabled = data.git_checkout;
     settingsBetaHintEl.textContent = data.git_checkout ? BETA_HINT_CHECKOUT : BETA_HINT;
@@ -3255,9 +3429,9 @@ async function runMaintenance(action, confirmation, closingMessage) {
 settingsSetupBtn.addEventListener("click", () => {
   runMaintenance("setup", {
     title: "Run setup again?",
-    message: "biomnikhil will close, rebuild its Python environment and reopen. This needs an internet connection and can take a few minutes. Your chats, settings and data lake stay.",
+    message: "biomnikhil will close and the setup window will rebuild its Python environment. This needs an internet connection and can take a few minutes. Your chats, settings and data lake stay.",
     label: "Run setup",
-  }, "Closing biomnikhil to run setup. It reopens when setup is done.");
+  }, "Closing biomnikhil to run setup. Click Open biomnikhil in the setup window when it finishes.");
 });
 
 settingsCleanupBtn.addEventListener("click", () => {

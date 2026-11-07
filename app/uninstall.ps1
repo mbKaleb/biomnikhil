@@ -5,7 +5,7 @@
 # Without -Mode it asks which of the two to do.
 #
 # Uninstall lists the exact paths and sizes, then needs a typed confirmation.
-# Cleanup searches for biomnikhil files outside %LOCALAPPDATA%\biomnikhil and asks
+# Cleanup searches for biomnikhil files outside the install and asks
 # about each one separately: only "y" deletes, and anything else keeps it.
 #
 # Answers are read from standard input. Both stay inside these rules whatever
@@ -269,6 +269,29 @@ function Test-RecognisedInstall([string]$Root) {
     if (Test-File (Join-Path $Root "runtime\.venv\.biomnikhil-ready")) { return $true }
     if (Test-File (Join-Path $Root "data\datalake-location.json")) { return $true }
     return $false
+}
+
+function Get-SavedLocationFile {  # setup.ps1 writes this; it says where setup put the install
+    return (Join-Path (Get-CleanPath $env:LOCALAPPDATA) "biomnikhil-location.txt")
+}
+
+function Get-SavedInstallRoot {  # that folder, if it's still an install. It can't widen what gets deleted.
+    $file = Get-SavedLocationFile
+    if (-not (Test-File $file)) { return "" }
+    if (Test-ReparsePoint $file) { return "" }
+    $saved = ""
+    try {
+        $saved = [string](Get-Content -LiteralPath $file -TotalCount 1 -ErrorAction Stop)
+    } catch {
+        return ""
+    }
+    $root = Get-CleanPath $saved
+    if (-not $root) { return "" }
+    if (-not (Test-Folder $root)) { return "" }
+    if (Test-ReparsePoint $root) { return "" }
+    if (Test-Protected $root) { return "" }
+    if (-not (Test-RecognisedInstall $root)) { return "" }
+    return $root
 }
 
 function Get-GitTrackedFiles([string]$Root, [string[]]$Paths) {  # the list, or $null without a usable git
@@ -1072,6 +1095,8 @@ function Add-LakesNamedBy([string]$Root) {  # may be used by others, so these ne
 
 function Find-Strays {
     Add-StrayInstall $StartedFrom
+    # The search skips AppData, and setup may have put the install somewhere else.
+    Add-StrayInstall (Join-Path $env:LOCALAPPDATA "biomnikhil")
     Add-RootsNamedInShortcuts
     Search-Folder $script:HomeFolder 6
     Search-OutsideProfile
@@ -1152,7 +1177,7 @@ function Invoke-StrayInstall([string]$Root) {
     Reset-Plan
     Add-ReleaseInstall $Root
     Write-Host ""
-    Write-Host "A copy of biomnikhil outside the standard location ($($script:StandardRoot)):"
+    Write-Host "A copy of biomnikhil outside the install location ($($script:StandardRoot)):"
     Write-Host "  $Root"
     if (Test-Listed $Root $script:ShortcutRoots) {
         Write-Host "A biomnikhil shortcut starts this copy, so the shortcut stops working without it."
@@ -1225,7 +1250,10 @@ function Invoke-DeadShortcuts {  # shortcuts to a folder that's gone, which this
 }
 
 function Invoke-Cleanup {
-    $script:StandardRoot = Get-CleanPath (Join-Path $env:LOCALAPPDATA "biomnikhil")
+    $script:StandardRoot = Get-SavedInstallRoot
+    if (-not $script:StandardRoot) {
+        $script:StandardRoot = Get-CleanPath (Join-Path $env:LOCALAPPDATA "biomnikhil")
+    }
     Write-Host ""
     Write-Host "Searching for biomnikhil files outside $($script:StandardRoot). This can take a minute."
     if (Test-Folder $script:StandardRoot) {
@@ -1314,8 +1342,12 @@ if ($chosenMode -eq "cleanup") {
     Invoke-Cleanup
 }
 Add-InstallIfFound (Join-Path $env:LOCALAPPDATA "biomnikhil") $WhereStandard
+Add-InstallIfFound (Get-SavedInstallRoot) "the folder chosen during setup"
 Add-InstallIfFound $StartedFrom "the folder this was started from"
 Add-InstallsNamedInShortcuts
+if (Test-Entry (Get-SavedLocationFile)) {
+    Add-ToPlan (Get-SavedLocationFile) "the note of where setup put biomnikhil"
+}
 Find-Lakes
 Find-Shortcuts
 

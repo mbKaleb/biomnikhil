@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 from .. import auth
 from ..config import Config
 from ..providers import max_output_tokens, resolve
-from . import hints
+from . import hints, workflow
 from .tasks import registry
 
 _agent = None
+# Preprocess and review agents, by role: separate A1s, because each A1 rewrites
+# its own system prompt per task and keeps its own log.
+_stage_agents: dict = {}
 _agent_lock = threading.Lock()
 
 # One run at a time. Every task shares the single cached A1 — its log,
@@ -140,10 +143,29 @@ def _get_agent():
             _patch_sampling_params()
             _hide_unusable_tools()
             _patch_cognito_client()
-            _agent = A1(path=str(Config.DATA_PATH), **kwargs)
-            _agent.llm.callbacks = [*(_agent.llm.callbacks or []), _untagged_reply_logger()]
-            _uncap_agent_llm(_agent.llm, kwargs["llm"])
+            _agent = _new_agent(A1, kwargs)
         return _agent
+
+
+def _new_agent(agent_class, kwargs: dict):
+    agent = agent_class(path=str(Config.DATA_PATH), **kwargs)
+    agent.llm.callbacks = [*(agent.llm.callbacks or []), _untagged_reply_logger()]
+    _uncap_agent_llm(agent.llm, kwargs["llm"])
+    return agent
+
+
+def _get_stage_agent(role: str, model: str | None):
+    """The agent for one optional stage, built the first time it's needed, on
+    the model its run started with. _get_agent() has already run by then, which
+    applies the environment and patches every agent relies on."""
+    with _agent_lock:
+        cached = _stage_agents.get(role)
+        if cached is None or cached[0] != model:
+            from biomni.agent import A1
+
+            cached = (model, _new_agent(A1, resolve(model)))
+            _stage_agents[role] = cached
+        return cached[1]
 
 
 def _uncap_agent_llm(llm, model: str) -> None:
@@ -595,12 +617,13 @@ def submit(
     chat_id: str | None = None,
     user: auth.User | None = None,
     attached: list[str] | None = None,
+    features: dict[str, bool] | None = None,
 ) -> str:
     """Queue a prompt for the agent; returns a task id immediately. When a
     chat_id is given, the final answer (or error) is appended to that chat.
     `user` is the signed-in user whose credentials the run's model calls
     are signed with. `attached` holds the paths of the files attached to
-    this message."""
+    this message. `features` says which workflow stages are on."""
     # The id comes first because the input folder is named after it, and the
     # listing has to be in the task's prompt, so it's added once they exist.
     task = registry.create(prompt, chat_id=chat_id)
@@ -613,8 +636,11 @@ def submit(
     # without different runs' outputs colliding.
     output_dir = Config.OUTPUT_PATH / task.id
     output_dir.mkdir(parents=True, exist_ok=True)
+    features = workflow.selected_features(features)
+    lab_context = workflow.read_lab_context() if features["context"] else ""
     prompt_with_hint = (
         prompt
+        + workflow.lab_context_note(lab_context)
         + hints.build_hints(prompt)
         + f"\n\nSave any output files you generate (CSVs, plots, reports, "
         f"etc.) under this directory: {output_dir} — create it if needed "
@@ -624,7 +650,7 @@ def submit(
 
     thread = threading.Thread(
         target=_run,
-        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir, user),
+        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir, user, features, links, lab_context),
         daemon=True,
     )
     thread.start()
@@ -667,8 +693,14 @@ def _run(
     user_prompt: str = "",
     output_dir=None,
     user: auth.User | None = None,
+    features: dict[str, bool] | None = None,
+    input_files: list[Path] | None = None,
+    lab_context: str = "",
 ) -> None:
     from . import chat_store
+
+    features = workflow.selected_features(features)
+    input_files = input_files or []
 
     # Run boundary markers: the trace panel renders these as ▶/■ divider
     # lines, both live (registry steps) and on replay (chat messages).
@@ -703,56 +735,82 @@ def _run(
         holds_slot = True
         auth.set_run_user(user)
         _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
+        # Both stay fixed for the whole run, even if the UI changes them mid-way.
+        run_model = _current_model
+        run_effort = _current_effort
         agent = _get_agent()
-        _reset_run_namespace()
-        global _run_effort
-        _run_effort = (agent.llm, _current_effort)
+        input_fingerprints = workflow.file_fingerprints(input_files)
         registry.mark_running(task_id)
         registry.append_step(task_id, "system", "agent running")
+        stage_count = 1 + int(features["preprocess"] and bool(input_files)) + int(features["review"])
+        registry.set_max_steps(task_id, MAX_STEPS * stage_count)
 
-        if hasattr(agent, "go_stream"):
-            # Streams each agent message as it happens, so the UI trace
-            # panel updates live instead of dumping everything at the end.
-            # Guardrails: a stuck model repeats itself indefinitely (burning
-            # API credits), so bail on consecutive duplicates or runaway
-            # step counts.
-            registry.set_max_steps(task_id, MAX_STEPS)
-            last = ""
-            repeats = 0
-            steps = 0
-            for step in agent.go_stream(prompt):
-                if registry.is_cancel_requested(task_id):
-                    raise RuntimeError("stopped by user")
-                text = str(step.get("output", "")).strip()
-                if not text:
-                    continue
-                repeats = repeats + 1 if text == last else 0
-                last = text
-                steps += 1
-                texts.append(text)
-                registry.append_step(task_id, "agent", text)
-                if chat_id:  # persist the trace so a page refresh keeps it
-                    chat_store.add_message(chat_id, "trace", text)
-                if repeats >= 2:
-                    raise RuntimeError(
-                        "agent repeated the same response 3 times — aborting "
-                        "the run to avoid an infinite loop"
-                    )
-                if steps >= MAX_STEPS:
-                    raise RuntimeError(
-                        f"agent exceeded {MAX_STEPS} steps — aborting the run"
-                    )
-            answer = _extract_answer(last)
-        else:
-            out = agent.go(prompt)
-            if isinstance(out, tuple) and len(out) == 2:
-                log, answer = out
+        def note(text: str) -> None:
+            registry.append_step(task_id, "system", text)
+            if chat_id:
+                chat_store.add_message(chat_id, "trace", text)
+
+        def run_stage(role: str, stage_prompt: str) -> tuple[str, list[str]]:
+            stage_agent = agent if role == "main" else _get_stage_agent(role, run_model)
+            stage_texts: list[str] = []
+            try:
+                return _drive_agent(stage_agent, stage_prompt, task_id, chat_id, stage_texts, run_effort), stage_texts
+            finally:
+                texts.extend(stage_texts)
+
+        blocked_reason = None
+        preprocess_warning = None
+        if features["preprocess"] and not input_files:
+            note("data preprocessing skipped: no files attached")
+        elif features["preprocess"]:
+            note("data preprocessing agent started")
+            folder = output_dir / workflow.PREPROCESS_FOLDER
+            try:
+                report, _stage_texts = run_stage(
+                    "preprocess",
+                    workflow.preprocess_prompt(user_prompt, input_files, folder, lab_context)
+                    + hints.build_hints(user_prompt),
+                )
+            except Exception as exc:  # noqa: BLE001 — the task can still run on the originals
+                if _is_stop(exc):
+                    raise
+                logger.exception("task %s preprocessing failed", task_id)
+                reason = _friendly_error(exc)
+                preprocess_warning = f"Data preprocessing didn't finish, so this used your original files: {reason}"
+                note(f"data preprocessing failed, using the original files: {reason}")
             else:
-                log, answer = [], out
-            for entry in log or []:
-                registry.append_step(task_id, "agent", str(entry))
-                if chat_id:
-                    chat_store.add_message(chat_id, "trace", str(entry))
+                blocked_reason = workflow.preprocess_blocked_reason(report)
+                if blocked_reason is None:
+                    prompt += workflow.preprocess_note(folder, report)
+                    if not workflow.preprocess_reported_ready(report):
+                        preprocess_warning = "The data preprocessing agent didn't report a clear status, so check its data report."
+                note("data preprocessing agent finished")
+
+        main_steps_start = len(registry.get(task_id)["steps"])
+        main_steps_end = main_steps_start
+        save_recipe = blocked_reason is None
+        if blocked_reason is not None:
+            answer = f"**Stopped by the data preprocessing agent.**\n\n{blocked_reason}"
+        else:
+            main_texts: list[str] = []
+            answer = _drive_agent(agent, prompt, task_id, chat_id, main_texts, run_effort)
+            texts.extend(main_texts)
+            main_steps_end = len(registry.get(task_id)["steps"])
+            if preprocess_warning:
+                answer = f"{answer}\n\n---\n\n**{preprocess_warning}**"
+            if features["review"]:
+                answer, save_recipe = _review_answer(
+                    answer, prompt, user_prompt, main_texts, output_dir,
+                    input_files, lab_context, note, run_stage, task_id,
+                )
+        changed_inputs = workflow.changed_files(input_fingerprints)
+        if changed_inputs:
+            names = []
+            for path in changed_inputs:
+                names.append(path.name)
+            listing = ", ".join(names)
+            note(f"attached files changed during the run: {listing}")
+            answer = f"{answer}\n\n---\n\n**Warning: these attached files changed during the run:** {listing}"
         files = _collect_output_files(output_dir, task_id) if output_dir else []
         report_usage()
         mark("run_end", f"done in {_fmt_duration(time.time() - t0)}")
@@ -760,8 +818,10 @@ def _run(
         if chat_id:
             chat_store.add_message(chat_id, "assistant", str(answer), files=files)
         snap = registry.get(task_id)
-        if snap:
-            hints.save_recipe_if_verified(user_prompt, snap["steps"], files)
+        if snap and save_recipe:
+            # Only the main task's steps: a recipe shouldn't replay a review.
+            main_steps = snap["steps"][main_steps_start:main_steps_end]
+            hints.save_recipe_if_verified(user_prompt, main_steps, files)
     except Exception as exc:  # surface everything to the UI — tools that
         # shell out to Linux-only binaries will land here on Windows.
         prompt_preview = (user_prompt or prompt or "")[:200]
@@ -785,6 +845,122 @@ def _run(
         if holds_slot:
             auth.set_run_user(None)
             _run_lock.release()
+
+
+def _is_stop(exc: Exception) -> bool:
+    return "stopped by user" in str(exc)
+
+
+def _drive_agent(agent, prompt: str, task_id: str, chat_id: str | None, texts: list[str], effort: str | None) -> str:
+    """One agent's run, from an emptied namespace; returns its answer and adds
+    its messages to `texts`."""
+    from . import chat_store
+
+    global _run_effort
+    _reset_run_namespace()
+    _run_effort = (agent.llm, effort)
+
+    if hasattr(agent, "go_stream"):
+        # Streams each agent message as it happens, so the UI trace
+        # panel updates live instead of dumping everything at the end.
+        # Guardrails: a stuck model repeats itself indefinitely (burning
+        # API credits), so bail on consecutive duplicates or runaway
+        # step counts.
+        last = ""
+        repeats = 0
+        steps = 0
+        for step in agent.go_stream(prompt):
+            if registry.is_cancel_requested(task_id):
+                raise RuntimeError("stopped by user")
+            text = str(step.get("output", "")).strip()
+            if not text:
+                continue
+            repeats = repeats + 1 if text == last else 0
+            last = text
+            steps += 1
+            texts.append(text)
+            registry.append_step(task_id, "agent", text)
+            if chat_id:  # persist the trace so a page refresh keeps it
+                chat_store.add_message(chat_id, "trace", text)
+            if repeats >= 2:
+                raise RuntimeError(
+                    "agent repeated the same response 3 times — aborting "
+                    "the run to avoid an infinite loop"
+                )
+            if steps >= MAX_STEPS:
+                raise RuntimeError(
+                    f"agent exceeded {MAX_STEPS} steps — aborting the run"
+                )
+        return _extract_answer(last)
+
+    out = agent.go(prompt)
+    if isinstance(out, tuple) and len(out) == 2:
+        log, answer = out
+    else:
+        log, answer = [], out
+    for entry in log or []:
+        registry.append_step(task_id, "agent", str(entry))
+        if chat_id:
+            chat_store.add_message(chat_id, "trace", str(entry))
+    return answer
+
+
+def _review_answer(
+    answer, task_prompt, user_prompt, main_texts, output_dir,
+    input_files, lab_context, note, run_stage, task_id,
+) -> tuple[str, bool]:
+    """Runs the review, and one revision if the answer doesn't hold. Whatever
+    goes wrong here, the main task's answer is kept. Returns the answer and
+    whether the review passed the main run, so its code can become a recipe."""
+    folder = output_dir / workflow.REVIEW_FOLDER
+    note("adversarial review agent started")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        code_file = folder / "analysis-code.txt"
+        code_file.write_text(workflow.analysis_code(main_texts), encoding="utf-8")
+        review, _review_texts = run_stage(
+            "review",
+            workflow.review_prompt(
+                user_prompt, str(answer), code_file, output_dir,
+                input_files, folder, lab_context,
+            ) + hints.build_hints(user_prompt),
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _is_stop(exc):
+            note("adversarial review stopped")
+            return f"{answer}\n\n---\n\n**Adversarial review was stopped, so this answer is unreviewed.**", False
+        logger.exception("task %s review failed", task_id)
+        message = _friendly_error(exc)
+        note(f"adversarial review failed: {message}")
+        return f"{answer}\n\n---\n\n**Adversarial review failed, so this answer is unreviewed:** {message}", False
+    note("adversarial review agent finished")
+
+    review_section = f"**Adversarial review**\n\n{review}"
+    verdict = workflow.review_verdict(review)
+    if verdict is None:
+        return f"{answer}\n\n---\n\n**The review gave no clear verdict, so don't count it as a pass.**\n\n{review_section}", False
+    if verdict != "DOES NOT HOLD":
+        return f"{answer}\n\n---\n\n{review_section}", True
+
+    note("revising the answer after the review")
+    registry.set_max_steps(task_id, registry.get(task_id)["max_steps"] + MAX_STEPS)
+    try:
+        # The main agent, so the revision starts with a fresh namespace but
+        # the same tools; A1 keeps no messages between runs.
+        revised, _revision_texts = run_stage(
+            "main",
+            workflow.revision_prompt(task_prompt, str(answer), review, output_dir / workflow.REVISION_FOLDER),
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not _is_stop(exc):
+            logger.exception("task %s revision failed", task_id)
+        note("revision didn't finish")
+        return f"{answer}\n\n---\n\n**This answer did not hold up in review, and the revision didn't finish.**\n\n{review_section}", False
+    revised_answer = (
+        f"{revised}\n\n---\n\n**Revised after review. The revision itself wasn't re-reviewed.**"
+        f"\n\n{review_section}\n\n---\n\n**Original answer**\n\n{answer}"
+    )
+    return revised_answer, False
 
 
 def _extract_answer(last_output: str) -> str:

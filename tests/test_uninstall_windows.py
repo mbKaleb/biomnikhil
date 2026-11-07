@@ -471,3 +471,76 @@ def test_the_launcher_passes_on_every_exit_code():
     launcher = (REPO / "uninstall-windows.cmd").read_text()
     assert "exit /b 3" in launcher
     assert "exit /b 2" in launcher
+
+
+# ---- an install in the folder chosen during setup -----------------------------
+
+def _save_install_location(tmp_path, text):
+    note = tmp_path / "local" / "biomnikhil-location.txt"
+    _write(note, text + "\n")
+    return note
+
+
+def _tools(tmp_path):
+    tools = tmp_path / "tools"
+    (tools / "app").mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO / "app" / "uninstall.ps1", tools / "app" / "uninstall.ps1")
+    return tools
+
+
+@needs_windows
+def test_uninstall_removes_the_chosen_install_and_keeps_the_folder_around_it(tmp_path):
+    root = _make_install(tmp_path / "my apps" / "biomnikhil")
+    _write(tmp_path / "my apps" / "mine.txt", "mine")
+    note = _save_install_location(tmp_path, str(root))
+    result = _run(tmp_path, _tools(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not root.exists()
+    assert not note.exists()
+    assert (tmp_path / "my apps" / "mine.txt").read_text() == "mine"
+
+
+@needs_windows
+def test_a_saved_location_that_is_not_an_install_deletes_nothing_there(tmp_path):
+    documents = tmp_path / "documents"
+    _write(documents / "thesis.txt", "mine")
+    _write(documents / "data" / "results.csv", "mine")
+    note = _save_install_location(tmp_path, str(documents))
+    result = _run(tmp_path, _tools(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (documents / "thesis.txt").read_text() == "mine"
+    assert (documents / "data" / "results.csv").read_text() == "mine"
+    assert not note.exists()
+
+
+@needs_windows
+def test_a_saved_location_of_the_user_folder_is_refused(tmp_path):
+    profile = tmp_path / "profile"
+    _write(profile / "app" / "installer" / "core.py")
+    _write(profile / "app" / "config.py")
+    _save_install_location(tmp_path, str(profile))
+    result = _run(tmp_path, _tools(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (profile / "app" / "config.py").exists()
+
+
+@needs_windows
+def test_cleanup_leaves_the_chosen_install_alone(tmp_path):
+    root = _make_install(tmp_path / "profile" / "my apps" / "biomnikhil")
+    note = _save_install_location(tmp_path, str(root))
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (root / "app" / "config.py").exists()
+    assert note.exists()
+
+
+@needs_windows
+def test_cleanup_offers_a_copy_in_the_default_folder_when_the_install_is_elsewhere(tmp_path):
+    default = _make_install(tmp_path / "local" / "biomnikhil")
+    root = _make_install(tmp_path / "profile" / "my apps" / "biomnikhil")
+    _save_install_location(tmp_path, str(root))
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "outside the install location" in result.stdout
+    assert not (default / "app").exists()
+    assert (root / "app" / "config.py").exists()

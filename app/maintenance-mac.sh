@@ -2,7 +2,7 @@
 # Runs setup or cleanup for the Settings tab, once the app has closed itself
 # (app/services/maintenance.py starts this, then closes the app):
 #
-#   bash app/maintenance-mac.sh setup     installs again, then opens the app
+#   bash app/maintenance-mac.sh setup     installs again in the setup window, which can open the app
 #   bash app/maintenance-mac.sh cleanup   app/uninstall-mac.sh --cleanup in this
 #                                         Terminal window, then opens the app
 #

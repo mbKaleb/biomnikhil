@@ -1108,6 +1108,33 @@
     }
     #composer:focus-within { border-color: #4a6596; }
     #composer-row { display: flex; align-items: flex-end; gap: .4rem; }
+    #composer-features { display: flex; align-items: center; gap: .3rem; padding: 0 .3rem .35rem; }
+    .feature-toggle, #lab-context-edit {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 2rem; height: 2rem; padding: 0; border-radius: 50%; cursor: pointer;
+      background: none; border: 1px solid #3a4f77; color: #7c90b4;
+    }
+    .feature-toggle:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .feature-toggle[aria-pressed="true"] { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
+    #lab-context-edit { border-color: transparent; font-size: .75rem; }
+    #lab-context-edit:hover { color: #fff; }
+    #lab-context-modal {
+      position: fixed; inset: 0; z-index: 50; display: none; padding: 16px;
+      align-items: center; justify-content: center; background: rgba(0, 0, 0, .6);
+    }
+    #lab-context-modal.show { display: flex; }
+    #lab-context-card {
+      width: 100%; max-width: 640px; padding: 1.25rem; border-radius: 12px;
+      background: #182440; border: 1px solid #2c3f63;
+    }
+    #lab-context-card h3 { margin: 0 0 .4rem; }
+    #lab-context-card p { margin: 0 0 .75rem; font-size: .85rem; color: #a9bce0; }
+    #lab-context-text { width: 100%; height: 45vh; box-sizing: border-box; resize: vertical; }
+    #lab-context-status { min-height: 1.2rem; margin: .4rem 0; font-size: .85rem; color: #f87171; }
+    #lab-context-count { margin-top: .3rem; font-size: .8rem; color: #7c90b4; }
+    #lab-context-count.over { color: #f87171; }
+    #lab-context-status.notice { color: #fbbf24; }
+    #lab-context-buttons { display: flex; justify-content: flex-end; gap: .5rem; }
     #prompt {
       flex: 1; min-width: 0; min-height: 0; margin: 0; padding: .45rem .3rem;
       background: none; border: 0; border-radius: 0; outline: none; resize: none;
@@ -1177,6 +1204,22 @@
     </div>
   </aside>
 
+  <div id="lab-context-modal">
+    <div id="lab-context-card" role="dialog" aria-modal="true" aria-labelledby="lab-context-title">
+      <h3 id="lab-context-title">Lab context</h3>
+      <p>Protocols, conventions and thresholds the agents should know. Saved on this computer and added to the prompt whenever the book icon is on.</p>
+      <textarea id="lab-context-text"></textarea>
+      <div id="lab-context-count"></div>
+      <div id="lab-context-status"></div>
+      <div id="lab-context-buttons">
+        <button type="button" id="lab-context-condense" title="Shorten with AI. Uses tokens, and nothing is saved until you click Save.">Condense</button>
+        <button type="button" id="lab-context-undo" hidden>Undo condense</button>
+        <button type="button" id="lab-context-cancel">Cancel</button>
+        <button type="button" id="lab-context-save">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div id="dl-modal">
     <div class="dl-card">
       <span class="dl-icon"><i class="fa-solid fa-database"></i></span>
@@ -1241,6 +1284,12 @@
         <div id="composer">
           <div class="attach-hint" id="attach-hint" hidden></div>
           <div class="task-upload-status" id="task-upload-status" hidden></div>
+          <div id="composer-features" role="group" aria-label="Workflow agents">
+            <button type="button" class="feature-toggle" data-feature="context" aria-pressed="false" aria-label="Lab context" title="Lab context: add your saved lab notes to the agents' prompts"><i class="fa-solid fa-book-open"></i></button>
+            <button type="button" id="lab-context-edit" aria-label="Edit lab context" title="Edit lab context"><i class="fa-solid fa-pen"></i></button>
+            <button type="button" class="feature-toggle" data-feature="preprocess" aria-pressed="false" aria-label="Data preprocessing" title="Data preprocessing: a separate agent checks and cleans attached files first. Uses more tokens."><i class="fa-solid fa-broom"></i></button>
+            <button type="button" class="feature-toggle" data-feature="review" aria-pressed="false" aria-label="Adversarial review" title="Adversarial review: a separate agent tries to disprove the answer afterwards. Can double a run's tokens."><i class="fa-solid fa-shield-halved"></i></button>
+          </div>
           <div id="composer-row">
             <button id="composer-attach" type="button" title="Attach files" aria-label="Attach files"><i class="fa-solid fa-plus"></i></button>
             <textarea id="prompt" rows="1" placeholder="Ask the agent something…"></textarea>
@@ -1315,6 +1364,10 @@
         <div class="settings-row">
           <span>Installed version</span>
           <span class="value" id="settings-version">…</span>
+        </div>
+        <div class="settings-row">
+          <span>Last check</span>
+          <span class="value" id="settings-update-status">…</span>
         </div>
         <label class="settings-row">
           <span>Beta releases

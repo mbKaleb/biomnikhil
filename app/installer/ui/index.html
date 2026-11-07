@@ -99,12 +99,12 @@ button:disabled { opacity: .5; cursor: default; }
   </div>
   <dl class="facts">
     <dt>Install location</dt><dd><code id="w-location">…</code></dd>
-    <dt>Space needed</dt><dd>About <span id="w-need">13</span> GB <span class="free" id="w-free"></span></dd>
+    <dt>Space needed</dt><dd>About <span id="w-need">16</span> GB <span class="free" id="w-free"></span></dd>
     <dt>Download now</dt><dd id="w-download">…</dd>
     <dt>Python</dt><dd id="w-python">…</dd>
     <dt>Shortcuts</dt><dd id="w-shortcuts">…</dd>
   </dl>
-  <p class="note">The 14 GB data library downloads later, the first time an analysis needs it. Setup takes about 5 minutes on a typical connection.</p>
+  <p class="note">Setup takes about 5 minutes on a typical connection. biomnikhil then offers to download its 14 GB data lake when it first opens.</p>
   <div class="foot">
     <span class="ver" id="w-ver"></span>
     <button class="link" id="w-cancel">Cancel</button>
@@ -116,7 +116,7 @@ button:disabled { opacity: .5; cursor: default; }
   <div class="brand">
     <img src="icon.png" alt="">
     <div>
-      <h1>Installing biomnikhil</h1>
+      <h1 id="i-title">Installing biomnikhil</h1>
       <p>You can keep working while this runs.</p>
     </div>
   </div>
@@ -131,7 +131,7 @@ button:disabled { opacity: .5; cursor: default; }
 <section class="screen" id="done" hidden>
   <div class="center">
     <div class="badge ok">✓</div>
-    <h2>biomnikhil is installed</h2>
+    <h2 id="d-title">biomnikhil is installed</h2>
     <p id="d-next"></p>
     <div class="made" id="d-made"></div>
     <p class="made-note" id="d-note" hidden></p>
@@ -207,9 +207,20 @@ window.ui = {
     $("w-download").textContent = info.download;
     $("w-python").textContent = info.python;
     $("w-shortcuts").textContent = info.shortcuts;
+    // Asked for from Settings, which has already said what this does: no second
+    // question, and no way to end up on a Welcome screen for something installed.
+    if (info.reinstall) {
+      $("i-title").textContent = "Running setup again";
+      $("d-title").textContent = "Setup is done";
+      $("d-next").textContent = "Your chats, files and data lake were kept.";
+      show("installing");
+      rotateTips();
+      api().install();
+      return;
+    }
     $("d-next").textContent = isMac
-      ? "It runs in a Terminal window; keep that open while you use it. Next time, open biomnikhil from Applications or the Desktop."
-      : "It runs in a console window; keep that open while you use it. Next time, open biomnikhil from the Desktop or the Start menu.";
+      ? "Next time, open biomnikhil from Applications or the Desktop."
+      : "Next time, open biomnikhil from the Desktop or the Start menu.";
     $("w-install").disabled = false;
     show("welcome");
   },

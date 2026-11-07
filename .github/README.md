@@ -21,17 +21,24 @@ data lake (S3), Bedrock and Cognito. Setup checks all of these first.
 
 1. Download `biomnikhil-<version>-installer.zip` from the
    [latest release](https://github.com/mbKaleb/biomnikhil/releases/latest)
-   and extract it anywhere, OneDrive included. Setup copies biomnikhil to
-   `%LOCALAPPDATA%\biomnikhil` (Windows) or `~/Library/biomnikhil` (Mac) and
-   runs it from there, so you can delete the zip and the extracted folder
-   afterwards. On Windows, setup's log is `setup.log` in that folder.
+   and extract it anywhere, OneDrive included.
 2. Double-click **setup-windows** or **setup-mac**.
    - Windows may warn about a downloaded file: choose **Run** (or
      **More info → Run anyway**).
    - macOS blocks it the first time: open **System Settings → Privacy &
      Security** and click **Open Anyway** (or run `bash app/run-mac.sh` in
      Terminal from the folder).
-3. A console window says "Preparing installer…" for a few seconds while it
+3. Setup asks where to install. It suggests `%LOCALAPPDATA%\biomnikhil`
+   (Windows) or `~/Library/biomnikhil` (Mac); anything else you choose gets a
+   `biomnikhil` folder inside it. It won't use a cloud-synced folder, a network
+   folder (Windows), Documents, Desktop or Downloads (Mac, where an app opened
+   from its icon needs permission for those) or a folder that already has other
+   files. Setup copies
+   biomnikhil there and runs it from there, so you can delete the zip and the
+   extracted folder afterwards. It doesn't ask again once an install is
+   finished. To move it, uninstall and set up again. On Windows, setup's log is
+   `setup.log` in that folder.
+4. A console window says "Preparing installer…" for a few seconds while it
    fetches [uv](https://docs.astral.sh/uv/) and the installer's own small
    Python environment. The **biomnikhil Setup** window then shows the
    install location and space needed; click **Install**. It uses your
@@ -46,9 +53,10 @@ data lake (S3), Bedrock and Cognito. Setup checks all of these first.
    window can't open (no WebView2), setup continues as text in the console.
 
 From then on, open biomnikhil from that shortcut. It runs in its own window,
-with no Terminal or console; closing the window stops it. Each start checks
-for a newer release and updates itself first. The server's output goes to
-`data/server.log`.
+with no Terminal or console; closing the window stops it. Each start from the
+shortcut checks for a newer release and updates itself first; the Settings tab
+shows the last check. While biomnikhil is already open, the update waits until
+it's closed and started again. The server's output goes to `data/server.log`.
 
 The folder holds everything: `app/` (the program), `data/` (your settings,
 chats, uploads and the data lake) and `runtime/` (Python, uv and its download
@@ -60,8 +68,9 @@ three controls:
 - **Beta releases** makes each start update to the newest release, test builds included.
   Turning it off keeps your version until a newer full release comes out. It applies to
   this whole install, and a git checkout ignores it.
-- **Run setup again** closes biomnikhil, rebuilds its Python environment and reopens it.
-  Your chats, settings and data lake stay.
+- **Run setup again** closes biomnikhil and rebuilds its Python environment in the setup
+  window, which has a button to open biomnikhil again. Your chats, settings and data lake
+  stay.
 - **Clean up** closes biomnikhil, opens the cleanup described below in a console or
   Terminal window, and reopens biomnikhil when you're done.
 
@@ -143,7 +152,8 @@ uv pip compile app/installer/requirements.txt --universal --python-version 3.11 
 
 To try the installer without a release, build the zip from the working tree
 (as the workflow does) and run `setup-mac.command` from an unpacked copy.
-`BIOMNIKHIL_NO_DIALOGS=1` runs the same install as text in the console, and
+`BIOMNIKHIL_NO_DIALOGS=1` runs the same install as text in the console,
+`BIOMNIKHIL_INSTALL_DIR=<folder>` installs in that folder without asking, and
 `BIOMNIKHIL_REINSTALL=1` (`-Reinstall` on Windows) runs it again on an
 existing install.
 

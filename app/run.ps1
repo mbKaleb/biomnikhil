@@ -86,6 +86,14 @@ function Test-App($Url) {
     catch { return $false }
 }
 
+function Get-Port {  # the port in data\.env, else 8000
+    $envFile = "$Root\data\.env"
+    if (-not (Test-Path $envFile)) { return 8000 }
+    $portLine = Select-String -Path $envFile -Pattern '^\s*PORT\s*=\s*(\d+)' | Select-Object -First 1
+    if ($portLine) { return [int]$portLine.Matches[0].Groups[1].Value }
+    return 8000
+}
+
 # --- update: release installs (app\VERSION from the release zip, no .git
 # folder) update themselves from the latest GitHub release. data\ and runtime\
 # aren't in the zip, so they're kept. Git checkouts update with git. Test builds
@@ -93,7 +101,11 @@ function Test-App($Url) {
 # releases are taken: app\installer\update.py checks the signature, the version
 # and the zip's checksum before it swaps any file in. It needs a Python, so a
 # first run (nothing installed yet, and the zip was just downloaded) skips it.
-if ((Test-Path "$Root\app\VERSION") -and -not (Test-Path "$Root\.git") -and -not $env:BIOMNIKHIL_NO_UPDATE) {
+# While biomnikhil is running (another window is open), its server keeps the
+# old code, and a new window would just join it, so the update waits for the
+# next start rather than swapping files under it.
+if ((Test-Path "$Root\app\VERSION") -and -not (Test-Path "$Root\.git") -and -not $env:BIOMNIKHIL_NO_UPDATE -and
+    -not (Test-App "http://localhost:$(Get-Port)")) {
     $updatePy = @("$Tools\installer\Scripts\python.exe", $VenvPy) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($updatePy) {
         $code = Invoke-Native { & $updatePy "$Root\app\installer\update.py" }
@@ -150,9 +162,7 @@ if ($Reinstall -or -not (Test-Path "$Venv\.biomnikhil-ready") -or
 }
 
 # --- start ---------------------------------------------------------------------
-$Port = 8000
-$portLine = Select-String -Path "$Root\data\.env" -Pattern '^\s*PORT\s*=\s*(\d+)' | Select-Object -First 1
-if ($portLine) { $Port = [int]$portLine.Matches[0].Groups[1].Value }
+$Port = Get-Port
 
 if (-not $env:BIOMNIKHIL_NO_DIALOGS) {
     # The app window (app\installer\window.py) starts the server in the

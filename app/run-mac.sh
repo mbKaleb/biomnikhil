@@ -64,7 +64,23 @@ ensure_uv() {  # the pinned uv in runtime/tools
 # and the zip's checksum before it swaps any file in. It needs a Python, so a
 # first run (nothing installed yet, and the zip was just downloaded) skips it.
 IV=runtime/tools/installer  # the installer's Python environment, with pywebview; it runs the app window too
-if [ -f app/VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ]; then
+
+app_port() {  # the port in data/.env, else 8000
+  local port=""
+  if [ -f data/.env ]; then
+    port=$(sed -n 's/^PORT=\([0-9][0-9]*\).*/\1/p' data/.env | head -n 1)
+  fi
+  echo "${port:-8000}"
+}
+
+app_running() {  # biomnikhil answers on its port
+  curl -s --max-time 2 "http://localhost:$(app_port)/ping" | grep -q biomnikhil
+}
+
+# While biomnikhil is running (another window is open), its server keeps the
+# old code, and a new window would just join it, so the update waits for the
+# next start rather than swapping files under it.
+if [ -f app/VERSION ] && [ ! -d .git ] && [ -z "${BIOMNIKHIL_NO_UPDATE:-}" ] && ! app_running; then
   update_py=""
   for candidate in "$IV/bin/python" "$VENV/bin/python"; do
     if [ -x "$candidate" ]; then update_py=$candidate; break; fi
@@ -116,8 +132,7 @@ else
 fi
 
 # --- start ---------------------------------------------------------------------
-PORT=$(sed -n 's/^PORT=\([0-9][0-9]*\).*/\1/p' data/.env | head -n 1)
-PORT=${PORT:-8000}
+PORT=$(app_port)
 
 if [ -z "${BIOMNIKHIL_NO_DIALOGS:-}" ]; then
   # The app window (app/installer/window.py) starts the server in the background
@@ -128,7 +143,7 @@ fi
 
 # Without dialogs: the server runs in this window, in a browser tab.
 URL="http://localhost:$PORT"
-if curl -s --max-time 2 "$URL/ping" | grep -q biomnikhil; then
+if app_running; then
   echo; echo "biomnikhil is already running, opening $URL"
   open "$URL"; exit 0
 fi

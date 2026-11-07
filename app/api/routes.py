@@ -15,7 +15,7 @@ from werkzeug.utils import secure_filename
 
 from .. import auth
 from ..config import Config
-from ..services import biomni_runner, chat_store, citations, datalake, maintenance, settings, spending
+from ..services import biomni_runner, chat_store, citations, datalake, maintenance, settings, spending, workflow
 from ..services.tasks import registry
 
 bp = Blueprint("api", __name__)
@@ -74,8 +74,52 @@ def chat():
         chat_id = chat_store.create_chat(title)["id"]
     chat_store.add_message(chat_id, "user", display_prompt)
 
-    task_id = biomni_runner.submit(prompt, chat_id=chat_id, user=auth.current_user(), attached=attached)
+    task_id = biomni_runner.submit(
+        prompt, chat_id=chat_id, user=auth.current_user(), attached=attached,
+        features=body.get("features"),
+    )
     return jsonify(task_id=task_id, chat_id=chat_id), 202
+
+
+@bp.get("/lab-context")
+def get_lab_context():
+    return jsonify(text=workflow.read_lab_context(), max_chars=workflow.MAX_LAB_CONTEXT_CHARS)
+
+
+@bp.post("/lab-context/condense")
+def condense_lab_context():
+    """Returns a shorter version for the user to review. Saves nothing."""
+    from ..providers import default_model
+
+    body = request.get_json(silent=True) or {}
+    source = body.get("text")
+    if not isinstance(source, str) or not source.strip():
+        return jsonify(error="There's no text to condense."), 400
+    if len(source) > workflow.MAX_CONDENSE_SOURCE_CHARS:
+        return jsonify(error=f"Condense takes up to {workflow.MAX_CONDENSE_SOURCE_CHARS:,} characters."), 400
+    credentials = getattr(auth.current_user(), "credentials", None)
+    if credentials is None:
+        return jsonify(error="Sign in with your lab account to condense text."), 403
+    model = biomni_runner.get_model() or default_model()
+    try:
+        return jsonify(workflow.condense_lab_context(source, model, credentials))
+    except workflow.CondenseFailed as exc:
+        return jsonify(error=str(exc)), 502
+    except Exception as exc:  # noqa: BLE001 — shown in the editor; the draft is untouched
+        logging.getLogger("biomnikhil.page").exception("condensing lab context failed")
+        return jsonify(error=biomni_runner._friendly_error(exc)), 502
+
+
+@bp.put("/lab-context")
+def put_lab_context():
+    body = request.get_json(silent=True) or {}
+    text = body.get("text")
+    if not isinstance(text, str):
+        return jsonify(error="text is required"), 400
+    if len(text) > workflow.MAX_LAB_CONTEXT_CHARS:
+        return jsonify(error=f"Lab context is limited to {workflow.MAX_LAB_CONTEXT_CHARS:,} characters."), 400
+    workflow.save_lab_context(text)
+    return jsonify(ok=True)
 
 
 def models_payload() -> dict:
@@ -132,6 +176,7 @@ def get_settings():
         version=settings.version(),
         beta_updates=settings.beta_updates(),
         git_checkout=settings.is_git_checkout(),
+        update_status=settings.update_status(),
     )
 
 

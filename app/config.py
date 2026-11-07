@@ -9,7 +9,7 @@ uploads, chat history — is one deletable tree:
       .env            settings (created from app/.env.example)
       biomni_data/    biomni's own data lake (it nests this dir name itself
                        under whatever path A1 is given — see biomni_runner)
-      user/           our application data: uploads, chat history
+      user/           our application data: uploads, chat history, lab context
 """
 from __future__ import annotations
 
@@ -51,6 +51,10 @@ class Config:
     MAX_CONTENT_LENGTH: int = int(_env("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 
     # Persistent chat history.
+    # Text the "lab context" icon adds to each agent's prompt.
+    LAB_CONTEXT_PATH: Path = Path(
+        _env("BIOMNI_LAB_CONTEXT", str(_DATA_ROOT / "user" / "lab-context.md"))
+    ).resolve()
     CHAT_DB: Path = Path(
         _env("BIOMNI_CHAT_DB", str(_DATA_ROOT / "user" / "chats.db"))
     ).resolve()
@@ -78,6 +82,9 @@ class Config:
     # Settings the self-update reads too, before the app starts, so this one
     # stays in data/ (see services/settings.py).
     SETTINGS_FILE: Path = _DATA_ROOT / "settings.json"
+
+    # What the self-update last did, which it writes before the app starts.
+    UPDATE_STATUS_FILE: Path = _DATA_ROOT / "update-status.json"
 
     # Appearing asks the app window to close (see services/maintenance.py).
     CLOSE_REQUEST_FILE: Path = _DATA_ROOT / ".close-request"

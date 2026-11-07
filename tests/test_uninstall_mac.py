@@ -1080,3 +1080,103 @@ def test_an_unknown_option_is_refused(tmp_path, home, install):
     result = _run_script(tmp_path, install, "1\nREMOVE\n", ["--everything"])
     assert result.returncode == EXIT_REFUSED, result.stdout + result.stderr
     assert (install / "app" / "config.py").exists()
+
+
+# ---- an install in the folder chosen during setup -----------------------------
+
+def _save_install_location(home, text):
+    note = home / "Library" / "biomnikhil-location"
+    _write(note, text + "\n")
+    return note
+
+
+def test_uninstall_removes_the_chosen_install_and_keeps_the_folder_around_it(tmp_path, home):
+    root = _make_install(tmp_path / "my apps" / "biomnikhil")
+    _write(tmp_path / "my apps" / "mine.txt", "mine")
+    note = _save_install_location(home, str(root))
+    result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert str(root.resolve()) in result.stdout
+    assert not root.exists()
+    assert not note.exists()
+    assert (tmp_path / "my apps" / "mine.txt").read_text() == "mine"
+
+
+def test_uninstall_started_from_the_chosen_install_removes_the_note(tmp_path, home):
+    root = _make_install(tmp_path / "my apps" / "biomnikhil")
+    note = _save_install_location(home, str(root))
+    result = _run(tmp_path, root, "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert not root.exists()
+    assert not note.exists()
+
+
+def test_a_saved_location_that_is_not_an_install_deletes_nothing_there(tmp_path, home):
+    documents = tmp_path / "documents"
+    _write(documents / "thesis.txt", "mine")
+    _write(documents / "data" / "results.csv", "mine")
+    note = _save_install_location(home, str(documents))
+    result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (documents / "thesis.txt").read_text() == "mine"
+    assert (documents / "data" / "results.csv").read_text() == "mine"
+    assert not note.exists()
+
+
+def test_a_saved_location_with_dot_dot_is_ignored(tmp_path, home):
+    root = _make_install(tmp_path / "my apps" / "biomnikhil")
+    note = _save_install_location(home, str(root / ".." / "biomnikhil"))
+    result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (root / "app" / "config.py").exists()
+    assert not note.exists()
+
+
+def test_a_saved_location_that_is_a_link_is_ignored(tmp_path, home):
+    root = _make_install(tmp_path / "my apps" / "biomnikhil")
+    link = tmp_path / "link to install"
+    link.symlink_to(root)
+    _save_install_location(home, str(link))
+    result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (root / "app" / "config.py").exists()
+
+
+def test_a_saved_location_of_the_home_folder_is_refused(tmp_path, home):
+    _write(home / "app" / "installer" / "core.py")
+    _write(home / "app" / "config.py")
+    _save_install_location(home, str(home))
+    result = _run(tmp_path, _make_stray(tmp_path), "REMOVE\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (home / "app" / "config.py").exists()
+
+
+def test_cleanup_leaves_the_chosen_install_alone(tmp_path, home):
+    root = _make_install(home / "my apps" / "biomnikhil")
+    note = _save_install_location(home, str(root))
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (root / "app" / "config.py").exists()
+    assert (root / "data" / "user" / "chats.db").exists()
+    assert note.exists()
+    assert f"outside {root.resolve()}" in result.stdout
+
+
+def test_cleanup_offers_a_copy_in_the_default_folder_when_the_install_is_elsewhere(tmp_path, home, install):
+    root = _make_install(home / "my apps" / "biomnikhil")
+    _save_install_location(home, str(root))
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert "outside the install location" in result.stdout
+    assert not (install / "app").exists()
+    assert (root / "app" / "config.py").exists()
+
+
+def test_cleanup_treats_the_default_folder_as_the_install_when_the_note_is_wrong(tmp_path, home, install):
+    documents = home / "documents"
+    _write(documents / "thesis.txt", "mine")
+    _save_install_location(home, str(documents))
+    result = _cleanup(tmp_path, "y\n")
+    assert result.returncode == EXIT_FINISHED, result.stdout + result.stderr
+    assert (install / "app" / "config.py").exists()
+    assert (documents / "thesis.txt").read_text() == "mine"

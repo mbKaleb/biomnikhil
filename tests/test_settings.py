@@ -92,6 +92,37 @@ def test_the_updater_reads_what_the_app_saves(client, signed_in, token, tmp_path
     assert update.beta_updates_on(tmp_path) is True
 
 
+def test_the_app_shows_what_the_updater_recorded(client, signed_in, tmp_path, monkeypatch):
+    import update
+
+    monkeypatch.setattr(Config, "UPDATE_STATUS_FILE", update._status_file(tmp_path))
+    assert client.get("/api/settings").get_json()["update_status"] is None
+    update._record_status(tmp_path, {"outcome": "failed", "message": "It went wrong."})
+    status = client.get("/api/settings").get_json()["update_status"]
+    assert status["outcome"] == "failed"
+    assert status["message"] == "It went wrong."
+    assert status["checked_at"] > 0
+
+
+@pytest.mark.parametrize("contents", ["not json", "[1, 2]"])
+def test_a_damaged_update_status_shows_as_none(client, signed_in, tmp_path, monkeypatch, contents):
+    status_file = tmp_path / "update-status.json"
+    status_file.write_text(contents)
+    monkeypatch.setattr(Config, "UPDATE_STATUS_FILE", status_file)
+    assert client.get("/api/settings").get_json()["update_status"] is None
+
+
+def test_the_wizard_is_told_about_a_reinstall(monkeypatch):
+    import core
+
+    monkeypatch.setattr(core, "find_python", lambda: None)
+    monkeypatch.setattr(core, "unsupported", lambda: None)
+    monkeypatch.delenv("BIOMNIKHIL_REINSTALL", raising=False)
+    assert core.welcome_info()["reinstall"] is False
+    monkeypatch.setenv("BIOMNIKHIL_REINSTALL", "1")
+    assert core.welcome_info()["reinstall"] is True
+
+
 # ---- /api/maintenance ----------------------------------------------------------
 
 @pytest.mark.parametrize("action", ["setup", "cleanup"])
@@ -205,6 +236,7 @@ def test_the_app_and_the_updater_use_the_same_settings_file():
 
     assert Config.SETTINGS_FILE == REPO / "data" / "settings.json"
     assert '"data" / "settings.json"' in Path(update.__file__).read_text()
+    assert Config.UPDATE_STATUS_FILE == update._status_file(REPO)
 
 
 def test_the_window_closes_when_asked(tmp_path, monkeypatch):

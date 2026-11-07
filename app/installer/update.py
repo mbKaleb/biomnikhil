@@ -30,6 +30,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -343,6 +344,38 @@ def newest_release_url() -> str:
     return f"{TAGGED_RELEASES}/{newest_tag}"
 
 
+def _status_file(install_root: Path) -> Path:
+    return install_root / "data" / "update-status.json"
+
+
+def _record_status(install_root: Path, changes: dict) -> None:
+    """Leaves the result for the Settings tab, since this runs before there's a
+    window to show it in. Merged, because the launch script runs this again right
+    after an update, and that "up to date" mustn't erase the update."""
+    target = _status_file(install_root)
+    try:
+        status = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        status = {}
+    if not isinstance(status, dict):
+        status = {}
+    status.update(changes)
+    status["checked_at"] = int(time.time())
+    temporary = target.with_name(f".{target.name}.tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError as exc:
+        print(f">> Couldn't save the update result ({exc}).")
+
+
+def _not_updated(install_root: Path, message: str) -> int:
+    print(f">> {message}")
+    _record_status(install_root, {"outcome": "failed", "message": message})
+    return NOT_UPDATED
+
+
 def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
     # A git checkout updates with git; applying a release would delete every
     # untracked file under app/.
@@ -361,20 +394,18 @@ def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
         signature = _download(f"{releases}/release.txt.sig", timeout=10)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            print(">> The latest release isn't signed, so biomnikhil won't update to it.")
-        else:
-            print(f">> Couldn't check for an update (HTTP {exc.code}).")
-        return NOT_UPDATED
+            return _not_updated(install_root, "The latest release isn't signed, so biomnikhil won't update to it.")
+        return _not_updated(install_root, f"Couldn't check for an update (HTTP {exc.code}).")
     except OSError as exc:
-        print(f">> Couldn't check for an update ({exc}).")
-        return NOT_UPDATED
+        print(f">> {exc}")
+        return _not_updated(install_root, "Couldn't check for an update. This computer may be offline.")
 
     try:
         release = parse_statement(statement, signature)
     except UpdateRefused as exc:
-        print(f">> Not updating: {exc}.")
-        return NOT_UPDATED
+        return _not_updated(install_root, f"Not updating: {exc}.")
     if not is_newer(release["version"], current, take_test_builds=beta):
+        _record_status(install_root, {"outcome": "up_to_date", "message": ""})
         return UP_TO_DATE
 
     print(f">> Updating biomnikhil {current} -> {release['version']}")
@@ -384,8 +415,8 @@ def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
         try:
             zip_path.write_bytes(_download(f"{releases}/biomnikhil.zip", timeout=300))
         except OSError as exc:
-            print(f">> Update download failed ({exc}), starting {current}.")
-            return NOT_UPDATED
+            print(f">> {exc}")
+            return _not_updated(install_root, f"Couldn't download version {release['version']}. Staying on {current}.")
         try:
             if sha256_of(zip_path) != release["sha256"]:
                 raise UpdateRefused("the downloaded zip doesn't match the signed release")
@@ -395,8 +426,13 @@ def update(install_root: Path = ROOT, releases: str = RELEASES) -> int:
                 raise UpdateRefused(f"the zip is version {zipped_version}, not {release['version']}")
             apply(release_root, install_root)
         except (UpdateRefused, OSError, zipfile.BadZipFile) as exc:
-            print(f">> Not updating: {exc}. Starting {current}.")
-            return NOT_UPDATED
+            return _not_updated(install_root, f"Not updating: {exc}. Staying on {current}.")
+    _record_status(install_root, {
+        "outcome": "updated",
+        "message": "",
+        "updated_to": release["version"],
+        "updated_at": int(time.time()),
+    })
     return UPDATED
 
 
