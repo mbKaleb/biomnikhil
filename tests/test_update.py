@@ -258,7 +258,7 @@ def beta_releases(release, signing_key, tmp_path, monkeypatch):
             entries.append({"tag_name": f"v{version}", "draft": False})
         listing.write_text(json.dumps(entries))
 
-    return {"publish": publish, "listing": listing}
+    return {"publish": publish, "listing": listing, "tagged": tagged}
 
 
 def test_beta_is_off_without_a_readable_setting(tmp_path):
@@ -314,7 +314,7 @@ def test_beta_install_refuses_an_unsigned_test_build(release, beta_releases):
     install = release["install"]
     _set_beta(install, True)
     beta_releases["publish"]("0.4.0-rc1")
-    tag_folder = Path(update.TAGGED_RELEASES.removeprefix("file://")) / "v0.4.0-rc1"
+    tag_folder = beta_releases["tagged"] / "v0.4.0-rc1"
     (tag_folder / "release.txt.sig").write_bytes(base64.b64encode(b"x" * 64))
     assert update.update(install, release["url"]) == update.NOT_UPDATED
     assert (install / "app" / "VERSION").read_text().strip() == "0.2.0"

@@ -179,9 +179,13 @@ def test_closing_asks_the_window_and_then_exits(tmp_path, monkeypatch):
 
 
 def _window_module(monkeypatch):
-    """app/installer/window.py, with no GUI libraries behind it."""
+    """app/installer/window.py, with no GUI libraries behind it. Importing it turns
+    on diagnostics, which would write to the real data/ and hook this process."""
+    fake_diagnostics = types.ModuleType("diagnostics")
+    fake_diagnostics.enable = lambda: None
     fake_gui = types.ModuleType("gui")
     fake_gui._mac_branding = lambda: None
+    monkeypatch.setitem(sys.modules, "diagnostics", fake_diagnostics)
     monkeypatch.setitem(sys.modules, "webview", types.ModuleType("webview"))
     monkeypatch.setitem(sys.modules, "gui", fake_gui)
     monkeypatch.setattr(sys, "argv", ["window.py"])
