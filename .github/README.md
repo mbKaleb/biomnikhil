@@ -1,23 +1,43 @@
 # biomnikhil
 
-Flask wrapper around [Stanford Biomni](https://github.com/snap-stanford/Biomni),
-running Claude on Amazon Bedrock with each user's Cognito sign-in. Built to run **fully native on Windows 11**
-— no admin rights, no WSL, no Docker, no VM — inside a disposable folder you
-can delete without a trace.
+A desktop app for the lab's biomedical research agent. It wraps
+[Stanford Biomni](https://github.com/snap-stanford/Biomni) in a Flask app with
+its own window, and runs Claude on Amazon Bedrock signed with each user's
+Cognito sign-in, so there are no API keys to hand out.
 
-## Architecture
+It runs natively on Windows 11 and on Apple Silicon Macs: no admin rights, no
+WSL, Docker or VM. Everything lives in one folder you can delete without a
+trace.
 
-Three layers: browser UI → Flask app (REST + SSE, background-thread task
-runner) → Biomni data lake / local storage / Bedrock. Model calls go to
-Claude on Bedrock Mantle, SigV4-signed with the Cognito credentials of the
-user who started the run (`app/auth.py`); there are no API keys. The models
-offered are listed in `app/providers.py`.
+## What it does
 
-## Install (lab members)
+You describe a task in chat, attach your data files, and the agent plans,
+writes and runs Python against them, streaming each step as it goes. The tabs
+around the chat:
 
-Needs a 64-bit Intel/AMD Windows PC, or an Apple Silicon Mac on macOS 15 or
-newer; about 16 GB free; and internet access to PyPI, GitHub, the Biomni
-data lake (S3), Bedrock and Cognito. Setup checks all of these first.
+- **Task**: the chat and the live run. Pick the model and effort, attach
+  files, stop a run, or rewind to an earlier message and retry. Three composer
+  icons add optional stages: **lab context** (your protocols and thresholds,
+  added to the prompt), **preprocessing** of the data before the main run,
+  and an **adversarial review** of the result afterwards.
+- **Outputs**: the files a run produced, to preview, download or zip.
+- **Citations**: the papers, DOIs and links that appeared in a chat's runs.
+- **Files**: your uploads.
+- **Viewer**: web pages the agent generated, such as reports and plots.
+- **Integrity**: whether the data lake, the agent and its saved recipes are
+  healthy.
+- **Spending**: the AWS account's costs, from Cost Explorer.
+- **Settings**: your sign-in, the installed version, beta releases, and setup
+  and cleanup.
+
+The first task downloads Biomni's data lake (about 14 GB). The app checks each
+file and re-downloads any that are missing or damaged.
+
+## Install
+
+You need a 64-bit Intel/AMD Windows PC or an Apple Silicon Mac on macOS 15 or
+newer, about 16 GB free, and internet access to PyPI, GitHub, the Biomni data
+lake (S3), Bedrock and Cognito. Setup checks all of these first.
 
 1. Download `biomnikhil-<version>-installer.zip` from the
    [latest release](https://github.com/mbKaleb/biomnikhil/releases/latest)
@@ -26,124 +46,109 @@ data lake (S3), Bedrock and Cognito. Setup checks all of these first.
    - Windows may warn about a downloaded file: choose **Run** (or
      **More info → Run anyway**).
    - macOS blocks it the first time: open **System Settings → Privacy &
-     Security** and click **Open Anyway** (or run `bash app/run-mac.sh` in
-     Terminal from the folder).
-3. Setup asks where to install. It suggests `%LOCALAPPDATA%\biomnikhil`
-   (Windows) or `~/Library/biomnikhil` (Mac); anything else you choose gets a
-   `biomnikhil` folder inside it. It won't use a cloud-synced folder, a network
-   folder (Windows), Documents, Desktop or Downloads (Mac, where an app opened
-   from its icon needs permission for those) or a folder that already has other
-   files. Setup copies
-   biomnikhil there and runs it from there, so you can delete the zip and the
-   extracted folder afterwards. It doesn't ask again once an install is
-   finished. To move it, uninstall and set up again. On Windows, setup's log is
-   `setup.log` in that folder.
-4. A console window says "Preparing installer…" for a few seconds while it
-   fetches [uv](https://docs.astral.sh/uv/) and the installer's own small
-   Python environment. The **biomnikhil Setup** window then shows the
-   install location and space needed; click **Install**. It uses your
-   Python 3.11–3.13 if you have one, otherwise a private Python 3.12 in the
-   folder, then downloads the app's packages (about 1 GB, a few minutes) and
-   adds a **biomnikhil** shortcut (Desktop and Start menu on Windows;
-   Applications and Desktop on Mac). Click **Open biomnikhil**: the app opens
-   in its own window; sign in with your lab account.
+     Security** and click **Open Anyway**, or run `bash app/run-mac.sh` in
+     Terminal from the folder.
+3. Choose where to install. Setup suggests `%LOCALAPPDATA%\biomnikhil`
+   (Windows) or `~/Library/biomnikhil` (Mac); any other folder you pick gets a
+   `biomnikhil` folder inside it. It refuses cloud-synced folders, network
+   folders (Windows), Documents, Desktop and Downloads (Mac), and folders that
+   already hold other files. Setup copies the app there, so you can delete the
+   zip and the extracted folder afterwards. To move an install, uninstall and
+   set up again.
+4. After a few seconds of "Preparing installer…" the **biomnikhil Setup**
+   window opens. Click **Install**. It uses your Python 3.11–3.13 if you have
+   one, otherwise it adds a private Python 3.12, then downloads about 1 GB of
+   packages and adds a **biomnikhil** shortcut (Desktop and Start menu on
+   Windows; Applications and Desktop on Mac). Click **Open biomnikhil** and
+   sign in with your lab account.
 
-   If something fails, the window says what to do and **Retry** picks up
-   where it stopped. The full log is `data/install.log`. On a PC where the
-   window can't open (no WebView2), setup continues as text in the console.
+If a step fails, the window says what to do and **Retry** picks up where it
+stopped. The full log is `data/install.log` (and `setup.log` in the install
+folder on Windows). On a PC that can't open the window (no WebView2), setup
+carries on as text in the console.
 
-From then on, open biomnikhil from that shortcut. It runs in its own window,
-with no Terminal or console; closing the window stops it. Each start from the
-shortcut checks for a newer release and updates itself first; the Settings tab
-shows the last check. While biomnikhil is already open, the update waits until
-it's closed and started again. The server's output goes to `data/server.log`.
+## Using it day to day
 
-The folder holds everything: `app/` (the program), `data/` (your settings,
-chats, uploads and the data lake) and `runtime/` (Python, uv and its download
-cache; safe to delete, setup rebuilds it).
+Open biomnikhil from its shortcut. It runs in its own window with no console,
+and closing the window stops it.
 
-The **Settings** tab shows who you're signed in as and the installed version, and has
-three controls:
+Each start checks for a newer release and updates first. If biomnikhil is
+already open, the update waits until it's closed and started again. Updates
+are signed, and an install only takes a newer version whose signature checks
+out.
 
-- **Beta releases** makes each start update to the newest release, test builds included.
-  Turning it off keeps your version until a newer full release comes out. It applies to
-  this whole install, and a git checkout ignores it.
-- **Run setup again** closes biomnikhil and rebuilds its Python environment in the setup
-  window, which has a button to open biomnikhil again. Your chats, settings and data lake
-  stay.
-- **Clean up** closes biomnikhil, opens the cleanup described below in a console or
-  Terminal window, and reopens biomnikhil when you're done.
+In the **Settings** tab:
+
+- **Beta releases** updates to the newest release on each start, test builds
+  included. Turning it off keeps your version until the next full release. It
+  applies to the whole install.
+- **Run setup again** closes biomnikhil and rebuilds its Python environment.
+  Your chats, settings and data lake stay.
+- **Clean up** closes biomnikhil, runs the cleanup described under
+  [Uninstall](#uninstall), and reopens the app when you're done.
+
+The install folder holds:
+
+- `app/`: the program
+- `data/`: your settings (`.env`, `settings.json`), chats, uploads, the data
+  lake, and the logs (`server.log`, `install.log`, `diagnostics.log`)
+- `runtime/`: Python, uv and its cache. It's safe to delete, and setup
+  rebuilds it.
 
 ## Uninstall
 
-Close biomnikhil, then double-click **uninstall-windows** or **uninstall-mac** in the
-install folder or the extracted folder. **Uninstall biomnikhil** is also in the Start
-menu (Windows) and `~/Applications` (Mac) after a reinstall.
+Close biomnikhil, then double-click **uninstall-windows** or **uninstall-mac**
+in the install folder or the extracted folder. It's also in the Start menu
+(Windows) and `~/Applications` (Mac). It offers two choices:
 
-It asks which of two things to do:
+- **Uninstall** lists every path and its size, then asks you to type
+  `REMOVE`. It deletes the install, your settings, chats, uploads and logs, the
+  shortcuts, and the data lakes the app owns. A shared lake or a folder you
+  chose stays unless you type its full path at its own prompt, and then only
+  the lake's own files go. A git checkout keeps its source.
+- **Clean up** leaves the installed app alone and looks for biomnikhil files
+  elsewhere: older copies, data lakes and downloaded installers. It searches
+  your user folder and cloud folders (OneDrive, iCloud Drive), plus
+  `/Applications` and `/Users/Shared` on a Mac, or the Public folder and
+  top-level `biomni*` folders on each fixed drive on Windows. It skips network
+  folders. It asks about each item, and only `y` deletes it. The lake the app
+  is using is never offered.
 
-- **Uninstall** lists every path and size, then asks you to type `REMOVE`. It deletes the
-  install, your settings, chats, uploads and logs, the shortcuts, and the data lakes the
-  app owns. A shared lake or a folder you chose stays unless you type its full path at
-  its own prompt, and then only the lake's own files go. A git checkout keeps its source.
-- **Clean up** leaves the installed app alone and looks for biomnikhil files outside it:
-  older copies, data lakes and downloaded installers. It searches your user folder and
-  cloud folders (OneDrive, iCloud Drive), `/Applications` and `/Users/Shared` on a Mac, and
-  the Public folder and top-level `biomni*` folders on each fixed drive on Windows. It
-  doesn't search network folders, or anything else on other drives. It asks about each
-  one, and only `y` deletes it. A shared lake still needs its full path typed, the lake
-  the app is set to use isn't offered, and a git checkout stays with everything in it.
+## How it works
 
-## Releasing
+Browser UI → Flask app (REST plus server-sent events, tasks on background
+threads) → Biomni's A1 agent, the data lake and local storage → Claude on
+Bedrock.
 
-Every push to `main` runs the tests (`tests/`, on macOS and Windows, with the
-exact versions in `app/requirements.lock`), and a release is only published
-once they pass. Run them locally first:
+Model calls are SigV4-signed with the Cognito credentials of the user who
+started the run (`app/auth.py`). The model list comes from Bedrock and falls
+back to the models in `app/providers.py`. Biomni is pinned to 0.0.8 because
+`app/services/biomni_runner.py` patches its internals. The same goes for the
+Anthropic and LangChain clients, whose request signing the app replaces.
+
+Agent prompts get scoped hints (`app/hints/`): a core pack every time, domain
+packs such as mass spec only when the task looks relevant, ground truth probed
+from installed packages, and working code saved from earlier successful runs.
+
+## Development
+
+Clone the repo and run the same launcher (`setup-mac.command` or
+`setup-windows.cmd`). Git checkouts skip the self-update and ignore beta
+releases, so pull with git instead. Settings live in `data/.env` (template:
+`app/.env.example`).
+
+Run the tests:
 
 ```bash
 uv venv .venv && uv pip install --python .venv -r app/requirements.lock -r tests/requirements.txt
 .venv/bin/python -m pytest tests
 ```
 
-Releases are signed. The workflow writes `release.txt` (the version and the
-zip's SHA-256) and signs it with the `RELEASE_SIGNING_KEY` repository secret,
-an Ed25519 private key in PEM form; installs only update to a release whose
-signature matches `PUBLIC_KEY` in `app/installer/update.py`, and only to a
-newer version. A release without the secret fails rather than shipping
-unsigned. To set the secret from the key file:
+CI runs the same tests on macOS and Windows on every push to `main` and every
+pull request.
 
-```bash
-gh secret set RELEASE_SIGNING_KEY -R mbKaleb/biomnikhil < ~/.config/biomnikhil/release-signing-key.pem
-```
-
-Keep a backup of that file somewhere safe: losing it means installs can't
-update until they're reinstalled from a zip with a new `PUBLIC_KEY`. To
-rotate the key, ship one release signed with the old key whose `PUBLIC_KEY`
-is the new one, then switch the secret.
-
-Commit and push to `main`, then tag a test build and try it:
-
-```bash
-git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
-```
-
-`.github/workflows/release.yml` publishes it as a pre-release with
-`biomnikhil-0.2.0-rc1-installer.zip`, which unpacks to `biomnikhil-installer/` (plus
-the same files as `biomnikhil.zip`, unpacking to `biomnikhil/`, the names installs update from, and the signed `release.txt`). Lab installs ignore pre-releases unless
-**Beta releases** is on in their Settings tab. To try one without that, download the
-zip from the pre-release's page. Broken? Fix, commit, tag `-rc2`. When it works, tag the release on the same commit:
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-
-That becomes the latest release, and lab installs update to it the next
-time they start. Release notes are the commit subjects since the previous
-release.
-
-After editing `app/requirements.txt`, regenerate the pinned versions installs
-use (with [uv](https://docs.astral.sh/uv/)); the installer window's own
-pywebview pins work the same way:
+After editing `app/requirements.txt` or `app/installer/requirements.txt`,
+regenerate the pinned versions installs use:
 
 ```bash
 uv pip compile app/requirements.txt --universal --python-version 3.11 -o app/requirements.lock
@@ -151,55 +156,96 @@ uv pip compile app/installer/requirements.txt --universal --python-version 3.11 
 ```
 
 To try the installer without a release, build the zip from the working tree
-(as the workflow does) and run `setup-mac.command` from an unpacked copy.
-`BIOMNIKHIL_NO_DIALOGS=1` runs the same install as text in the console,
-`BIOMNIKHIL_INSTALL_DIR=<folder>` installs in that folder without asking, and
-`BIOMNIKHIL_REINSTALL=1` (`-Reinstall` on Windows) runs it again on an
-existing install.
+the way the release workflow does, and run `setup-mac.command` from an
+unpacked copy. These environment variables help:
 
-## Dev setup
+- `BIOMNIKHIL_NO_DIALOGS=1` runs the install as text in the console.
+- `BIOMNIKHIL_INSTALL_DIR=<folder>` installs there without asking.
+- `BIOMNIKHIL_REINSTALL=1` (`-Reinstall` on Windows) runs it again on an
+  existing install.
 
-Clone the repo and run the same launcher (`setup-mac.command` /
-`setup-windows.cmd`). Git checkouts skip the self-update; pull with git
-instead. Settings live in `data/.env`.
-
-## Layout
+### Layout
 
 ```
-setup-windows.cmd, setup-mac.command   double-click launchers (all users see)
-uninstall-windows.cmd, uninstall-mac.command   double-click uninstallers
-LICENSE                 in the release zip, this is app/LICENSE
+setup-*.cmd/.command, uninstall-*   double-click launchers at the top of the zip
 app/
-  run.ps1, run-mac.sh     launchers: fetch uv, start the installer, self-update, open the app window
-  uninstall.ps1, uninstall-mac.sh  the uninstallers the root launchers start
-  maintenance.ps1, maintenance-mac.sh, cleanup-mac.command  setup and cleanup from the Settings tab
-  installer/              the install window (pywebview + ui/index.html), same on Mac and Windows:
-                          system checks, Python, packages, data/.env, shortcuts;
-                          window.py is the app window (runs waitress in the background);
-                          update.py the signed self-update
-  wsgi.py                 app entrypoint (app.wsgi:app)
-  requirements.txt/.lock  dependencies / exact versions installs use
-  .env.example            template for data/.env
-  auth.py                 Cognito sign-in + per-user AWS credentials
-  providers.py            the Bedrock models offered -> A1 kwargs
-  config.py               env-driven config, paths inside the install folder
-  api/routes.py           /api/chat, /api/tasks/<id>, /api/tasks/<id>/stream (SSE)
-  services/tasks.py       thread-safe in-memory task registry
-  services/biomni_runner.py  lazy A1 init + background-thread runs
-  templates/, static/     UI (static/icons: the app icon)
-data/                     created on first run: .env, chats, uploads, data lake
-runtime/                  created on first run: uv, Python, the app's environment
-.github/                  this README, the test and release workflows (not shipped)
-tests/                    pytest suite: security guards, biomni patches, self-update (not shipped)
+  run.ps1, run-mac.sh       fetch uv, start the installer, self-update, open the app
+  uninstall.*, maintenance.*, cleanup-mac.command   uninstall, setup and cleanup scripts
+  installer/                the setup window (pywebview + ui/index.html), system checks,
+                            Python, packages, shortcuts; window.py is the app window,
+                            update.py the signed self-update, diagnostics.py the crash log
+  wsgi.py                   entrypoint (app.wsgi:app, served by waitress)
+  auth.py                   Cognito sign-in and per-user AWS credentials
+  providers.py              the Bedrock models and effort levels
+  config.py                 settings from data/.env; every path inside the install
+  api/routes.py             the REST and SSE endpoints
+  services/
+    biomni_runner.py        builds A1 lazily, runs tasks, patches biomni
+    tasks.py                in-memory task registry
+    chat_store.py           SQLite chat history
+    workflow.py             lab context, preprocessing and review stages
+    hints.py                prompt hints, capability probes, saved recipes
+    datalake.py             data lake download and integrity checks
+    citations.py            sources found in a chat's runs
+    spending.py             Cost Explorer figures
+    settings.py, maintenance.py   the Settings tab
+  hints/                    hint packs
+  allowed_packages.txt      packages the agent may install mid-run
+  templates/, static/       the UI
+tests/                      pytest suite (not shipped)
+.github/                    this README and the CI workflows (not shipped)
 ```
 
-## Known seams
+## Releasing
 
-- biomni's agent imports `langchain-openai` at startup even though nothing
-  uses OpenAI, so that package (and `openai`) stays installed.
-- Live step streaming is coarse for now (status pings + full trace at the
-  end). Hook biomni's step callback in `biomni_runner._run` — the TODO marks
-  the spot.
-- Windows-native means the full `biomni_e1` conda env (bash + bioconda) is
-  skipped: tools that shell out to Linux-only binaries will error at runtime
-  and surface in the UI as failed tasks.
+Releases are tags on `main`. The release workflow runs the tests first and
+publishes nothing if they fail.
+
+Tag a test build and try it:
+
+```bash
+git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
+```
+
+That publishes a pre-release with `biomnikhil-0.2.0-rc1-installer.zip` (for
+people to download), `biomnikhil.zip` (what installs update from) and the
+signed `release.txt`. Installs ignore pre-releases unless **Beta releases** is
+on. If it's broken, fix it, commit and tag `-rc2`. When it works, tag the
+release on the same commit:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+That becomes the latest release, and installs update to it the next time they
+start. The release notes are the commit subjects since the previous release.
+
+### Signing
+
+The workflow signs `release.txt` (the version and the zip's SHA-256) with the
+`RELEASE_SIGNING_KEY` repository secret, an Ed25519 private key in PEM form.
+Installs only update to a newer release whose signature matches `PUBLIC_KEY` in
+`app/installer/update.py`. Without the secret, the release fails rather than
+shipping unsigned. To set it:
+
+```bash
+gh secret set RELEASE_SIGNING_KEY -R mbKaleb/biomnikhil < ~/.config/biomnikhil/release-signing-key.pem
+```
+
+Back that key file up. If it's lost, installs can't update until they're
+reinstalled from a zip with a new `PUBLIC_KEY`. To rotate the key, ship one
+release signed with the old key that carries the new `PUBLIC_KEY`, then switch
+the secret.
+
+## Known limits
+
+- The full `biomni_e1` conda environment (bash and bioconda) isn't installed,
+  and there's no R. Tools that shell out to Linux-only binaries or R packages
+  fail at runtime and show as failed tasks. The hints steer the agent to Python
+  alternatives such as pyopenms.
+- Heavy ML stacks (torch, transformers, scvi, cellpose) are left out on
+  purpose. Tools that need them fail with a clear install message.
+- Biomni imports `langchain-openai` at startup even though nothing uses
+  OpenAI, so that package and `openai` stay installed.
+- Running tasks live in memory, so restarting the app ends them. Chat history
+  is kept.
