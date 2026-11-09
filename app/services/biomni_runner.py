@@ -140,6 +140,7 @@ def _get_agent():
             from biomni.agent import A1  # heavy import — keep it lazy
 
             _patch_run_python_repl()
+            _patch_run_with_timeout()
             _patch_sampling_params()
             _hide_unusable_tools()
             _patch_cognito_client()
@@ -151,6 +152,7 @@ def _new_agent(agent_class, kwargs: dict):
     agent = agent_class(path=str(Config.DATA_PATH), **kwargs)
     agent.llm.callbacks = [*(agent.llm.callbacks or []), _untagged_reply_logger()]
     _uncap_agent_llm(agent.llm, kwargs["llm"])
+    _ask_when_stuck(agent.llm)
     return agent
 
 
@@ -412,6 +414,76 @@ def _observations_as_user_turns(messages: list) -> None:
     messages[:] = out
 
 
+# What biomni tells the model when a reply has no tag. It's a hard-coded string
+# inside biomni's loop, so the request is reworded on its way out instead.
+BIOMNI_FORMAT_NUDGE = "Each response must include thinking process"
+FORMAT_NUDGE = (
+    "Your last reply had no <execute> or <solution> tag, so nothing could run. "
+    "Reply again with your reasoning followed by one of them: <execute> to run "
+    "code, or <solution> if you have the final answer. If you can't tell what "
+    'the user wants, ask them: <execute>ask_user("your question")</execute>.'
+)
+STUCK_QUESTION = (
+    "I couldn't work out a next step. Can you tell me more about what you want, "
+    "or what to focus on?"
+)
+
+# Replies in a row that biomni couldn't act on, in the run in progress.
+_untagged_streak = {"count": 0}
+
+
+def _reword_format_nudge(messages: list) -> None:
+    """In place: biomni's "no tags" complaint becomes FORMAT_NUDGE, which tells
+    the model about ask_user. Runs before consecutive user turns are merged."""
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            if content.startswith(BIOMNI_FORMAT_NUDGE):
+                message["content"] = FORMAT_NUDGE
+            continue
+        for block in content or []:
+            text = block.get("text") if isinstance(block, dict) else None
+            if isinstance(text, str) and text.startswith(BIOMNI_FORMAT_NUDGE):
+                block["text"] = FORMAT_NUDGE
+
+
+def _is_actionable(text: str) -> bool:
+    """Whether biomni can do something with a reply: it looks for these tags,
+    and runs a bare code block as code."""
+    for marker in ("<execute>", "<solution>", "<think>", "```"):
+        if marker in text:
+            return True
+    return False
+
+
+def _ask_when_stuck(llm) -> None:
+    """After a second reply in a row that biomni can't act on (the first got
+    the nudge above), the user is asked what they want. The reply becomes an
+    <execute> block calling ask_user, so biomni runs it like any other code:
+    the question shows in the chat, the run waits, and the answer goes to the
+    model as the code's output."""
+    import json
+
+    from langchain_core.messages import AIMessage
+
+    model_invoke = llm.invoke
+
+    def invoke(*args, **kwargs):
+        response = model_invoke(*args, **kwargs)
+        if _is_actionable(_text_of(response.content)):
+            _untagged_streak["count"] = 0
+            return response
+        _untagged_streak["count"] += 1
+        if _untagged_streak["count"] < 2:
+            return response
+        _untagged_streak["count"] = 0
+        code = f"ask_user({json.dumps(STUCK_QUESTION)})"
+        return AIMessage(content=f"<execute>\n{code}\n</execute>")
+
+    # Set past pydantic, which refuses attributes the model doesn't declare.
+    object.__setattr__(llm, "invoke", invoke)
 
 
 def _add_cache_breakpoints(payload: dict) -> None:
@@ -467,6 +539,8 @@ def _patch_sampling_params() -> None:
             if "extra_body" in payload and not extra:
                 payload.pop("extra_body")
         is_agent_llm = bool(_run_effort and self is _run_effort[0])
+        if is_agent_llm:
+            _reword_format_nudge(payload.get("messages") or [])
         _observations_as_user_turns(payload.get("messages") or [])
         if is_agent_llm:
             # Only the agent loop: biomni's helper LLMs make one-off calls that
@@ -628,6 +702,64 @@ def _patch_run_python_repl() -> None:
         pass  # not loaded yet — the support_tools patch alone still covers it
 
 
+def _patch_run_with_timeout() -> None:
+    """biomni stops a code block after agent.timeout_seconds (600). Time the
+    block spends in ask_user, waiting on the user, doesn't count toward that:
+    someone who takes a few minutes to reply shouldn't time the run out.
+
+    Otherwise the same as biomni's run_with_timeout, which a1 also imports by
+    name, so both references are repointed."""
+    import ctypes
+    import queue
+
+    from biomni import utils
+
+    def _run_with_timeout(func, args=None, kwargs=None, timeout=600):
+        args = args or []
+        kwargs = kwargs or {}
+        results = queue.Queue()
+
+        def target():
+            try:
+                results.put(("success", func(*args, **kwargs)))
+            except Exception as exc:  # noqa: BLE001 — reported to the agent like biomni does
+                results.put(("error", str(exc)))
+
+        thread = threading.Thread(target=target, daemon=True)
+        waited_before = _seconds_waiting_on_user()
+        started = time.monotonic()
+        thread.start()
+        while True:
+            thread.join(1)
+            if not thread.is_alive():
+                break
+            waited = _seconds_waiting_on_user() - waited_before
+            busy = time.monotonic() - started - waited
+            if busy > timeout:
+                # biomni's way of stopping the thread: raise SystemExit in it.
+                stopped = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_long(thread.ident), ctypes.py_object(SystemExit)
+                )
+                if stopped > 1:
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread.ident), None)
+                return (
+                    f"ERROR: Code execution timed out after {timeout} seconds. Please try "
+                    "with simpler inputs or break your task into smaller steps."
+                )
+        try:
+            status, result = results.get(block=False)
+        except queue.Empty:
+            return "Error: Execution completed but no result was returned"
+        if status == "success":
+            return result
+        return f"Error in execution: {result}"
+
+    utils.run_with_timeout = _run_with_timeout
+    import biomni.agent.a1 as a1_module
+
+    a1_module.run_with_timeout = _run_with_timeout
+
+
 # Execution guidance now lives in app/hints/ (core.txt always, plus
 # domain-scoped packs like pyopenms.txt/mzml.txt only when the prompt
 # actually looks relevant) instead of one hardcoded, ever-growing string —
@@ -694,6 +826,56 @@ def _reset_run_namespace() -> None:
     support_tools._persistent_namespace.clear()
 
 
+# How long the run has spent in ask_user: the total of finished waits, and
+# when the current wait began. One run at a time, so one of these is enough.
+_user_wait = {"total": 0.0, "since": None}
+
+ASK_USER_NOTE = (
+    "\n\nIf the task can't be done without something only the user knows "
+    "(which gene, sample, file or threshold they mean, for example), don't "
+    "guess and don't explore to find out. Ask them from an <execute> block: "
+    '`reply = ask_user("your question")`. The run pauses until they answer, '
+    "and the call returns their reply as a string. Put all your questions in "
+    "one call, and only ask when the answer changes what you'd do. A simple "
+    "question you can answer right away gets its answer in <solution>."
+)
+
+
+def _seconds_waiting_on_user() -> float:
+    total = _user_wait["total"]
+    since = _user_wait["since"]
+    if since is not None:
+        total += time.monotonic() - since
+    return total
+
+
+def _ask_user_function(task_id: str, chat_id: str | None):
+    """The ask_user(question) the agent's code can call. It shows the question
+    in the chat, waits for the reply, and returns it. The reply is printed too,
+    so it reaches the agent's observation even if the code ignores the value."""
+    from . import chat_store
+
+    def ask_user(question) -> str:
+        """Ask the user a question and wait for their reply, which is returned."""
+        question = str(question).strip()
+        registry.ask(task_id, question)
+        if chat_id:
+            chat_store.add_message(chat_id, "question", question)
+        started = time.monotonic()
+        _user_wait["since"] = started
+        try:
+            answer = registry.wait_for_answer(task_id)
+        finally:
+            _user_wait["since"] = None
+            _user_wait["total"] += time.monotonic() - started
+        if chat_id:
+            chat_store.add_message(chat_id, "answer", answer)
+        print(f"The user replied: {answer}")
+        return answer
+
+    return ask_user
+
+
 def submit(
     prompt: str,
     chat_id: str | None = None,
@@ -724,6 +906,7 @@ def submit(
         prompt
         + workflow.lab_context_note(lab_context)
         + hints.build_hints(prompt)
+        + ASK_USER_NOTE
         + f"\n\nSave any output files you generate (CSVs, plots, reports, "
         f"etc.) under this directory: {output_dir} — create it if needed "
         "and use subfolders freely; anything written there becomes "
@@ -947,8 +1130,12 @@ def _drive_agent(
     from . import chat_store
 
     global _run_effort
+    from biomni.tool import support_tools
+
     _reset_run_namespace()
+    _untagged_streak["count"] = 0
     _current_stage["name"] = stage
+    support_tools._persistent_namespace["ask_user"] = _ask_user_function(task_id, chat_id)
     _run_effort = (agent.llm, effort)
 
     if hasattr(agent, "go_stream"):

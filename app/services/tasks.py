@@ -22,6 +22,8 @@ class Task:
     chat_id: str | None = None
     files: list[dict] = field(default_factory=list)  # output files this run produced
     max_steps: int | None = None  # the run's step cap, when it has one
+    question: str | None = None  # what the agent asked and is waiting on
+    answer: str | None = None  # the user's reply, until the agent takes it
 
     def snapshot(self) -> dict:
         return {
@@ -35,6 +37,7 @@ class Task:
             "files": list(self.files),
             "cancelled": self.cancel_requested,
             "max_steps": self.max_steps,
+            "question": self.question,
         }
 
 
@@ -42,6 +45,8 @@ class TaskRegistry:
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
         self._lock = threading.Lock()
+        # Wakes a run waiting on the user when they answer or press Stop.
+        self._changed = threading.Condition(self._lock)
 
     def create(self, prompt: str, chat_id: str | None = None) -> Task:
         task = Task(id=uuid.uuid4().hex[:12], prompt=prompt, chat_id=chat_id)
@@ -113,12 +118,51 @@ class TaskRegistry:
             if task is None or task.status in ("done", "error"):
                 return False
             task.cancel_requested = True
+            self._changed.notify_all()
             return True
 
     def is_cancel_requested(self, task_id: str) -> bool:
         with self._lock:
             task = self._tasks.get(task_id)
             return bool(task and task.cancel_requested)
+
+    def ask(self, task_id: str, question: str) -> None:
+        """Puts a question to the user. The run then waits in wait_for_answer."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task.question = question
+                task.answer = None
+                task.steps.append({"t": time.time(), "kind": "question", "text": question})
+
+    def answer(self, task_id: str, text: str) -> bool:
+        """The user's reply to the pending question. False when the run isn't
+        waiting on one, for example because it was answered in another tab."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.question is None or task.status != "running":
+                return False
+            task.question = None
+            task.answer = text
+            task.steps.append({"t": time.time(), "kind": "answer", "text": text})
+            self._changed.notify_all()
+            return True
+
+    def wait_for_answer(self, task_id: str) -> str:
+        """Blocks until the pending question is answered. Raises once the run is
+        stopped, so a Stop doesn't wait for an answer that may never come."""
+        with self._lock:
+            while True:
+                task = self._tasks.get(task_id)
+                if task is None or task.cancel_requested:
+                    if task:
+                        task.question = None
+                    raise RuntimeError("stopped by user")
+                if task.answer is not None:
+                    answer = task.answer
+                    task.answer = None
+                    return answer
+                self._changed.wait(timeout=1)
 
     def fail(self, task_id: str, error: str, files: list[dict] | None = None) -> None:
         with self._lock:

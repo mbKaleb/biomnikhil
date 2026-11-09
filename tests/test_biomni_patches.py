@@ -259,6 +259,125 @@ def test_uncapped_agent_llm_streams_a_full_size_request(monkeypatch):
     assert reply.usage_metadata["input_tokens"] == 5
 
 
+def test_agent_can_ask_the_user_mid_run(tmp_path, run_user):
+    """ask_user pauses the code block until the reply, longer than the code
+    timeout, and the reply lands in the observation the model reads next."""
+    import threading
+    import time
+
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+    from app.services.tasks import registry
+
+    biomni_runner._patch_run_python_repl()
+    biomni_runner._patch_run_with_timeout()
+    biomni_runner._patch_sampling_params()
+    biomni_runner._hide_unusable_tools()
+    biomni_runner._patch_cognito_client()
+    from biomni.agent import A1
+
+    agent = A1(
+        path=str(tmp_path),
+        llm="anthropic.claude-haiku-4-5",
+        source="Anthropic",
+        use_tool_retriever=False,
+        expected_data_lake_files=[],
+    )
+    agent.timeout_seconds = 1
+    agent.llm = FakeMessagesListChatModel(responses=[
+        AIMessage('<execute>gene = ask_user("Which gene?")</execute>'),
+        AIMessage("<solution>done</solution>"),
+    ])
+    task = registry.create("Design primers")
+    registry.mark_running(task.id)
+
+    def reply_when_asked():
+        while registry.get(task.id)["question"] is None:
+            time.sleep(0.05)
+        time.sleep(2)  # past the 1s code timeout
+        registry.answer(task.id, "BRCA1")
+
+    threading.Thread(target=reply_when_asked, daemon=True).start()
+    texts = []
+    try:
+        answer = biomni_runner._drive_agent(agent, "Design primers", task.id, None, texts, None)
+    finally:
+        registry.finish(task.id, "")
+    assert answer == "done"
+    trace = "\n".join(texts)
+    assert "The user replied: BRCA1" in trace
+    assert "timed out" not in trace
+
+
+def test_format_nudge_tells_the_model_about_ask_user(monkeypatch):
+    biomni_runner._patch_sampling_params()
+    from langchain_anthropic import ChatAnthropic
+
+    llm = ChatAnthropic(model="anthropic.claude-haiku-4-5", api_key="unused")
+    monkeypatch.setattr(biomni_runner, "_run_effort", (llm, None))
+    messages = [
+        HumanMessage("task"),
+        AIMessage("no tags here"),
+        HumanMessage(biomni_runner.BIOMNI_FORMAT_NUDGE + " followed by either <execute> or <solution> tag."),
+    ]
+    sent = llm._get_request_payload(messages)["messages"]
+    assert sent[-1]["role"] == "user"
+    last_text = sent[-1]["content"] if isinstance(sent[-1]["content"], str) else sent[-1]["content"][-1]["text"]
+    assert last_text == biomni_runner.FORMAT_NUDGE
+    assert "ask_user" in last_text
+
+
+def test_user_is_asked_after_two_replies_biomni_cannot_use(tmp_path, run_user):
+    """An empty reply gets the nudge; a second one makes the app ask the user,
+    and their answer goes back to the model."""
+    import threading
+    import time
+
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+    from app.services.tasks import registry
+
+    biomni_runner._patch_run_python_repl()
+    biomni_runner._patch_run_with_timeout()
+    biomni_runner._patch_sampling_params()
+    biomni_runner._hide_unusable_tools()
+    biomni_runner._patch_cognito_client()
+    from biomni.agent import A1
+
+    agent = A1(
+        path=str(tmp_path),
+        llm="anthropic.claude-haiku-4-5",
+        source="Anthropic",
+        use_tool_retriever=False,
+        expected_data_lake_files=[],
+    )
+    agent.llm = FakeMessagesListChatModel(responses=[
+        AIMessage(""),
+        AIMessage(""),
+        AIMessage("<solution>done</solution>"),
+    ])
+    biomni_runner._ask_when_stuck(agent.llm)
+    task = registry.create("Do the thing")
+    registry.mark_running(task.id)
+    asked = []
+
+    def reply_when_asked():
+        while registry.get(task.id)["question"] is None:
+            time.sleep(0.05)
+        asked.append(registry.get(task.id)["question"])
+        registry.answer(task.id, "use TP53")
+
+    threading.Thread(target=reply_when_asked, daemon=True).start()
+    texts = []
+    try:
+        answer = biomni_runner._drive_agent(agent, "Do the thing", task.id, None, texts, None)
+    finally:
+        registry.finish(task.id, "")
+    assert answer == "done"
+    assert asked == [biomni_runner.STUCK_QUESTION]
+    assert "The user replied: use TP53" in "\n".join(texts)
+
+
 def test_usage_is_counted_per_stage():
     biomni_runner._run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
     biomni_runner._stage_usage.clear()

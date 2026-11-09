@@ -2,8 +2,20 @@
 user stopped it."""
 import json
 
+import pytest
+
 from app.services import biomni_runner
 from app.services.tasks import registry
+
+
+@pytest.fixture
+def running_task():
+    """A task in the running state, finished afterwards: a task left running
+    blocks other tests, such as Settings maintenance."""
+    task = registry.create("a prompt")
+    registry.mark_running(task.id)
+    yield task
+    registry.finish(task.id, "")
 
 
 def _stream_events(client, task_id):
@@ -41,3 +53,39 @@ def test_stream_does_not_mark_an_ordinary_failure_as_cancelled(client, signed_in
     registry.fail(task.id, "it broke")
     final_event = _stream_events(client, task.id)[-1]
     assert final_event["cancelled"] is False
+
+
+def test_a_reply_reaches_the_waiting_run(client, signed_in, token, running_task):
+    task = running_task
+    registry.ask(task.id, "Which gene?")
+    assert registry.get(task.id)["question"] == "Which gene?"
+
+    response = client.post(f"/api/tasks/{task.id}/answer", json={"text": " TP53 "}, headers=token)
+    assert response.status_code == 200
+    assert registry.wait_for_answer(task.id) == "TP53"
+    assert registry.get(task.id)["question"] is None
+
+    kinds = []
+    for step in registry.get(task.id)["steps"]:
+        kinds.append(step["kind"])
+    assert kinds == ["question", "answer"]
+
+
+def test_a_reply_is_refused_when_nothing_was_asked(client, signed_in, token, running_task):
+    task = running_task
+    response = client.post(f"/api/tasks/{task.id}/answer", json={"text": "TP53"}, headers=token)
+    assert response.status_code == 409
+    registry.ask(task.id, "Which gene?")
+    response = client.post(f"/api/tasks/{task.id}/answer", json={"text": "  "}, headers=token)
+    assert response.status_code == 400
+
+
+def test_stop_ends_the_wait_for_a_reply(running_task):
+    import threading
+
+    task = running_task
+    registry.ask(task.id, "Which gene?")
+    threading.Timer(0.2, registry.request_cancel, args=[task.id]).start()
+    with pytest.raises(RuntimeError, match="stopped by user"):
+        registry.wait_for_answer(task.id)
+    assert registry.get(task.id)["question"] is None

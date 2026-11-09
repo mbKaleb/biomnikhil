@@ -527,6 +527,18 @@ def cancel_task(task_id: str):
     return jsonify(ok=True), 202
 
 
+@bp.post("/tasks/<task_id>/answer")
+def answer_task(task_id: str):
+    """The user's reply to the question a run is waiting on (ask_user)."""
+    body = request.get_json(silent=True) or {}
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return jsonify(error="empty answer"), 400
+    if not registry.answer(task_id, text.strip()):
+        return jsonify(error="this run isn't waiting for an answer"), 409
+    return jsonify(ok=True)
+
+
 _SCRIPTABLE_EXTS = {"html", "htm", "xhtml", "svg", "svgz", "xml", "xsl", "js", "mjs"}
 
 
