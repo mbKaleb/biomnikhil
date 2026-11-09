@@ -485,6 +485,18 @@ def rewind_chat(chat_id: str):
     return jsonify(ok=True, deleted=deleted)
 
 
+@bp.post("/chats/<chat_id>/fork")
+def fork_chat(chat_id: str):
+    """Copy a chat so it can continue with different workflow settings.
+    Refuses while a task is active, since the copy would stop mid-run."""
+    if registry.active_for_chat(chat_id):
+        return jsonify(error="a task is still running in this chat — stop it first"), 409
+    fork = chat_store.fork_chat(chat_id)
+    if fork is None:
+        return jsonify(error="unknown chat"), 404
+    return jsonify(chat=fork), 201
+
+
 @bp.get("/files")
 def list_files():
     Config.UPLOAD_PATH.mkdir(parents=True, exist_ok=True)

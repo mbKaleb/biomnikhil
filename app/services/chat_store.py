@@ -126,6 +126,33 @@ def rewind_chat(chat_id: str, from_message_id: int) -> int:
     return cur.rowcount
 
 
+def fork_chat(chat_id: str) -> dict | None:
+    """Copy a chat and all its messages into a new chat, leaving the original
+    untouched. Output files aren't duplicated: the copied messages point at
+    the same run folders. Returns the new chat, or None for an unknown id."""
+    now = time.time()
+    fork_id = uuid.uuid4().hex[:12]
+    with _lock:
+        source = _db().execute(
+            "SELECT title FROM chats WHERE id = ?", (chat_id,)
+        ).fetchone()
+        if source is None:
+            return None
+        title = f"{source['title']} (fork)"
+        _db().execute(
+            "INSERT INTO chats (id, title, created, updated) VALUES (?, ?, ?, ?)",
+            (fork_id, title, now, now),
+        )
+        _db().execute(
+            "INSERT INTO messages (chat_id, role, content, files, created)"
+            " SELECT ?, role, content, files, created FROM messages"
+            " WHERE chat_id = ? ORDER BY id",
+            (fork_id, chat_id),
+        )
+        _db().commit()
+    return {"id": fork_id, "title": title, "created": now, "updated": now}
+
+
 def add_message(
     chat_id: str, role: str, content: str, files: list[dict] | None = None
 ) -> bool:
