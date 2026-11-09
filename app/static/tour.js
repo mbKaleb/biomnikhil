@@ -13,11 +13,12 @@ const TOUR_STAGES = [
   { selector: '[data-feature="review"]', title: "Review answer", text: "Another agent tries to prove the answer wrong." },
 ];
 const TOUR_TABS = [
-  { selector: '.tabs button[data-tab="task"]', title: "Task", text: `Your chat with the agent. ${tabKeyPrefix}1 to ${tabKeyPrefix}5 switch tabs.` },
-  { selector: '.tabs button[data-tab="outputs"]', title: "Outputs", text: "Files the agent made in this chat." },
-  { selector: '.tabs button[data-tab="citations"]', title: "Citations", text: "Sources the agent saw or cited." },
-  { selector: '.tabs button[data-tab="viewer"]', title: "Viewer", text: "Opens webpages the agent built." },
-  { selector: '.tabs button[data-tab="taskspend"]', title: "Spending", text: "What this chat has cost." },
+  { selector: '.tabs button[data-tab="task"]', title: `Task (${tabKeyPrefix}1)`, text: "Your chat with the agent." },
+  { selector: '.tabs button[data-tab="attachments"]', title: `Files (${tabKeyPrefix}2)`, text: "Files attached to this chat. Locked once a task is sent." },
+  { selector: '.tabs button[data-tab="outputs"]', title: `Outputs (${tabKeyPrefix}3)`, text: "Files the agent made in this chat." },
+  { selector: '.tabs button[data-tab="citations"]', title: `Citations (${tabKeyPrefix}4)`, text: "Sources the agent saw or cited." },
+  { selector: '.tabs button[data-tab="viewer"]', title: `Viewer (${tabKeyPrefix}5)`, text: "Opens webpages the agent built." },
+  { selector: '.tabs button[data-tab="taskspend"]', title: `Spending (${tabKeyPrefix}6)`, text: "What this chat has cost." },
 ];
 const TOUR_HEADER_STEPS = [
   { id: "files-btn", title: "User files", text: "Upload files the agent can read and use." },
@@ -25,7 +26,7 @@ const TOUR_HEADER_STEPS = [
   { id: "account-spend-btn", title: "Account spending", text: "AWS costs by day and by service." },
   { id: "user-link", title: "Settings", text: "Version, updates, setup and cleanup." },
 ];
-const TOUR_TRACE = { id: "trace-btn", title: "Agent trace", text: "Watch the agent's steps live as it works." };
+const TOUR_TRACE = { id: "trace-btn", title: "Agent trace", text: `Watch the agent's steps live as it works (${traceKeyLabel}).` };
 const TOUR_MENU = { id: "menu-btn", title: "Chats", text: "Switch or start chats (⌘B)." };
 const TOUR_HELP = { id: "help-btn", title: "See this again", text: "Click ? any time to replay this tour." };
 const TOUR_RADIUS = 12;

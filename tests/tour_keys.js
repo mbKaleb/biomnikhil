@@ -86,6 +86,7 @@ const page = {
     disconnect() {}
   },
   tabKeyPrefix: "⌘",
+  traceKeyLabel: "⌘J",
   closeSidebar() {},
   activateTab() {},
 };
