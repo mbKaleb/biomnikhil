@@ -15,7 +15,9 @@ from werkzeug.utils import secure_filename
 
 from .. import auth
 from ..config import Config
-from ..services import biomni_runner, chat_store, citations, datalake, maintenance, settings, spending, workflow
+from ..services import (
+    biomni_runner, chat_store, citations, datalake, leads, maintenance, settings, spending, workflow,
+)
 from ..services.tasks import registry
 
 bp = Blueprint("api", __name__)
@@ -744,3 +746,44 @@ def stream_task(task_id: str):
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@bp.get("/leads")
+def list_leads_route():
+    """Every lead on the Leads board; see services/leads.py."""
+    return jsonify(leads=leads.list_leads())
+
+
+@bp.post("/leads")
+def create_lead_route():
+    body = request.get_json(silent=True) or {}
+    try:
+        lead, created = leads.create_lead(
+            title=body.get("title"),
+            evidence=body.get("evidence"),
+            chat_id=body.get("chat_id"),
+            notes=body.get("notes"),
+            next_experiment=body.get("next_experiment"),
+        )
+    except leads.LeadError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(lead=lead), 201 if created else 200
+
+
+@bp.patch("/leads/<lead_id>")
+def update_lead_route(lead_id: str):
+    body = request.get_json(silent=True) or {}
+    try:
+        lead = leads.update_lead(lead_id, body)
+    except leads.LeadError as exc:
+        return jsonify(error=str(exc)), 400
+    if lead is None:
+        return jsonify(error="unknown lead"), 404
+    return jsonify(lead=lead)
+
+
+@bp.delete("/leads/<lead_id>")
+def delete_lead_route(lead_id: str):
+    if not leads.delete_lead(lead_id):
+        return jsonify(error="unknown lead"), 404
+    return "", 204

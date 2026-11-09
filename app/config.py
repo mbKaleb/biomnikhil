@@ -58,6 +58,9 @@ class Config:
     CHAT_DB: Path = Path(
         _env("BIOMNI_CHAT_DB", str(_DATA_ROOT / "user" / "chats.db"))
     ).resolve()
+    # The leads board, beside the chat history; its own file, so deleting a
+    # chat never deletes a lead.
+    LEADS_DB: Path = CHAT_DB.with_name("leads.db")
 
     # Files the agent generates during a run (reports, CSVs, plots) — each
     # task gets its own subfolder, named by task id, so outputs from
