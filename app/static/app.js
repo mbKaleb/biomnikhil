@@ -491,37 +491,128 @@ function setChatName(name) {
 }
 
 // ---- sidebar open/close ----
+let focusBeforeSidebar = null;
+
 function openSidebar() {
   sidebar.classList.add("open");
   backdrop.classList.add("show");
+  // Leave the composer, so the number keys pick a chat instead of typing.
+  focusBeforeSidebar = document.activeElement;
+  document.activeElement?.blur();
   refreshChats();
 }
 function closeSidebar() {
   sidebar.classList.remove("open");
   backdrop.classList.remove("show");
+  // Back to where the user was, unless closing already moved focus somewhere new.
+  const focusIsLost = document.activeElement === document.body || sidebar.contains(document.activeElement);
+  if (focusIsLost) focusBeforeSidebar?.focus();
+  focusBeforeSidebar = null;
 }
 menuBtn.addEventListener("click", () =>
   sidebar.classList.contains("open") ? closeSidebar() : openSidebar()
 );
 backdrop.addEventListener("click", closeSidebar);
 document.getElementById("close-sidebar").addEventListener("click", closeSidebar);
+
+// ---- sidebar resize (width remembered across reloads) ----
+const SIDEBAR_WIDTH_KEY = "sidebarWidth";
+const SIDEBAR_MIN = 240;
+const SIDEBAR_MAX = 640;
+function setSidebarWidth(px) {
+  // The default width is half the window, so dragging must be able to reach it.
+  const largest = Math.max(SIDEBAR_MAX, window.innerWidth / 2);
+  const clamped = Math.min(largest, Math.max(SIDEBAR_MIN, px));
+  document.documentElement.style.setProperty("--sidebar-w", clamped + "px");
+  return clamped;
+}
+try {
+  const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  if (saved) setSidebarWidth(saved);
+} catch (_) {}
+const resizeHandle = document.getElementById("sidebar-resize");
+resizeHandle.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  resizeHandle.setPointerCapture(e.pointerId);
+  document.body.classList.add("resizing-sidebar");
+});
+resizeHandle.addEventListener("pointermove", (e) => {
+  if (!resizeHandle.hasPointerCapture(e.pointerId)) return;
+  setSidebarWidth(e.clientX);
+});
+resizeHandle.addEventListener("pointerup", (e) => {
+  document.body.classList.remove("resizing-sidebar");
+  const width = Math.round(sidebar.getBoundingClientRect().width);
+  try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)); } catch (_) {}
+});
+
+// Show the shortcut that matches this platform (Cmd+B on Mac, Alt+B elsewhere).
+const toggleKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Alt+B";
+document.querySelector(".toggle-hint").textContent = toggleKeyLabel;
+menuBtn.title = `Chats (${toggleKeyLabel})`;
+// A dialog or the tour on top of the sidebar keeps the keyboard to itself.
+function sidebarIsCovered() {
+  if (confirmModalEl.classList.contains("show")) return true;
+  if (previewModal.classList.contains("show")) return true;
+  return document.getElementById("tour") !== null;
+}
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeSidebar();
+  if (sidebarIsCovered()) return;
+  // Chat rename uses Esc to cancel, so the sidebar stays open for that one.
+  if (e.key === "Escape" && e.target.tagName !== "INPUT") closeSidebar();
+  // Cmd+B on a Mac, Alt+B on Windows. e.code, because Alt+B types a symbol on a Mac.
+  const isToggleKey = e.code === "KeyB" && (e.metaKey || e.altKey) && !e.ctrlKey && !e.shiftKey;
+  if (isToggleKey) {
+    e.preventDefault();
+    sidebar.classList.contains("open") ? closeSidebar() : openSidebar();
+  }
+  // With the sidebar open, N starts a new chat and 1-9 opens that chat, newest first.
+  const isTyping = e.target.matches?.("input, textarea, [contenteditable]");
+  const hasModifier = e.metaKey || e.altKey || e.ctrlKey;
+  if (sidebar.classList.contains("open") && !isTyping && !hasModifier && !e.repeat) {
+    if (e.key === "n" || e.key === "N") newChatBtn.click();
+    if (/^[1-9]$/.test(e.key)) {
+      const chatId = chatShortcutIds[Number(e.key) - 1];
+      if (chatId) selectChat(chatId);
+    }
+  }
 });
 
 // ---- chat list ----
+const CHAT_SHORTCUT_COUNT = 9;
+let chatShortcutIds = [];
+
 async function refreshChats() {
   try {
     const res = await fetch("/api/chats");
     if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
     const { chats } = await res.json();
     chatListEl.innerHTML = "";
+    chatShortcutIds = [];
     if (!chats || chats.length === 0) {
       chatListEl.innerHTML = '<li class="empty">No chats yet</li>';
       return;
     }
+    let currentGroup = null;
     for (const chat of chats) {
-      chatListEl.appendChild(chatRow(chat));
+      const group = chatDateGroup(chat.updated);
+      if (group !== currentGroup) {
+        currentGroup = group;
+        const heading = document.createElement("li");
+        heading.className = "chat-group";
+        heading.textContent = group;
+        chatListEl.appendChild(heading);
+      }
+      const row = chatRow(chat);
+      if (chatShortcutIds.length < CHAT_SHORTCUT_COUNT) {
+        chatShortcutIds.push(chat.id);
+        const key = document.createElement("kbd");
+        key.className = "chat-key";
+        key.setAttribute("aria-hidden", "true");
+        key.textContent = chatShortcutIds.length;
+        row.querySelector(".chat-meta").after(key);
+      }
+      chatListEl.appendChild(row);
       if (chat.id === currentChatId) setChatName(chat.title);
     }
   } catch (err) {
@@ -531,6 +622,7 @@ async function refreshChats() {
     const detail = err instanceof TypeError
       ? "can't reach the server — is it still running?"
       : err.message || String(err);
+    chatShortcutIds = [];
     chatListEl.innerHTML = `<li class="empty">Could not load chats: ${detail}</li>`;
   }
 }
@@ -544,9 +636,23 @@ function relativeTime(ts) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+// Chats arrive newest first, so each group only needs a heading where it starts.
+function chatDateGroup(ts) {
+  const startOfToday = new Date().setHours(0, 0, 0, 0) / 1000;
+  if (ts >= startOfToday) return "Today";
+  if (ts >= startOfToday - 86400) return "Yesterday";
+  if (ts >= startOfToday - 86400 * 7) return "Previous 7 days";
+  if (ts >= startOfToday - 86400 * 30) return "Previous 30 days";
+  return "Older";
+}
+
 function chatRow(chat) {
   const li = document.createElement("li");
-  if (chat.id === currentChatId) li.classList.add("active");
+  li.tabIndex = 0;
+  if (chat.id === currentChatId) {
+    li.classList.add("active");
+    li.setAttribute("aria-current", "true");
+  }
 
   const meta = document.createElement("span");
   meta.className = "chat-meta";
@@ -563,19 +669,19 @@ function chatRow(chat) {
   actions.className = "chat-actions";
 
   const renameBtn = document.createElement("button");
-  renameBtn.replaceChildren(faIcon("pen"));
-  renameBtn.title = "Rename";
+  renameBtn.textContent = "Rename";
   renameBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     startRename(li, chat, meta);
   });
 
   const deleteBtn = document.createElement("button");
-  deleteBtn.replaceChildren(faIcon("trash"));
-  deleteBtn.title = "Delete";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.className = "chat-delete";
   deleteBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    if (!confirm(`Delete "${chat.title}"?`)) return;
+    const confirmed = await confirmModal(`Delete "${chat.title}"?`, { title: "Delete chat?" });
+    if (!confirmed) return;
     await fetch(`/api/chats/${chat.id}`, { method: "DELETE" });
     if (chat.id === currentChatId) startNewChat();
     refreshChats();
@@ -584,6 +690,9 @@ function chatRow(chat) {
   actions.append(renameBtn, deleteBtn);
   li.append(meta, actions);
   li.addEventListener("click", () => selectChat(chat.id));
+  li.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target === li) selectChat(chat.id);
+  });
   return li;
 }
 
@@ -591,9 +700,14 @@ function startRename(li, chat, metaEl) {
   const input = document.createElement("input");
   input.value = chat.title;
   li.replaceChild(input, metaEl);
+  li.classList.add("renaming");
   input.focus();
   input.select();
+  let finished = false;
   const done = async (save) => {
+    // Rebuilding the list blurs the input, which would otherwise save a cancelled edit.
+    if (finished) return;
+    finished = true;
     const title = input.value.trim();
     if (save && title && title !== chat.title) {
       await fetch(`/api/chats/${chat.id}`, {
