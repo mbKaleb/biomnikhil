@@ -882,12 +882,16 @@ def submit(
     user: auth.User | None = None,
     attached: list[str] | None = None,
     features: dict[str, bool] | None = None,
+    earlier_messages: list[dict] | None = None,
+    chat_model: dict | None = None,
 ) -> str:
     """Queue a prompt for the agent; returns a task id immediately. When a
     chat_id is given, the final answer (or error) is appended to that chat.
     `user` is the signed-in user whose credentials the run's model calls
     are signed with. `attached` holds the paths of the files attached to
-    this message. `features` says which workflow stages are on."""
+    this message. `features` says which workflow stages are on.
+    `earlier_messages` is the chat so far, and `chat_model` the {model, effort}
+    this chat runs on."""
     # The id comes first because the input folder is named after it, and the
     # listing has to be in the task's prompt, so it's added once they exist.
     task = registry.create(prompt, chat_id=chat_id)
@@ -904,6 +908,7 @@ def submit(
     lab_context = workflow.read_lab_context() if features["context"] else ""
     prompt_with_hint = (
         prompt
+        + workflow.conversation_note(earlier_messages or [])
         + workflow.lab_context_note(lab_context)
         + hints.build_hints(prompt)
         + ASK_USER_NOTE
@@ -915,7 +920,7 @@ def submit(
 
     thread = threading.Thread(
         target=_run,
-        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir, user, features, links, lab_context),
+        args=(task.id, prompt_with_hint, chat_id, user_prompt, output_dir, user, features, links, lab_context, chat_model),
         daemon=True,
     )
     thread.start()
@@ -961,6 +966,7 @@ def _run(
     features: dict[str, bool] | None = None,
     input_files: list[Path] | None = None,
     lab_context: str = "",
+    chat_model: dict | None = None,
 ) -> None:
     from . import chat_store
 
@@ -1001,6 +1007,11 @@ def _run(
         auth.set_run_user(user)
         _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
         _stage_usage.clear()
+        # Set here, holding the slot, so a queued run can't switch a live one.
+        if chat_model:
+            if chat_model["model"]:
+                set_model(chat_model["model"])
+            set_effort(chat_model["effort"])
         # Both stay fixed for the whole run, even if the UI changes them mid-way.
         run_model = _current_model
         run_effort = _current_effort

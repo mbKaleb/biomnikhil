@@ -67,8 +67,22 @@ def chat():
     # Attach the run to a chat: use the given one, or start a new chat titled
     # from the prompt so history always has a home.
     chat_id = (body.get("chat_id") or "").strip() or None
-    if chat_id and chat_store.get_chat(chat_id) is None:
-        return jsonify(error="unknown chat"), 404
+    earlier_messages = []
+    if chat_id:
+        existing_chat = chat_store.get_chat(chat_id)
+        if existing_chat is None:
+            return jsonify(error="unknown chat"), 404
+        earlier_messages = existing_chat["messages"]
+
+    from ..providers import EFFORTS
+
+    effort = (body.get("effort") or "").strip()
+    if effort and effort not in EFFORTS:
+        return jsonify(error=f"effort must be one of {', '.join(EFFORTS)}"), 400
+    chat_model = None
+    if "model" in body:
+        chat_model = {"model": (body.get("model") or "").strip(), "effort": effort}
+
     if chat_id is None:
         title = display_prompt[:60] + ("…" if len(display_prompt) > 60 else "")
         chat_id = chat_store.create_chat(title)["id"]
@@ -76,7 +90,8 @@ def chat():
 
     task_id = biomni_runner.submit(
         prompt, chat_id=chat_id, user=auth.current_user(), attached=attached,
-        features=body.get("features"),
+        features=body.get("features"), earlier_messages=earlier_messages,
+        chat_model=chat_model,
     )
     return jsonify(task_id=task_id, chat_id=chat_id), 202
 

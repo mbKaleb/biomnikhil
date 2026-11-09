@@ -18,6 +18,8 @@ from ..config import Config
 
 FEATURE_NAMES = ("context", "preprocess", "assay", "review")
 MAX_LAB_CONTEXT_CHARS = 20_000
+MAX_HISTORY_CHARS = 30_000
+MAX_HISTORY_MESSAGE_CHARS = 6_000
 MAX_CONDENSE_SOURCE_CHARS = 300_000
 CONDENSE_TARGET_CHARS = 15_000
 CONDENSE_MAX_TOKENS = 8_000
@@ -136,6 +138,48 @@ def lab_context_note(lab_context: str) -> str:
         "\n\nThis lab's saved context follows. Use it as background on how "
         "this lab works. If the request conflicts with it, follow the request "
         f"and say so.\n<lab_context>\n{lab_context}\n</lab_context>"
+    )
+
+
+def _conversation_entry(message: dict) -> str:
+    speaker = "User" if message["role"] == "user" else "Agent"
+    content = message["content"]
+    if len(content) > MAX_HISTORY_MESSAGE_CHARS:
+        content = content[:MAX_HISTORY_MESSAGE_CHARS] + " [cut off here]"
+    entry = f"{speaker}: {content}"
+    for output_file in message.get("files") or []:
+        if not isinstance(output_file, dict) or not output_file.get("task_id"):
+            continue  # older chats stored bare names, with no way to find them
+        relative_path = output_file.get("path") or output_file.get("name") or ""
+        full_path = Config.OUTPUT_PATH / output_file["task_id"] / relative_path
+        entry += f"\nOutput file: {full_path}"
+    return entry
+
+
+def conversation_note(messages: list[dict]) -> str:
+    """The chat so far, for the agent's prompt: what was said and which files
+    came out of it, newest kept first when it won't all fit. Traces and failed
+    runs are left out."""
+    entries = []
+    chars_used = 0
+    for message in reversed(messages):
+        if message["role"] not in ("user", "assistant"):
+            continue
+        if message["content"].startswith("[error]"):
+            continue
+        entry = _conversation_entry(message)
+        chars_used += len(entry)
+        if chars_used > MAX_HISTORY_CHARS:
+            break
+        entries.append(entry)
+    if not entries:
+        return ""
+    entries.reverse()
+    conversation = "\n\n".join(entries)
+    return (
+        "\n\nThis request continues an earlier conversation, shown below. "
+        "Use it as context, and reuse its output files where that helps."
+        f"\n<earlier_conversation>\n{conversation}\n</earlier_conversation>"
     )
 
 
