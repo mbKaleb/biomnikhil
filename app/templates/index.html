@@ -832,9 +832,21 @@
       background: transparent; border: 1px solid #35507f; color: #a9bce0;
     }
     .spend-message .refresh:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .spend-footnote { color: #7c90b4; font-size: .76rem; margin: .9rem 0 0; line-height: 1.5; }
+    #spending-sections { display: flex; flex-direction: column; gap: .9rem; margin-top: .9rem; }
+    #spending-body, #spending-stages { display: contents; }
+    .spend-section { position: relative; }
+    .spend-handle {
+      position: absolute; left: 0; top: 0; z-index: 1; width: 1.5rem; height: 2rem;
+      margin: 0; padding: 0; background: transparent; border: 0; border-radius: 6px;
+      color: #4d628a; font-size: .9rem; letter-spacing: -.15em; cursor: grab; touch-action: none;
+    }
+    .spend-handle:hover, .spend-handle:focus-visible { color: #dbe4f3; background: #1a2946; }
+    .spend-section.dragging { opacity: .75; box-shadow: 0 0 0 1px #5b7fe8; }
+    .spend-section.dragging .spend-handle { cursor: grabbing; }
     .spend-tiles {
       display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: .9rem; margin-top: .9rem;
+      gap: .9rem; padding-left: 1.6rem;
     }
     .spend-tile {
       padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
@@ -846,9 +858,10 @@
     .spend-tile .note { color: #7c90b4; font-size: .76rem; }
     .spend-tiles .hero { grid-column: 1 / -1; }
     .spend-card {
-      margin-top: .9rem; padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
+      padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
       background: linear-gradient(180deg, #111c33, #0e1729);
     }
+    .spend-card.spend-section { padding-left: 1.8rem; }
     .spend-card h2 { font-size: .95rem; margin: 0; font-weight: 600; }
     .spend-card .note { color: #7c90b4; font-size: .76rem; margin: .1rem 0 .7rem; }
     .spend-plot { position: relative; display: flex; height: 180px; padding-left: 3.4rem; }
@@ -1371,7 +1384,15 @@
          GET /api/spending. -->
     <section id="tab-spending" class="panel">
       <div id="spending-summary"></div>
-      <div id="spending-body"></div>
+      <div id="spending-sections">
+        <div id="spending-body"></div>
+      </div>
+      <p class="spend-footnote">
+        How fresh is this? AWS Cost Explorer updates its data up to three times a day,
+        so figures can lag real usage by up to a day, and the most recent day is
+        always incomplete. This page keeps its own copy for a while, so
+        "fetched" shows when we last asked AWS, not when AWS last updated.
+      </p>
     </section>
 
     <!-- Settings: the signed-in user, updates, and setup/cleanup. Filled in by

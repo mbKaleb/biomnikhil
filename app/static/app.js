@@ -3214,6 +3214,96 @@ const spendingBodyEl = document.getElementById("spending-body");
 let spendingLoaded = false; // real figures are on screen
 let spendingRequest = 0; // bumped per action, so a slow fetch can't overwrite a newer one
 
+// Sections on this tab can be dragged into a new order by their handle on the
+// left (or moved with the arrow keys). The order is remembered per browser.
+const SPENDING_SECTION_IDS = ["tiles", "daily", "services"];
+const SPENDING_ORDER_KEY = "spending-section-order";
+const spendingTabEl = document.getElementById("spending-sections");
+
+function loadSpendingOrder() {
+  let saved = [];
+  try {
+    saved = JSON.parse(localStorage.getItem(SPENDING_ORDER_KEY)) || [];
+  } catch (err) {
+    saved = [];
+  }
+  const order = [];
+  for (const id of saved) {
+    if (SPENDING_SECTION_IDS.includes(id) && !order.includes(id)) order.push(id);
+  }
+  for (const id of SPENDING_SECTION_IDS) {
+    if (!order.includes(id)) order.push(id);
+  }
+  return order;
+}
+
+let spendingOrder = loadSpendingOrder();
+
+function applySpendingOrder() {
+  for (const section of spendingTabEl.querySelectorAll("[data-section]")) {
+    section.style.order = spendingOrder.indexOf(section.dataset.section);
+  }
+}
+
+function saveSpendingOrder() {
+  try {
+    localStorage.setItem(SPENDING_ORDER_KEY, JSON.stringify(spendingOrder));
+  } catch (err) {
+    // Private mode or blocked storage: the order just won't be remembered.
+  }
+}
+
+function moveSpendingSection(id, newIndex) {
+  const clamped = Math.max(0, Math.min(spendingOrder.length - 1, newIndex));
+  spendingOrder = spendingOrder.filter((other) => other !== id);
+  spendingOrder.splice(clamped, 0, id);
+  applySpendingOrder();
+}
+
+function makeSpendingSectionDraggable(section, id) {
+  section.dataset.section = id;
+  section.classList.add("spend-section");
+  const handle = el("button", "spend-handle", "⋮⋮");
+  handle.type = "button";
+  handle.title = "Drag to reorder";
+  handle.setAttribute("aria-label", `Reorder ${id}: drag, or use the up and down arrow keys`);
+
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    section.classList.add("dragging");
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!section.classList.contains("dragging")) return;
+    for (const other of spendingTabEl.querySelectorAll("[data-section]")) {
+      if (other === section) continue;
+      const box = other.getBoundingClientRect();
+      if (event.clientY >= box.top && event.clientY <= box.bottom) {
+        moveSpendingSection(id, spendingOrder.indexOf(other.dataset.section));
+        break;
+      }
+    }
+  });
+  const stopDragging = () => {
+    if (!section.classList.contains("dragging")) return;
+    section.classList.remove("dragging");
+    saveSpendingOrder();
+  };
+  handle.addEventListener("pointerup", stopDragging);
+  handle.addEventListener("pointercancel", stopDragging);
+  handle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const step = event.key === "ArrowUp" ? -1 : 1;
+    moveSpendingSection(id, spendingOrder.indexOf(id) + step);
+    saveSpendingOrder();
+    handle.focus();
+  });
+
+  section.prepend(handle);
+  return section;
+}
+
 function formatMoney(amount, currency) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(amount);
 }
@@ -3411,10 +3501,11 @@ function renderSpending(data, isExample = false) {
     spendingTile("Last month", money(data.previous_month), "Full month"),
   );
   spendingBodyEl.replaceChildren(
-    tiles,
-    spendingDailyCard(data.daily, data.currency),
-    spendingServicesCard(data.services, data.currency),
+    makeSpendingSectionDraggable(tiles, "tiles"),
+    makeSpendingSectionDraggable(spendingDailyCard(data.daily, data.currency), "daily"),
+    makeSpendingSectionDraggable(spendingServicesCard(data.services, data.currency), "services"),
   );
+  applySpendingOrder();
 }
 
 async function refreshSpending(force = false) {
