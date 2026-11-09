@@ -46,6 +46,12 @@ const dropzone = document.getElementById("dropzone");
 const uploadStatus = document.getElementById("upload-status");
 const fileList = document.getElementById("file-list");
 const attachAllBtn = document.getElementById("attach-all");
+const attachmentBadgeEl = document.getElementById("attachment-count-badge");
+const attachmentChipsEl = document.getElementById("attachment-chips");
+const attachmentsEmptyEl = document.getElementById("attachments-empty");
+const attachmentsLockedNote = document.getElementById("attachments-locked-note");
+const attachmentsChooseBtn = document.getElementById("attachments-choose");
+const uploadHintEl = document.getElementById("upload-hint");
 const fileSearchEl = document.getElementById("file-search");
 const fileSortEl = document.getElementById("file-sort");
 const fileCountEl = document.getElementById("file-count");
@@ -541,6 +547,7 @@ function openSidebar() {
   refreshChats();
 }
 function closeSidebar() {
+  closeChatMenu();
   sidebar.classList.remove("open");
   backdrop.classList.remove("show");
   // Back to where the user was, unless closing already moved focus somewhere new.
@@ -589,6 +596,10 @@ resizeHandle.addEventListener("pointerup", (e) => {
 const toggleKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Alt+B";
 document.querySelector(".toggle-hint").textContent = toggleKeyLabel;
 menuBtn.title = `Chats (${toggleKeyLabel})`;
+const newChatKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘N" : "Alt+N";
+const headerNewChatBtn = document.getElementById("header-new-chat");
+headerNewChatBtn.title = `New chat (${newChatKeyLabel})`;
+headerNewChatBtn.addEventListener("click", () => newChatBtn.click());
 // A dialog or the tour on top of the sidebar keeps the keyboard to itself.
 function sidebarIsCovered() {
   if (confirmModalEl.classList.contains("show")) return true;
@@ -597,6 +608,11 @@ function sidebarIsCovered() {
 }
 document.addEventListener("keydown", (e) => {
   if (sidebarIsCovered()) return;
+  // Esc peels off the row menu first, leaving the sidebar open.
+  if (e.key === "Escape" && chatMenu) {
+    closeChatMenu({ returnFocus: true });
+    return;
+  }
   // Chat rename uses Esc to cancel, so the sidebar stays open for that one.
   if (e.key === "Escape" && e.target.tagName !== "INPUT") closeSidebar();
   // Cmd+B on a Mac, Alt+B on Windows. e.code, because Alt+B types a symbol on a Mac.
@@ -604,6 +620,12 @@ document.addEventListener("keydown", (e) => {
   if (isToggleKey) {
     e.preventDefault();
     sidebar.classList.contains("open") ? closeSidebar() : openSidebar();
+  }
+  // Cmd+N on a Mac, Alt+N on Windows, from anywhere.
+  const isNewChatKey = e.code === "KeyN" && (e.metaKey || e.altKey) && !e.ctrlKey && !e.shiftKey;
+  if (isNewChatKey && !e.repeat) {
+    e.preventDefault();
+    newChatBtn.click();
   }
   // With the sidebar open, N starts a new chat and 1-9 opens that chat, newest first.
   const isTyping = e.target.matches?.("input, textarea, [contenteditable]");
@@ -626,6 +648,8 @@ async function refreshChats() {
     const res = await fetch("/api/chats");
     if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
     const { chats } = await res.json();
+    // The rows are about to be rebuilt, and the menu belongs to one of them.
+    closeChatMenu();
     chatListEl.innerHTML = "";
     chatShortcutIds = [];
     if (!chats || chats.length === 0) {
@@ -704,36 +728,99 @@ function chatRow(chat) {
   time.textContent = relativeTime(chat.updated);
   meta.append(title, time);
 
-  const actions = document.createElement("span");
-  actions.className = "chat-actions";
-
-  const renameBtn = document.createElement("button");
-  renameBtn.textContent = "Rename";
-  renameBtn.addEventListener("click", (e) => {
+  const moreBtn = document.createElement("button");
+  moreBtn.className = "chat-more";
+  moreBtn.title = "More options";
+  moreBtn.setAttribute("aria-label", `More options for ${chat.title}`);
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
+  moreBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    startRename(li, chat, meta);
+    toggleChatMenu(moreBtn, li, chat, meta);
   });
 
-  const deleteBtn = document.createElement("button");
-  deleteBtn.textContent = "Delete";
-  deleteBtn.className = "chat-delete";
-  deleteBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const confirmed = await confirmModal(`Delete "${chat.title}"?`, { title: "Delete chat?" });
-    if (!confirmed) return;
-    await fetch(`/api/chats/${chat.id}`, { method: "DELETE" });
-    if (chat.id === currentChatId) startNewChat();
-    refreshChats();
-  });
-
-  actions.append(renameBtn, deleteBtn);
-  li.append(meta, actions);
+  li.append(meta, moreBtn);
   li.addEventListener("click", () => selectChat(chat.id));
   li.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target === li) selectChat(chat.id);
   });
   return li;
 }
+
+// One row menu at a time: { element, anchor, row }, or null when none is open.
+let chatMenu = null;
+
+function closeChatMenu({ returnFocus = false } = {}) {
+  if (!chatMenu) return;
+  const { element, anchor, row } = chatMenu;
+  chatMenu = null;
+  element.remove();
+  row.classList.remove("menu-open");
+  if (returnFocus) anchor.focus();
+}
+
+function chatMenuItem(label, iconClass, onChoose) {
+  const item = document.createElement("button");
+  item.setAttribute("role", "menuitem");
+  const icon = document.createElement("i");
+  icon.className = `fa-solid ${iconClass}`;
+  item.append(icon, label);
+  item.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeChatMenu();
+    onChoose();
+  });
+  return item;
+}
+
+async function deleteChat(chat) {
+  const confirmed = await confirmModal(`Delete "${chat.title}"?`, { title: "Delete chat?" });
+  if (!confirmed) return;
+  await fetch(`/api/chats/${chat.id}`, { method: "DELETE" });
+  if (chat.id === currentChatId) startNewChat();
+  refreshChats();
+}
+
+// The menu hangs off the sidebar rather than the row, so the scrolling list can't clip it.
+function positionChatMenu(menu, anchor) {
+  const gap = 4;
+  const sidebarBox = sidebar.getBoundingClientRect();
+  const anchorBox = anchor.getBoundingClientRect();
+  const fitsBelow = anchorBox.bottom + gap + menu.offsetHeight <= sidebarBox.bottom;
+  const viewportTop = fitsBelow ? anchorBox.bottom + gap : anchorBox.top - gap - menu.offsetHeight;
+  menu.style.top = `${viewportTop - sidebarBox.top}px`;
+  menu.style.left = `${anchorBox.right - sidebarBox.left - menu.offsetWidth}px`;
+}
+
+function toggleChatMenu(anchor, li, chat, metaEl) {
+  const wasOpenHere = chatMenu !== null && chatMenu.anchor === anchor;
+  closeChatMenu();
+  if (wasOpenHere) return;
+
+  const menu = document.createElement("div");
+  menu.id = "chat-menu";
+  menu.setAttribute("role", "menu");
+  const renameItem = chatMenuItem("Rename", "fa-pen", () => startRename(li, chat, metaEl));
+  const deleteItem = chatMenuItem("Delete", "fa-trash", () => deleteChat(chat));
+  deleteItem.classList.add("chat-delete");
+  menu.append(renameItem, deleteItem);
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  menu.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const nextItem = document.activeElement === renameItem ? deleteItem : renameItem;
+    nextItem.focus();
+  });
+
+  sidebar.appendChild(menu);
+  positionChatMenu(menu, anchor);
+  li.classList.add("menu-open");
+  chatMenu = { element: menu, anchor, row: li };
+  renameItem.focus({ preventScroll: true });
+}
+
+document.addEventListener("click", () => closeChatMenu());
+chatListEl.addEventListener("scroll", () => closeChatMenu());
 
 function startRename(li, chat, metaEl) {
   const input = document.createElement("input");
@@ -1875,18 +1962,9 @@ function toggleAppPanel(name) {
 const tabButtons = document.querySelectorAll(".tabs button[data-tab]");
 const tabKeyPrefix = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
-function addTabKeyHint(button, label) {
-  const hint = document.createElement("kbd");
-  hint.setAttribute("aria-hidden", "true");
-  hint.textContent = label;
-  button.append(hint);
-}
-
-tabButtons.forEach((btn, position) => {
+tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => activateTab(btn.dataset.tab));
-  addTabKeyHint(btn, `${tabKeyPrefix}${position + 1}`);
 });
-addTabKeyHint(document.getElementById("trace-btn"), traceKeyLabel);
 
 // Cmd+1..n (Ctrl on Windows) picks a tab by its position in the bar.
 document.addEventListener("keydown", (e) => {
@@ -1908,6 +1986,7 @@ function attachedKeyFor(chatId) {
 const attached = new Set(); // repopulated by loadAttachedForChat() below
 const MAX_CHIPS_BEFORE_COLLAPSE = 3;
 let attachChipsExpanded = false;
+let attachmentsLocked = false; // same rule as the chat's stages: fixed once a task is sent
 let filesLoaded = false; // until the list arrives, no file can be called missing
 
 function loadAttachedForChat(chatId) {
@@ -1919,6 +1998,21 @@ function loadAttachedForChat(chatId) {
   } catch {
     /* corrupt localStorage entry — start clean */
   }
+  setAttachmentsLocked(chatSettingsAreFixed(chatId));
+  if (allFiles.length) renderFileList();
+}
+
+function setAttachmentsLocked(locked) {
+  attachmentsLocked = locked;
+  const composerAttach = document.getElementById("composer-attach");
+  composerAttach.disabled = locked;
+  composerAttach.title = locked ? "Attachments are locked for this chat" : "Attach files";
+  if (locked) document.getElementById("attach-menu").hidden = true;
+  attachmentsLockedNote.hidden = !locked;
+  attachmentsChooseBtn.hidden = locked;
+  uploadHintEl.textContent = locked
+    ? "This chat's attachments are locked, so uploads are only saved here"
+    : "Uploads are attached to your next task automatically";
   updateAttachHint();
   if (allFiles.length) renderFileList();
 }
@@ -2221,6 +2315,8 @@ function createAttachChip(fileName) {
     chip.appendChild(sizeEl);
   }
 
+  if (attachmentsLocked) return chip;
+
   const removeBtn = document.createElement("button");
   removeBtn.className = "attach-chip-remove";
   removeBtn.title = `Detach ${fileName}`;
@@ -2230,7 +2326,21 @@ function createAttachChip(fileName) {
   return chip;
 }
 
+function renderAttachmentsTab() {
+  attachmentBadgeEl.textContent = attached.size || "";
+  attachmentChipsEl.replaceChildren();
+  attachmentChipsEl.hidden = attached.size === 0;
+  for (const fileName of attached) {
+    attachmentChipsEl.appendChild(createAttachChip(fileName));
+  }
+  attachmentsEmptyEl.hidden = attached.size > 0;
+  attachmentsEmptyEl.textContent = attachmentsLocked
+    ? "No files were attached to this chat."
+    : "No files attached yet.";
+}
+
 function updateAttachHint() {
+  renderAttachmentsTab();
   attachHint.replaceChildren();
   attachHint.hidden = attached.size === 0;
 
@@ -2255,6 +2365,7 @@ function updateAttachHint() {
       attachHint.appendChild(createAttachChip(fileName));
     }
   }
+  if (attachmentsLocked) return;
   const clearAll = document.createElement("button");
   clearAll.className = "attach-clear";
   clearAll.textContent = "clear all";
@@ -2286,7 +2397,7 @@ function renderFileList() {
   const allVisibleAttached = visible.length > 0 && visible.every((f) => attached.has(f.name));
   attachAllBtn.textContent = allVisibleAttached ? "Detach all" : "Attach all";
   attachAllBtn.classList.toggle("all-on", allVisibleAttached);
-  attachAllBtn.disabled = visible.length === 0;
+  attachAllBtn.disabled = visible.length === 0 || attachmentsLocked;
 
   fileCountEl.textContent = allFiles.length
     ? `${visible.length} of ${allFiles.length} shown · ${attached.size} attached`
@@ -2329,6 +2440,7 @@ function renderFileList() {
       renderFileList(); // refresh the attach-all label/count too
     });
     renderToggle();
+    toggle.disabled = attachmentsLocked;
 
     const remove = document.createElement("button");
     remove.className = "file-remove";
@@ -2420,9 +2532,13 @@ async function uploadFiles(files) {
     if (data.error) throw new Error(data.error);
     uploadStatus.textContent = `Uploaded: ${data.saved.join(", ")}`;
     setTaskUploadStatus("");
-    for (const name of data.saved) attached.add(name);
-    updateAttachHint();
-    saveAttached();
+    if (attachmentsLocked) {
+      setTaskUploadStatus("Saved to User Files, but not attached: this chat's attachments are locked.");
+    } else {
+      for (const name of data.saved) attached.add(name);
+      updateAttachHint();
+      saveAttached();
+    }
     await refreshFiles();
   } catch (err) {
     uploadStatus.textContent = `Upload failed: ${err.message || err}`;
@@ -2449,6 +2565,7 @@ document.addEventListener("keydown", (e) => {
 });
 document.getElementById("attach-upload").addEventListener("click", () => fileInput.click());
 document.getElementById("attach-library").addEventListener("click", () => activateTab("files"));
+attachmentsChooseBtn.addEventListener("click", () => activateTab("files"));
 fileInput.addEventListener("change", () => {
   uploadFiles([...fileInput.files]);
   fileInput.value = "";
@@ -2749,6 +2866,7 @@ async function runTask(prompt, options = {}) {
 
   setRunning(true);
   setFeaturesLocked(true); // what's sent below is what the chat keeps
+  setAttachmentsLocked(true);
   const chatModel = shownChatModel();
   lockedChatModel = chatModel;
   fillEfforts(); // disables the selects
@@ -2812,6 +2930,7 @@ async function runTask(prompt, options = {}) {
   } catch (err) {
     setRunning(false);
     setFeaturesLocked(chatSettingsAreFixed(currentChatId));
+    setAttachmentsLocked(chatSettingsAreFixed(currentChatId));
     syncModelSelects(currentChatId);
     traceEnd();
     // The message was never sent, so it goes back to the prompt box instead
