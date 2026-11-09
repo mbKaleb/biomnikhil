@@ -2,7 +2,7 @@
 import pytest
 
 from app.config import Config
-from app.services import biomni_runner, chat_store, leads
+from app.services import biomni_runner, chat_store, leads, workflow
 from app.services.tasks import registry
 
 
@@ -229,3 +229,61 @@ def test_deleting_the_chat_keeps_the_lead(client, signed_in, token):
 
 def test_changes_need_the_page_token(client, signed_in):
     assert client.post("/api/leads", json={"title": "x"}).status_code == 403
+
+
+def _lead(title, status, notes=""):
+    return {"title": title, "status": status, "notes": notes}
+
+
+def test_the_prompt_lists_failed_and_confirmed_leads_with_their_notes():
+    note = workflow.leads_note([
+        _lead("HSPA5 knockdown", "failed", "viability unchanged in 3 repeats"),
+        _lead("TP53 pathway up", "validated"),
+    ])
+    assert "Tested and did not hold:\n- HSPA5 knockdown (the lab's note: viability unchanged in 3 repeats)" in note
+    assert "Confirmed in the lab:\n- TP53 pathway up" in note
+    assert "<leads_board>" in note and "</leads_board>" in note
+
+
+def test_open_leads_stay_out_of_the_prompt():
+    note = workflow.leads_note([_lead("untested idea", "new"), _lead("being tested", "testing")])
+    assert note == ""
+
+
+def test_a_long_note_and_a_long_board_are_cut():
+    long_note = "word " * 200
+    many = [_lead(f"lead {number}", "failed") for number in range(workflow.MAX_LEADS_IN_PROMPT + 5)]
+    note = workflow.leads_note([_lead("a", "failed", long_note)] + many)
+    assert note.count("\n- ") == workflow.MAX_LEADS_IN_PROMPT
+    assert "…" in note
+    assert long_note not in note
+
+
+def test_submit_gives_the_agent_the_boards_settled_leads(monkeypatch):
+    failed, _ = leads.create_lead(title="HSPA5 knockdown lowers viability", notes="no effect in 3 repeats")
+    leads.update_lead(failed["id"], {"status": "failed"})
+    leads.create_lead(title="still untested idea")
+    captured = []
+
+    class NoThread:
+        def __init__(self, target, args, daemon):
+            captured.append(args)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(biomni_runner.threading, "Thread", NoThread)
+    biomni_runner.submit("a prompt")
+    registry.fail(captured[0][0], "never ran")  # a queued task would block other tests
+    agent_prompt = captured[0][1]
+    assert "HSPA5 knockdown lowers viability" in agent_prompt
+    assert "no effect in 3 repeats" in agent_prompt
+    assert "still untested idea" not in agent_prompt
+
+
+def test_an_unreadable_board_does_not_stop_a_run(monkeypatch):
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(leads, "list_leads", broken)
+    assert biomni_runner._leads_note() == ""

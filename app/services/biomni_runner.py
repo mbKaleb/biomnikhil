@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 from .. import auth
 from ..config import Config
 from ..providers import max_output_tokens, resolve
-from . import hints, worker_client, workflow
+from . import hints, leads, worker_client, workflow
 from .tasks import registry
 
 _agent = None
@@ -947,6 +947,7 @@ def submit(
         prompt
         + workflow.conversation_note(earlier_messages or [])
         + workflow.lab_context_note(lab_context)
+        + _leads_note()
         + hints.build_hints(prompt)
         + ASK_USER_NOTE
         + f"\n\nSave any output files you generate (CSVs, plots, reports, "
@@ -962,6 +963,16 @@ def submit(
     )
     thread.start()
     return task.id
+
+
+def _leads_note() -> str:
+    """The leads board's settled leads for the prompt. A board that can't be
+    read never stops a run."""
+    try:
+        return workflow.leads_note(leads.list_leads())
+    except Exception:  # noqa: BLE001
+        logger.exception("couldn't read the leads board for a prompt")
+        return ""
 
 
 def _fmt_duration(seconds: float) -> str:
