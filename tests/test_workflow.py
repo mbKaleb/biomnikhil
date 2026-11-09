@@ -28,10 +28,11 @@ class RecordingAgent:
 def agents(monkeypatch):
     built = {}
 
-    def install(main, preprocess=(), review=()):
+    def install(main, preprocess=(), review=(), assay=()):
         built["main"] = RecordingAgent(main)
         built["preprocess"] = RecordingAgent(preprocess)
         built["review"] = RecordingAgent(review)
+        built["assay"] = RecordingAgent(assay)
         monkeypatch.setattr(biomni_runner, "_get_agent", lambda: built["main"])
         monkeypatch.setattr(biomni_runner, "_get_stage_agent", lambda role, model: built[role])
         monkeypatch.setattr(biomni_runner, "_reset_run_namespace", lambda: resets.append(1))
@@ -64,7 +65,7 @@ def test_all_off_runs_only_the_main_agent(agents):
 
 def test_features_are_only_on_when_exactly_true():
     selected = workflow.selected_features({"review": "true", "context": True, "other": True})
-    assert selected == {"context": True, "preprocess": False, "review": False}
+    assert selected == {"context": True, "preprocess": False, "assay": False, "review": False}
 
 
 def test_preprocess_runs_first_and_main_gets_its_output(agents, tmp_path):
@@ -257,6 +258,94 @@ def test_failed_revision_keeps_the_original_and_the_warning(agents):
 
 def test_caveats_verdict_is_not_read_as_a_plain_pass():
     assert workflow.review_verdict("VERDICT: HOLDS WITH CAVEATS\nx") == "HOLDS WITH CAVEATS"
+
+
+def test_assay_runs_after_the_main_agent_on_its_code(agents, tmp_path):
+    built = agents(["the answer"], assay=["ASSAY: RAN\n2x found 90%"])
+    built["main"].go_stream = lambda prompt: iter([
+        {"output": "my private reasoning<execute>print(1)</execute>"},
+        {"output": "<solution>the answer</solution>"},
+    ])
+    task = _run({"assay": True}, [tmp_path / "data.csv"])
+    prompt = built["assay"].prompts[0]
+    assert "data.csv" in prompt
+    assert "the answer" in prompt
+    assert "private reasoning" not in prompt
+    code_file = Config.OUTPUT_PATH / task["id"] / workflow.ASSAY_FOLDER / "analysis-code.txt"
+    assert code_file.read_text() == "print(1)"
+    assert task["result"].startswith("the answer")
+    assert "**Planted-truth assay**" in task["result"]
+    assert "2x found 90%" in task["result"]
+
+
+def test_assay_is_skipped_without_files(agents):
+    built = agents(["the answer"])
+    task = _run({"assay": True})
+    assert built["assay"].prompts == []
+    assert task["result"] == "the answer"
+    assert any("assay skipped" in step["text"] for step in task["steps"])
+
+
+def test_assay_prompt_asks_for_nulls_planted_folds_and_the_limit(tmp_path):
+    prompt = workflow.assay_prompt("a request", "an answer", tmp_path / "code.txt", [tmp_path / "data.csv"], tmp_path, "")
+    assert "shuffled" in prompt
+    assert "pipeline.py" in prompt
+    assert "truth.json" in prompt
+    for fold in workflow.ASSAY_FOLDS:
+        assert f"{fold}x" in prompt
+    assert "can't show that any one original hit is real" in prompt
+
+
+@pytest.mark.parametrize("reply,expected_heading", [
+    ("ASSAY: NOT APPLICABLE\nno groups", "doesn't apply"),
+    ("ASSAY: COULDN'T REPRODUCE\n3 hits differ", "tested nothing"),
+    ("ASSAY: COULDN’T REPRODUCE\n3 hits differ", "tested nothing"),
+    ("it went fine", "no clear status"),
+])
+def test_an_assay_that_tested_nothing_says_so(agents, tmp_path, reply, expected_heading):
+    agents(["the answer"], assay=[reply])
+    task = _run({"assay": True}, [tmp_path / "data.csv"])
+    assert task["result"].startswith("the answer")
+    assert expected_heading in task["result"]
+    assert "**Planted-truth assay**" not in task["result"]
+
+
+def test_assay_status_only_counts_at_the_start():
+    assert workflow.assay_status("Summary.\nASSAY: RAN") is None
+    assert workflow.assay_status("**ASSAY: RAN**\nx") == "RAN"
+
+
+def test_failed_assay_keeps_the_answer_and_says_untested(agents, tmp_path):
+    agents(["the answer"], assay=[RuntimeError("boom")])
+    task = _run({"assay": True}, [tmp_path / "data.csv"])
+    assert task["status"] == "done"
+    assert task["result"].startswith("the answer")
+    assert "untested" in task["result"]
+
+
+def test_review_sees_the_assay_results(agents, tmp_path):
+    built = agents(["the answer"], assay=["ASSAY: RAN\n2x found 90%"], review=["VERDICT: HOLDS"])
+    _run({"assay": True, "review": True}, [tmp_path / "data.csv"])
+    assert "2x found 90%" in built["review"].prompts[0]
+
+
+def test_stopping_in_the_assay_skips_the_review(agents, tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(biomni_runner.hints, "save_recipe_if_verified", lambda *args: saved.append(args))
+    built = agents(["the answer"], review=["VERDICT: HOLDS"])
+
+    def stopped_by_the_user(prompt):
+        monkeypatch.setattr(registry, "is_cancel_requested", lambda task_id: True)
+        raise RuntimeError("stopped by user")
+        yield
+
+    built["assay"].go_stream = stopped_by_the_user
+    task = _run({"assay": True, "review": True}, [tmp_path / "data.csv"])
+    assert built["review"].prompts == []
+    assert task["result"].startswith("the answer")
+    assert "untested" in task["result"]
+    assert "unreviewed" in task["result"]
+    assert saved == []
 
 
 def test_lab_context_reaches_every_agent(agents, tmp_path):

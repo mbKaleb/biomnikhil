@@ -1008,7 +1008,12 @@ def _run(
         input_fingerprints = workflow.file_fingerprints(input_files)
         registry.mark_running(task_id)
         registry.append_step(task_id, "system", "agent running")
-        stage_count = 1 + int(features["preprocess"] and bool(input_files)) + int(features["review"])
+        stage_count = (
+            1
+            + int(features["preprocess"] and bool(input_files))
+            + int(features["assay"] and bool(input_files))
+            + int(features["review"])
+        )
         registry.set_max_steps(task_id, MAX_STEPS * stage_count)
 
         def note(text: str) -> None:
@@ -1068,7 +1073,18 @@ def _run(
             main_steps_end = len(registry.get(task_id)["steps"])
             if preprocess_warning:
                 answer = f"{answer}\n\n---\n\n**{preprocess_warning}**"
-            if features["review"]:
+            if features["assay"] and not input_files:
+                note("planted-truth assay skipped: no files attached")
+            elif features["assay"]:
+                # Before the review, so the reviewer can check the assay too.
+                answer = _assay_answer(
+                    answer, user_prompt, main_texts, output_dir,
+                    input_files, lab_context, note, run_stage, task_id,
+                )
+            if features["review"] and registry.is_cancel_requested(task_id):
+                answer = f"{answer}\n\n---\n\n**Stopped before the adversarial review, so this answer is unreviewed.**"
+                save_recipe = False
+            elif features["review"]:
                 answer, save_recipe = _review_answer(
                     answer, prompt, user_prompt, main_texts, output_dir,
                     input_files, lab_context, note, run_stage, task_id,
@@ -1181,6 +1197,47 @@ def _drive_agent(
         if chat_id:
             chat_store.add_message(chat_id, "trace", str(entry))
     return answer
+
+
+def _assay_answer(
+    answer, user_prompt, main_texts, output_dir,
+    input_files, lab_context, note, run_stage, task_id,
+) -> str:
+    """Runs the planted-truth assay on the main run's analysis and adds what it
+    found to the answer. Whatever goes wrong here, the answer is kept."""
+    folder = output_dir / workflow.ASSAY_FOLDER
+    note("planted-truth assay agent started")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        code_file = folder / "analysis-code.txt"
+        code_file.write_text(workflow.analysis_code(main_texts), encoding="utf-8")
+        report, _assay_texts = run_stage(
+            "assay",
+            workflow.assay_prompt(
+                user_prompt, str(answer), code_file,
+                input_files, folder, lab_context,
+            ) + hints.build_hints(user_prompt),
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _is_stop(exc):
+            note("planted-truth assay stopped")
+            return f"{answer}\n\n---\n\n**The planted-truth assay was stopped, so this analysis is untested.**"
+        logger.exception("task %s assay failed", task_id)
+        message = _friendly_error(exc)
+        note(f"planted-truth assay failed: {message}")
+        return f"{answer}\n\n---\n\n**The planted-truth assay failed, so this analysis is untested:** {message}"
+    note("planted-truth assay agent finished")
+
+    status = workflow.assay_status(report)
+    if status == "RAN":
+        heading = "Planted-truth assay"
+    elif status == "NOT APPLICABLE":
+        heading = "The planted-truth assay doesn't apply to this analysis"
+    elif status == "COULDN'T REPRODUCE":
+        heading = "The planted-truth assay couldn't reproduce this analysis, so it tested nothing"
+    else:
+        heading = "The planted-truth assay gave no clear status, so don't count it as a test"
+    return f"{answer}\n\n---\n\n**{heading}**\n\n{report}"
 
 
 def _review_answer(
