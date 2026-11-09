@@ -35,7 +35,6 @@
       padding-left: .8rem; border-left: 1px solid #2c3f63;
     }
     #chat-name:empty { display: none; }
-    #files-btn { margin-left: auto; }
     /* Everything but the task is a back room: darker, and without the task's title. */
     body { transition: background-color .25s ease; }
     body.back-room { background: #080d18; }
@@ -296,6 +295,104 @@
       background: #1a2a4c; color: #dbe4f3; border-color: #3b5bdb;
     }
     #spending-sections-task { margin-top: .9rem; }
+
+    /* ---- Leads: candidate findings to follow up, from the header ---- */
+    #leads-btn {
+      display: inline-flex; align-items: center; gap: .4rem;
+      margin-left: auto; width: auto; padding: 0 .7rem;
+      border-color: #2c3f63; color: #a9bce0; font-size: .8rem;
+    }
+    #leads-btn i { font-size: .85rem; }
+    #leads-btn.active { color: #dbe4f3; }
+    #leads-badge:empty { display: none; }
+    #leads-badge {
+      position: absolute; top: -.4rem; right: -.4rem;
+      min-width: 1.1rem; padding: 0 .3rem; box-sizing: border-box; text-align: center;
+      font-size: .7rem; line-height: 1.1rem; border-radius: 999px;
+      background: #3b5bdb; color: #fff;
+    }
+    @media (max-width: 700px) {
+      #leads-btn { width: 2rem; padding: 0; justify-content: center; }
+      #leads-btn .header-btn-label { display: none; }
+    }
+    #leads-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    #leads-filters { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .leads-filter {
+      margin: 0; padding: .3rem .75rem; background: #131f38; color: #a9bce0;
+      border: 1px solid #2c3f63; border-radius: 999px; font-size: .8rem;
+    }
+    .leads-filter:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .leads-filter.active { background: #1a2a4c; border-color: #3b5bdb; color: #dbe4f3; }
+    .leads-filter .count { margin-left: .35rem; color: #56688c; }
+    .leads-filter.active .count { color: #a9bce0; }
+    #leads-add {
+      display: inline-flex; align-items: center; gap: .4rem;
+      margin: 0 0 0 auto; padding: .35rem .85rem; border-radius: 999px; font-size: .8rem;
+    }
+    #leads-new { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+    #leads-new[hidden] { display: none; }
+    #leads-new input {
+      flex: 1; min-width: 12rem; margin: 0; padding: .5rem .7rem; box-sizing: border-box;
+      background: #131f38; color: inherit; border: 1px solid #2c3f63; border-radius: 8px; font: inherit;
+    }
+    #leads-new button { margin: 0; padding: .5rem 1rem; }
+    #leads-new-error { flex-basis: 100%; font-size: .8rem; }
+    #leads-new-error:empty { display: none; }
+    #leads-new .secondary, .lead-delete {
+      background: transparent; color: #a9bce0; border: 1px solid #35507f;
+    }
+    #leads-new .secondary:hover, .lead-delete:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    #leads-empty { margin: 1.4rem 0 0; color: #7c90b4; font-size: .9rem; line-height: 1.5; }
+    #leads-empty[hidden] { display: none; }
+    #leads-list { list-style: none; margin: .9rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .8rem; }
+    .lead {
+      padding: .8rem 1rem; border: 1px solid #24365a; border-radius: 12px;
+      background: linear-gradient(180deg, #111c33, #0e1729);
+    }
+    .lead-head { display: flex; align-items: center; gap: .6rem; }
+    .lead-title {
+      flex: 1; min-width: 0; margin: 0; padding: .3rem .4rem; box-sizing: border-box;
+      background: transparent; color: #dbe4f3; font: inherit; font-size: .95rem; font-weight: 600;
+      border: 1px solid transparent; border-radius: 8px; text-overflow: ellipsis;
+    }
+    .lead-title:hover, .lead-title:focus { background: #0b1325; border-color: #2c3f63; outline: none; }
+    .lead-status {
+      margin: 0; padding: .3rem .6rem; border: 1px solid; border-radius: 999px;
+      font: inherit; font-size: .78rem; cursor: pointer;
+    }
+    .lead-status.status-new { background: #1a2a4c; border-color: #3b5bdb; color: #b9c8e4; }
+    .lead-status.status-testing { background: #2a2210; border-color: #7a6320; color: #fcd34d; }
+    .lead-status.status-validated { background: #12281d; border-color: #2f6b4a; color: #86efac; }
+    .lead-status.status-failed { background: #2c1420; border-color: #6e2438; color: #fca5a5; }
+    .lead-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .5rem; font-size: .76rem; color: #7c90b4; }
+    .lead-badge { padding: .1rem .55rem; border: 1px solid; border-radius: 999px; font-size: .74rem; }
+    .lead-badge.tone-ok { background: #12281d; border-color: #2f6b4a; color: #86efac; }
+    .lead-badge.tone-warn { background: #2a2210; border-color: #7a6320; color: #fcd34d; }
+    .lead-badge.tone-bad { background: #2c1420; border-color: #6e2438; color: #fca5a5; }
+    .lead-badge.tone-muted { background: transparent; border-color: #2c3f63; color: #7c90b4; }
+    .lead-link {
+      margin: 0; padding: 0; background: none; border: 0; color: #7fa0f0;
+      font: inherit; font-size: .76rem; text-decoration: underline;
+    }
+    .lead-link:hover { color: #dbe4f3; }
+    .lead-evidence { margin-top: .6rem; }
+    .lead-evidence summary { color: #a9bce0; font-size: .8rem; cursor: pointer; }
+    .lead-evidence-body {
+      max-height: 22rem; overflow: auto; margin-top: .5rem; padding: .7rem .9rem;
+      background: #0b1325; border: 1px solid #1d2b48; border-radius: 8px;
+      font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .lead-fields { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; margin-top: .7rem; }
+    @media (max-width: 700px) { .lead-fields { grid-template-columns: 1fr; } }
+    @media (max-width: 520px) {
+      .lead-head { flex-wrap: wrap; }
+      .lead-title { flex-basis: 100%; }
+    }
+    .lead-field label { display: block; margin-bottom: .25rem; color: #7c90b4; font-size: .76rem; }
+    .lead-field textarea { margin: 0; min-height: 3.4rem; font-size: .85rem; }
+    .lead-note { margin-left: auto; color: #56688c; }
+    .lead-note.error { color: #f87171; }
+    .lead-delete { margin: 0 0 0 .4rem; padding: .2rem .65rem; font-size: .74rem; }
 
     /* ---- first-run tour ---- */
     #tour { position: fixed; inset: 0; z-index: 100; background: rgba(5, 9, 20, .82); }
@@ -592,6 +689,13 @@
     .copy-btn.copied { border-color: #2a6e4a; color: #4ade80; }
     .copy-btn::after { content: "Copy"; }
     .copy-btn.copied::after { content: "Copied"; }
+    .msg-actions { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .7rem; }
+    .msg-actions .copy-btn { margin: 0; }
+    .save-lead-btn::after { content: "Save as lead"; }
+    .save-lead-btn.saved { border-color: #2a6e4a; color: #4ade80; cursor: default; }
+    .save-lead-btn.saved::after { content: "Saved to Leads"; }
+    .save-lead-btn.failed { border-color: #6e2438; color: #f87171; }
+    .save-lead-btn.failed::after { content: "Couldn't save"; }
 
     /* ---- output files attached to an assistant message ---- */
     .msg-files {
@@ -878,6 +982,12 @@
       border-radius: 8px 8px 0 0; cursor: pointer;
     }
     .tabs button.active { background: #131f38; color: #dbe4f3; }
+    /* The Cmd+number hint: there if you look, quiet if you don't. */
+    .tabs .tab-key {
+      margin-left: .35rem; font-size: .68rem; color: #46587c;
+      font-variant-numeric: tabular-nums;
+    }
+    .tabs button.active .tab-key { color: #5f739a; }
     #viewer-toolbar { display: flex; align-items: stretch; gap: .5rem; }
     #viewer-toolbar > * {
       box-sizing: border-box; height: 2.35rem; font-size: .82rem;
@@ -1608,6 +1718,7 @@
     #composer .task-upload-status[hidden] { display: none; }
     @media (max-width: 520px) {
       .tabs button { padding: .5rem .4rem; font-size: .85rem; }
+      .tabs .tab-key { display: none; }
       .msg.user { max-width: 88%; }
       .empty-state { font-size: 1.3rem; }
     }
@@ -1619,6 +1730,7 @@
     <button id="header-new-chat" title="New chat (N)" aria-label="New chat"><i class="fa-solid fa-pen-to-square"></i></button>
     <h1>biomnikhil</h1>
     <span id="chat-name"></span>
+    <button id="leads-btn" class="header-btn" title="Leads: findings to follow up" aria-label="Leads"><i class="fa-solid fa-flask"></i><span class="header-btn-label">Leads</span><span id="leads-badge"></span></button>
     <button id="files-btn" class="header-btn" title="User files" aria-label="User files"><i class="fa-solid fa-folder-open"></i></button>
     <button id="integrity-btn" class="header-btn" title="Integrity" aria-label="Integrity"><i class="fa-solid fa-shield-halved"></i><span id="integrity-badge"></span></button>
     <button id="account-spend-btn" class="header-btn" title="Account spending" aria-label="Account spending"><i class="fa-solid fa-coins"></i></button>
@@ -1868,6 +1980,23 @@
       </div>
       <div id="viewer-empty">No webpage generated in this chat yet — ask the agent to build one (an <code>index.html</code> in its output folder).</div>
       <iframe id="viewer-frame" sandbox="allow-scripts" title="Generated webpage" hidden></iframe>
+    </section>
+
+    <!-- Leads: candidate findings to follow up, saved from answers or added by
+         hand. Built by renderLeads() in app.js from GET /api/leads. -->
+    <section id="tab-leads" class="panel">
+      <div id="leads-toolbar">
+        <div id="leads-filters" role="group" aria-label="Filter leads by status"></div>
+        <button id="leads-add" type="button"><i class="fa-solid fa-plus"></i> New lead</button>
+      </div>
+      <form id="leads-new" hidden>
+        <input id="leads-new-title" type="text" maxlength="200" placeholder="What should the lab look into?" aria-label="Title of the new lead">
+        <button type="submit">Add</button>
+        <button type="button" class="secondary" id="leads-new-cancel">Cancel</button>
+        <span id="leads-new-error" class="lead-note error" role="alert"></span>
+      </form>
+      <p id="leads-empty" hidden></p>
+      <ul id="leads-list"></ul>
     </section>
 
     <!-- Integrity: pass/fail checks for the data lake, the agent, and the

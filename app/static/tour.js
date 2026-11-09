@@ -21,6 +21,7 @@ const TOUR_TABS = [
   { selector: '.tabs button[data-tab="taskspend"]', title: `Spending (${tabKeyPrefix}6)`, text: "What this chat has cost." },
 ];
 const TOUR_HEADER_STEPS = [
+  { id: "leads-btn", title: "Leads", text: "Findings to follow up on and track." },
   { id: "files-btn", title: "User files", text: "Upload files the agent can read and use." },
   { id: "integrity-btn", title: "Integrity", text: "Health checks for data and agent." },
   { id: "account-spend-btn", title: "Account spending", text: "AWS costs by day and by service." },
@@ -185,12 +186,12 @@ function tourDrawHeaderStep(tour) {
     tourAddLabel(tour, step, row + 1, { top: endY - 16, right: labelRightInset });
   });
 
-  const menuTargets = tourLiftTargets(tour, TOUR_MENU, 5);
+  const menuTargets = tourLiftTargets(tour, TOUR_MENU, TOUR_HEADER_STEPS.length + 1);
   if (menuTargets.length === 0) return;
   const menuBox = tourCombinedBox(menuTargets);
   const menuLabelY = firstRowY + TOUR_HEADER_STEPS.length * TOUR_ROW_GAP;
-  tourAddLine(tour, `M ${menuBox.centerX} ${menuBox.bottom + 4} V ${menuLabelY}`, 5);
-  tourAddLabel(tour, TOUR_MENU, 5, { top: menuLabelY, left: Math.max(8, menuBox.centerX - 16), narrow: true });
+  tourAddLine(tour, `M ${menuBox.centerX} ${menuBox.bottom + 4} V ${menuLabelY}`, TOUR_HEADER_STEPS.length + 1);
+  tourAddLabel(tour, TOUR_MENU, TOUR_HEADER_STEPS.length + 1, { top: menuLabelY, left: Math.max(8, menuBox.centerX - 16), narrow: true });
 }
 
 function tourDrawHelpStep(tour) {

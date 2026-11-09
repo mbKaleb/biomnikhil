@@ -1681,7 +1681,11 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
         copy.replaceChildren(faIcon("copy"));
       }, 1200);
     });
-    div.appendChild(copy);
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    actions.appendChild(copy);
+    if (!isError && !options.stopped) actions.appendChild(buildSaveLeadButton(text));
+    div.appendChild(actions);
   }
   messagesEl.appendChild(div);
   // Someone reading further up shouldn't be pulled away by a new answer.
@@ -1867,6 +1871,7 @@ newChatBtn.addEventListener("click", () => {
 // Shows one tab's panel. "settings" has no button in the bar; the header
 // gear opens it, so no button is highlighted then.
 const APP_LEVEL_BUTTONS = {
+  leads: "leads-btn",
   files: "files-btn",
   spending: "account-spend-btn",
   integrity: "integrity-btn",
@@ -1874,6 +1879,7 @@ const APP_LEVEL_BUTTONS = {
 };
 
 const APP_LEVEL_TITLES = {
+  leads: "Leads",
   files: "User Files",
   spending: "Account spending",
   integrity: "Integrity",
@@ -1934,6 +1940,7 @@ function activateTab(name) {
   for (const [panel, buttonId] of Object.entries(APP_LEVEL_BUTTONS)) {
     document.getElementById(buttonId)?.classList.toggle("active", panel === name);
   }
+  if (name === "leads") refreshLeads();
   if (name === "files") refreshFiles();
   if (name === "outputs") renderOutputTray();
   if (name === "citations") refreshCitations();
@@ -1962,8 +1969,15 @@ function toggleAppPanel(name) {
 const tabButtons = document.querySelectorAll(".tabs button[data-tab]");
 const tabKeyPrefix = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
-tabButtons.forEach((btn) => {
+tabButtons.forEach((btn, index) => {
   btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+
+  // Number it by position, the same index the Cmd+number handler uses.
+  const keyHint = document.createElement("span");
+  keyHint.className = "tab-key";
+  keyHint.textContent = String(index + 1);
+  keyHint.title = `${tabKeyPrefix}${index + 1}`;
+  btn.appendChild(keyHint);
 });
 
 // Cmd+1..n (Ctrl on Windows) picks a tab by its position in the bar.
@@ -4416,6 +4430,363 @@ settingsCleanupBtn.addEventListener("click", () => {
   }, "Closing biomnikhil to clean up. Answer the questions in the window that opens.");
 });
 
+// ---- leads ----
+// Candidate findings the lab may want to follow up. An answer's "Save as lead"
+// button or the New lead form adds one; each shows how far its answer was
+// checked (the review and the planted-truth assay), and the lab moves it
+// through new, testing, validated or failed. Kept on the server, across chats.
+const LEAD_STATUSES = [
+  { value: "new", label: "New" },
+  { value: "testing", label: "Testing" },
+  { value: "validated", label: "Validated" },
+  { value: "failed", label: "Failed" },
+];
+
+const LEAD_REVIEW_BADGES = {
+  holds: { text: "Review: holds", tone: "ok" },
+  caveats: { text: "Review: holds with caveats", tone: "warn" },
+  does_not_hold: { text: "Review: does not hold", tone: "bad" },
+  revised: { text: "Redone after review, not re-reviewed", tone: "warn" },
+  unclear: { text: "Review: no clear verdict", tone: "warn" },
+  unreviewed: { text: "Review didn't finish", tone: "warn" },
+  none: { text: "Not reviewed", tone: "muted" },
+};
+
+const LEAD_ASSAY_BADGES = {
+  ran: { text: "Assay ran", tone: "ok" },
+  not_applicable: { text: "Assay: not applicable", tone: "muted" },
+  couldnt_reproduce: { text: "Assay couldn't reproduce it", tone: "bad" },
+  unclear: { text: "Assay: no clear status", tone: "warn" },
+  untested: { text: "Assay didn't finish", tone: "warn" },
+  none: { text: "No assay", tone: "muted" },
+};
+
+let leads = [];
+let leadsFilter = "all";
+const leadsFiltersEl = document.getElementById("leads-filters");
+const leadsListEl = document.getElementById("leads-list");
+const leadsEmptyEl = document.getElementById("leads-empty");
+const leadsBadgeEl = document.getElementById("leads-badge");
+const leadsNewForm = document.getElementById("leads-new");
+const leadsNewTitle = document.getElementById("leads-new-title");
+const leadsNewError = document.getElementById("leads-new-error");
+
+function countLeads(status) {
+  let count = 0;
+  for (const lead of leads) {
+    if (status === "all" || lead.status === status) count += 1;
+  }
+  return count;
+}
+
+// The header badge counts the leads still being worked: new and testing.
+function updateLeadsBadge() {
+  const open = countLeads("new") + countLeads("testing");
+  if (open === 0) {
+    leadsBadgeEl.textContent = "";
+  } else if (open > 99) {
+    leadsBadgeEl.textContent = "99+";
+  } else {
+    leadsBadgeEl.textContent = String(open);
+  }
+}
+
+async function refreshLeads() {
+  try {
+    const res = await fetch("/api/leads");
+    if (!res.ok) throw new Error("couldn't load leads");
+    leads = (await res.json()).leads;
+  } catch {
+    return; // keep what's shown; opening the board tries again
+  }
+  renderLeads();
+}
+
+function renderLeadFilters() {
+  leadsFiltersEl.replaceChildren();
+  const options = [{ value: "all", label: "All" }, ...LEAD_STATUSES];
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "leads-filter";
+    const isCurrent = leadsFilter === option.value;
+    button.classList.toggle("active", isCurrent);
+    button.setAttribute("aria-pressed", String(isCurrent));
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = String(countLeads(option.value));
+    button.append(option.label, count);
+    button.addEventListener("click", () => {
+      leadsFilter = option.value;
+      renderLeads();
+    });
+    leadsFiltersEl.append(button);
+  }
+}
+
+function renderLeads() {
+  updateLeadsBadge();
+  renderLeadFilters();
+  const shown = [];
+  for (const lead of leads) {
+    if (leadsFilter === "all" || lead.status === leadsFilter) shown.push(lead);
+  }
+  leadsListEl.replaceChildren();
+  for (const lead of shown) {
+    leadsListEl.append(buildLeadCard(lead));
+  }
+  leadsEmptyEl.hidden = shown.length > 0;
+  if (leads.length === 0) {
+    leadsEmptyEl.textContent =
+      "No leads yet. When an answer looks worth following up, click Save as lead under it, " +
+      "or add one yourself with New lead.";
+  } else if (shown.length === 0) {
+    leadsEmptyEl.textContent = "No leads with this status.";
+  }
+}
+
+function leadBadge(badges, state) {
+  const badge = badges[state] || badges.none;
+  const element = document.createElement("span");
+  element.className = `lead-badge tone-${badge.tone}`;
+  element.textContent = badge.text;
+  return element;
+}
+
+let leadNoteTimer = null;
+
+function showLeadNote(card, text, isError) {
+  const note = card.querySelector(".lead-note");
+  note.textContent = text;
+  note.classList.toggle("error", isError);
+  clearTimeout(leadNoteTimer);
+  if (!isError) {
+    leadNoteTimer = setTimeout(() => {
+      note.textContent = "";
+    }, 2500);
+  }
+}
+
+// Saves changes to one lead. Returns whether the server took them.
+async function saveLead(lead, card, changes) {
+  try {
+    const res = await fetch(`/api/leads/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "Couldn't save");
+    Object.assign(lead, body.lead);
+    showLeadNote(card, "Saved", false);
+    return true;
+  } catch (err) {
+    showLeadNote(card, err.message || "Couldn't save", true);
+    return false;
+  }
+}
+
+async function openLeadChat(lead, card) {
+  const res = await fetch(`/api/chats/${lead.chat_id}`);
+  if (!res.ok) {
+    showLeadNote(card, "The chat this came from was deleted.", true);
+    return;
+  }
+  await selectChat(lead.chat_id);
+}
+
+function buildLeadField(lead, card, field, label) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "lead-field";
+  const id = `lead-${lead.id}-${field}`;
+  const labelEl = document.createElement("label");
+  labelEl.htmlFor = id;
+  labelEl.textContent = label;
+  const textarea = document.createElement("textarea");
+  textarea.id = id;
+  textarea.value = lead[field];
+  textarea.addEventListener("change", () => saveLead(lead, card, { [field]: textarea.value }));
+  wrapper.append(labelEl, textarea);
+  return wrapper;
+}
+
+function buildLeadEvidence(lead) {
+  const details = document.createElement("details");
+  details.className = "lead-evidence";
+  const summary = document.createElement("summary");
+  summary.textContent = "Evidence from the answer";
+  const body = document.createElement("div");
+  body.className = "lead-evidence-body";
+  details.append(summary, body);
+  // Rendered when first opened, so a long board doesn't render every answer up front.
+  details.addEventListener("toggle", () => {
+    if (!details.open || body.childElementCount > 0 || body.textContent) return;
+    const rendered = renderMarkdown(lead.evidence, []);
+    if (rendered) {
+      body.append(rendered);
+    } else {
+      body.textContent = lead.evidence;
+    }
+  });
+  return details;
+}
+
+function buildLeadCard(lead) {
+  const card = document.createElement("li");
+  card.className = "lead";
+
+  const head = document.createElement("div");
+  head.className = "lead-head";
+  const title = document.createElement("input");
+  title.type = "text";
+  title.className = "lead-title";
+  title.maxLength = 200;
+  title.value = lead.title;
+  title.title = lead.title; // the full text, when the box cuts it off
+  title.setAttribute("aria-label", "Lead title");
+  title.addEventListener("change", async () => {
+    const newTitle = title.value.trim();
+    if (!newTitle) {
+      title.value = lead.title; // a lead always has a title
+      return;
+    }
+    await saveLead(lead, card, { title: newTitle });
+    title.value = lead.title;
+    title.title = lead.title;
+  });
+  const status = document.createElement("select");
+  status.className = `lead-status status-${lead.status}`;
+  status.setAttribute("aria-label", "Status");
+  for (const option of LEAD_STATUSES) {
+    const optionEl = document.createElement("option");
+    optionEl.value = option.value;
+    optionEl.textContent = option.label;
+    status.append(optionEl);
+  }
+  status.value = lead.status;
+  status.addEventListener("change", async () => {
+    const saved = await saveLead(lead, card, { status: status.value });
+    if (saved) {
+      renderLeads(); // the counts, the badge and the filter all depend on it
+    } else {
+      status.value = lead.status;
+    }
+  });
+  head.append(title, status);
+
+  const meta = document.createElement("div");
+  meta.className = "lead-meta";
+  meta.append(leadBadge(LEAD_REVIEW_BADGES, lead.review), leadBadge(LEAD_ASSAY_BADGES, lead.assay));
+  const saved = document.createElement("span");
+  saved.textContent = `Saved ${new Date(lead.created * 1000).toLocaleDateString()}`;
+  meta.append(saved);
+  if (lead.chat_id) {
+    const openChat = document.createElement("button");
+    openChat.type = "button";
+    openChat.className = "lead-link";
+    openChat.textContent = "Open the chat";
+    openChat.addEventListener("click", () => openLeadChat(lead, card));
+    meta.append(openChat);
+  }
+  const note = document.createElement("span");
+  note.className = "lead-note";
+  note.setAttribute("role", "status");
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "lead-delete";
+  remove.textContent = "Delete lead";
+  remove.addEventListener("click", async () => {
+    const confirmed = await confirmModal(`Delete "${lead.title}"?`, { title: "Delete lead?" });
+    if (!confirmed) return;
+    const res = await fetch(`/api/leads/${lead.id}`, { method: "DELETE" });
+    if (!res.ok && res.status !== 404) {
+      showLeadNote(card, "Couldn't delete this lead.", true);
+      return;
+    }
+    const remaining = [];
+    for (const other of leads) {
+      if (other.id !== lead.id) remaining.push(other);
+    }
+    leads = remaining;
+    renderLeads();
+  });
+  meta.append(note, remove);
+  card.append(head, meta);
+
+  if (lead.evidence) card.append(buildLeadEvidence(lead));
+
+  const fields = document.createElement("div");
+  fields.className = "lead-fields";
+  fields.append(
+    buildLeadField(lead, card, "next_experiment", "Next experiment"),
+    buildLeadField(lead, card, "notes", "Notes"),
+  );
+  card.append(fields);
+  return card;
+}
+
+// The button under an answer that saves it to the board. Saving the same
+// answer again changes nothing (the server returns the lead it already has).
+function buildSaveLeadButton(answerText) {
+  const button = document.createElement("button");
+  button.className = "copy-btn save-lead-btn";
+  button.title = "Save this answer to the Leads board";
+  button.replaceChildren(faIcon("flask"));
+  button.addEventListener("click", async () => {
+    if (button.classList.contains("saved")) return;
+    button.classList.remove("failed");
+    try {
+      const res = await fetch("/api/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ evidence: answerText, chat_id: currentChatId }),
+      });
+      if (!res.ok) throw new Error("couldn't save the lead");
+      button.classList.add("saved");
+      refreshLeads();
+    } catch {
+      button.classList.add("failed");
+    }
+  });
+  return button;
+}
+
+document.getElementById("leads-add").addEventListener("click", () => {
+  leadsNewForm.hidden = false;
+  leadsNewTitle.focus();
+});
+
+function closeNewLeadForm() {
+  leadsNewForm.hidden = true;
+  leadsNewTitle.value = "";
+  leadsNewError.textContent = "";
+}
+
+document.getElementById("leads-new-cancel").addEventListener("click", closeNewLeadForm);
+
+leadsNewForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const title = leadsNewTitle.value.trim();
+  if (!title) return;
+  try {
+    const res = await fetch("/api/leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "Couldn't add the lead");
+    closeNewLeadForm();
+    leadsFilter = "all";
+    await refreshLeads();
+  } catch (err) {
+    leadsNewError.textContent = err.message || "Couldn't add the lead";
+  }
+});
+
+refreshLeads(); // for the header badge
+
+document.getElementById("leads-btn").addEventListener("click", () => toggleAppPanel("leads"));
 document.getElementById("files-btn").addEventListener("click", () => toggleAppPanel("files"));
 document.getElementById("integrity-btn").addEventListener("click", () => toggleAppPanel("integrity"));
 document.getElementById("account-spend-btn").addEventListener("click", () => toggleAppPanel("spending"));
