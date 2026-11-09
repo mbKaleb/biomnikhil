@@ -268,7 +268,11 @@ class RemoteAgent:
 
 
 def _death_message(worker: WorkerProcess) -> str:
-    code = worker.process.poll()
+    # The worker's output closes a moment before its exit code is available.
+    try:
+        code = worker.process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        code = None
     message = "The agent worker stopped unexpectedly"
     if code is not None:
         message += f" (exit code {code})"
