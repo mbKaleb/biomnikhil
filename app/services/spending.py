@@ -7,10 +7,14 @@ with the same role, and the data only updates a few times a day anyway.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from datetime import date, timedelta
+
+from ..config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,32 @@ USAGE_ONLY = {"Not": {"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit", 
 _lock = threading.Lock()
 _cached: dict | None = None
 _cached_at = 0.0
+
+
+def _load_disk_cache() -> None:
+    """Pick up the figures the last run saved, so a restart doesn't cost a fetch."""
+    global _cached, _cached_at
+    try:
+        saved = json.loads(Config.SPENDING_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(saved, dict):
+        return
+    fetched_at = saved.get("fetched_at")
+    if not isinstance(fetched_at, (int, float)):
+        return
+    _cached = saved
+    _cached_at = fetched_at
+
+
+def _save_disk_cache(figures: dict) -> None:
+    try:
+        Config.SPENDING_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Config.SPENDING_CACHE_FILE.with_name(f".{Config.SPENDING_CACHE_FILE.name}.tmp")
+        temporary.write_text(json.dumps(figures), encoding="utf-8")
+        os.replace(temporary, Config.SPENDING_CACHE_FILE)
+    except OSError as exc:
+        logger.warning("Couldn't save the spending cache: %s", exc)
 
 
 class SpendingUnavailable(Exception):
@@ -167,6 +197,8 @@ def get_spending(credentials, refresh: bool = False) -> dict:
     from botocore.exceptions import BotoCoreError, ClientError
 
     with _lock:
+        if _cached is None:
+            _load_disk_cache()
         age = time.time() - _cached_at
         if _cached is not None:
             fresh = age < CACHE_SECONDS
@@ -186,6 +218,8 @@ def get_spending(credentials, refresh: bool = False) -> dict:
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             if code in ("AccessDeniedException", "UnauthorizedOperation"):
+                # AWS's message says what refused it: the role, an org policy, or Cost Explorer being off.
+                logger.warning("Cost Explorer refused: %s", exc)
                 raise SpendingUnavailable(
                     "permission",
                     "Your AWS role can't read Cost Explorer yet.",
@@ -197,5 +231,6 @@ def get_spending(credentials, refresh: bool = False) -> dict:
         forecast = _fetch_forecast(client, today)
         _cached = summarize(results, forecast, today)
         _cached["fetched_at"] = time.time()
-        _cached_at = time.time()
+        _cached_at = _cached["fetched_at"]
+        _save_disk_cache(_cached)
         return _cached

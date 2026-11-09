@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 from botocore.exceptions import ClientError
 
+from app.config import Config
 from app.services import spending
 
 
@@ -33,7 +34,8 @@ class FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def empty_cache(monkeypatch):
+def empty_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "SPENDING_CACHE_FILE", tmp_path / "spending-cache.json")
     monkeypatch.setattr(spending, "_cached", None)
     monkeypatch.setattr(spending, "_cached_at", 0.0)
 

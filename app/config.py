@@ -85,6 +85,8 @@ class Config:
 
     # What the self-update last did, which it writes before the app starts.
     UPDATE_STATUS_FILE: Path = _DATA_ROOT / "update-status.json"
+    SPENDING_CACHE_FILE: Path = _DATA_ROOT / "spending-cache.json"
+    MODELS_CACHE_FILE: Path = _DATA_ROOT / "models-cache.json"
 
     # Appearing asks the app window to close (see services/maintenance.py).
     CLOSE_REQUEST_FILE: Path = _DATA_ROOT / ".close-request"

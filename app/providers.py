@@ -9,7 +9,9 @@ it shows MODELS.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import threading
 import time
@@ -26,6 +28,39 @@ _LIST_TTL = 6 * 3600
 _listed: dict = {"at": 0.0, "models": None, "error": None}
 _list_lock = threading.Lock()
 _listing = False
+
+
+def _load_disk_cache() -> None:
+    """Pick up the list the last run saved, so the selects are right at launch
+    without waiting on Bedrock."""
+    from .config import Config
+
+    try:
+        saved = json.loads(Config.MODELS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(saved, dict):
+        return
+    models = saved.get("models")
+    fetched_at = saved.get("at")
+    if not isinstance(models, list) or not models:
+        return
+    if not isinstance(fetched_at, (int, float)):
+        return
+    _listed["models"] = models
+    _listed["at"] = fetched_at
+
+
+def _save_disk_cache(models: list[dict], fetched_at: float) -> None:
+    from .config import Config
+
+    try:
+        Config.MODELS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Config.MODELS_CACHE_FILE.with_name(f".{Config.MODELS_CACHE_FILE.name}.tmp")
+        temporary.write_text(json.dumps({"at": fetched_at, "models": models}), encoding="utf-8")
+        os.replace(temporary, Config.MODELS_CACHE_FILE)
+    except OSError as exc:
+        logger.warning("Couldn't save the model list: %s", exc)
 
 
 _VERSION_RE = re.compile(r"claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:-(?P<minor>\d{1,2}))?(?:-|$)")
@@ -175,8 +210,12 @@ def refresh_models(credentials) -> None:
             _listed["error"] = error
             if models:
                 _listed["models"] = models
+                _save_disk_cache(models, _listed["at"])
 
     threading.Thread(target=run, daemon=True).start()
+
+
+_load_disk_cache()
 
 
 def list_models() -> dict:
