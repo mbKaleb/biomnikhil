@@ -385,8 +385,7 @@ def _download() -> None:
     try:
         from . import biomni_runner
 
-        with biomni_runner._agent_lock:
-            biomni_runner._agent = None
+        biomni_runner.drop_agent()
     except Exception:  # noqa: BLE001 — best effort
         pass
 

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 from .. import auth
 from ..config import Config
 from ..providers import max_output_tokens, resolve
-from . import hints, workflow
+from . import hints, worker_client, workflow
 from .tasks import registry
 
 _agent = None
@@ -90,6 +90,9 @@ def agent_status() -> dict:
     a run holds the run slot — read without taking either lock, so a long
     build or run never blocks the Integrity tab. _agent_lock is only held
     for any length of time while _get_agent() constructs A1."""
+    if Config.ISOLATED_RUNS:
+        built = worker_client.state["built"]
+        return {"built": built, "building": not built and _run_lock.locked(), "run_in_progress": _run_lock.locked()}
     built = _agent is not None
     return {
         "built": built,
@@ -110,12 +113,25 @@ def set_model(model: str | None) -> str | None:
             _agent = None  # force a rebuild on the next _get_agent()
     return _current_model
 
+def drop_agent() -> None:
+    """Forgets the built agent, so the next run builds a new one (the data lake
+    was repaired). An in-flight run keeps the agent it has."""
+    global _agent
+    if Config.ISOLATED_RUNS:
+        worker_client.drop_remote_agent()
+        return
+    with _agent_lock:
+        _agent = None
+
+
 # Hard cap on agent messages per run; a legitimate deep analysis stays well
 # under this, while a stuck model would otherwise loop forever.
 MAX_STEPS = 150
 
 
 def _get_agent():
+    if Config.ISOLATED_RUNS:
+        return worker_client.RemoteAgent("main", _current_model)
     global _agent
     with _agent_lock:
         if _agent is None:
@@ -160,6 +176,8 @@ def _get_stage_agent(role: str, model: str | None):
     """The agent for one optional stage, built the first time it's needed, on
     the model its run started with. _get_agent() has already run by then, which
     applies the environment and patches every agent relies on."""
+    if Config.ISOLATED_RUNS:
+        return worker_client.RemoteAgent(role, model)
     with _agent_lock:
         cached = _stage_agents.get(role)
         if cached is None or cached[0] != model:
@@ -214,6 +232,12 @@ def _record_usage(usage: dict) -> None:
     for key, amount in call.items():
         _run_usage[key] += amount
         stage[key] += amount
+
+
+def reset_usage() -> None:
+    """Starts the token counts over, for a run or a worker's stage."""
+    _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
+    _stage_usage.clear()
 
 
 def _cost_weight(counts: dict) -> float:
@@ -849,31 +873,44 @@ def _seconds_waiting_on_user() -> float:
     return total
 
 
-def _ask_user_function(task_id: str, chat_id: str | None):
-    """The ask_user(question) the agent's code can call. It shows the question
-    in the chat, waits for the reply, and returns it. The reply is printed too,
-    so it reaches the agent's observation even if the code ignores the value."""
-    from . import chat_store
+def _wait_on_user(ask):
+    """The ask_user(question) the agent's code can call, around `ask`, which
+    takes the question to the user and returns their reply. The time spent
+    waiting doesn't count toward the code's timeout, and the reply is printed
+    too, so it reaches the agent's observation even if the code ignores the
+    value."""
 
     def ask_user(question) -> str:
         """Ask the user a question and wait for their reply, which is returned."""
         question = str(question).strip()
-        registry.ask(task_id, question)
-        if chat_id:
-            chat_store.add_message(chat_id, "question", question)
         started = time.monotonic()
         _user_wait["since"] = started
         try:
-            answer = registry.wait_for_answer(task_id)
+            answer = ask(question)
         finally:
             _user_wait["since"] = None
             _user_wait["total"] += time.monotonic() - started
-        if chat_id:
-            chat_store.add_message(chat_id, "answer", answer)
         print(f"The user replied: {answer}")
         return answer
 
     return ask_user
+
+
+def _ask_user_function(task_id: str, chat_id: str | None):
+    """ask_user for a run inside the app: the question shows in the chat, the
+    run waits, and the reply goes to the agent."""
+    from . import chat_store
+
+    def ask(question: str) -> str:
+        registry.ask(task_id, question)
+        if chat_id:
+            chat_store.add_message(chat_id, "question", question)
+        answer = registry.wait_for_answer(task_id)
+        if chat_id:
+            chat_store.add_message(chat_id, "answer", answer)
+        return answer
+
+    return _wait_on_user(ask)
 
 
 def submit(
@@ -1005,8 +1042,7 @@ def _run(
         _acquire_run_slot(task_id)
         holds_slot = True
         auth.set_run_user(user)
-        _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
-        _stage_usage.clear()
+        reset_usage()
         # Set here, holding the slot, so a queued run can't switch a live one.
         if chat_model:
             if chat_model["model"]:
@@ -1154,15 +1190,36 @@ def _drive_agent(
 ) -> str:
     """One agent's run, from an emptied namespace; returns its answer and adds
     its messages to `texts`. `stage` is the name its token usage is counted under."""
+    if isinstance(agent, worker_client.RemoteAgent):
+        return agent.drive(prompt, task_id, chat_id, texts, effort, stage)
+
     from . import chat_store
 
+    def emit(text: str) -> None:
+        registry.append_step(task_id, "agent", text)
+        if chat_id:  # persist the trace so a page refresh keeps it
+            chat_store.add_message(chat_id, "trace", text)
+
+    def cancelled() -> bool:
+        return registry.is_cancel_requested(task_id)
+
+    return _drive(
+        agent, prompt, texts, effort, stage, emit, cancelled,
+        _ask_user_function(task_id, chat_id),
+    )
+
+
+def _drive(agent, prompt: str, texts: list[str], effort, stage: str, emit, cancelled, ask_user) -> str:
+    """Runs an agent. `emit(text)` gets each of its messages, `cancelled()` says
+    whether to stop, and `ask_user` is what its code calls to ask the user; this
+    is the part that runs wherever the agent lives, the app or the worker."""
     global _run_effort
     from biomni.tool import support_tools
 
     _reset_run_namespace()
     _untagged_streak["count"] = 0
     _current_stage["name"] = stage
-    support_tools._persistent_namespace["ask_user"] = _ask_user_function(task_id, chat_id)
+    support_tools._persistent_namespace["ask_user"] = ask_user
     _run_effort = (agent.llm, effort)
 
     if hasattr(agent, "go_stream"):
@@ -1175,7 +1232,7 @@ def _drive_agent(
         repeats = 0
         steps = 0
         for step in agent.go_stream(prompt):
-            if registry.is_cancel_requested(task_id):
+            if cancelled():
                 raise RuntimeError("stopped by user")
             text = str(step.get("output", "")).strip()
             if not text:
@@ -1184,9 +1241,7 @@ def _drive_agent(
             last = text
             steps += 1
             texts.append(text)
-            registry.append_step(task_id, "agent", text)
-            if chat_id:  # persist the trace so a page refresh keeps it
-                chat_store.add_message(chat_id, "trace", text)
+            emit(text)
             if repeats >= 2:
                 raise RuntimeError(
                     "agent repeated the same response 3 times — aborting "
@@ -1204,9 +1259,7 @@ def _drive_agent(
     else:
         log, answer = [], out
     for entry in log or []:
-        registry.append_step(task_id, "agent", str(entry))
-        if chat_id:
-            chat_store.add_message(chat_id, "trace", str(entry))
+        emit(str(entry))
     return answer
 
 
@@ -1322,7 +1375,8 @@ def _extract_answer(last_output: str) -> str:
 def _friendly_error(exc: Exception) -> str:
     """Map Bedrock/plumbing exceptions to actionable messages; the full
     traceback stays in the server log via logger.exception."""
-    name = type(exc).__name__
+    # An error from the worker keeps the name it had over there.
+    name = getattr(exc, "remote_type", None) or type(exc).__name__
     text = str(exc)
     if "stopped by user" in text:
         return "Stopped by user."

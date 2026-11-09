@@ -94,6 +94,11 @@ class Config:
     HOST: str = _env("HOST", "127.0.0.1")
     PORT: int = int(_env("PORT", "8000"))
 
+    # Run agents in a separate worker process (services/worker.py) instead of
+    # inside the app. Off until it's proven; the worker itself is started with
+    # this off, so it runs agents directly.
+    ISOLATED_RUNS: bool = os.getenv("BIOMNI_ISOLATED_RUNS", "").strip().lower() in ("1", "true", "yes")
+
     # Cognito sign-in, whose credentials sign the Bedrock calls (see app/auth.py). These
     # are public identifiers, not secrets — a browser app would embed them.
     # One region for the Cognito pools and Bedrock (Mantle's Claude models are
