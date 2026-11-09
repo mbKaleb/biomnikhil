@@ -252,6 +252,40 @@ def test_the_window_closes_when_asked(tmp_path, monkeypatch):
     assert destroyed.wait(5)
 
 
+def test_a_new_window_closes_one_open_on_another_port(tmp_path, monkeypatch):
+    window = _window_module(monkeypatch)
+    monkeypatch.setattr(window, "CLOSE_REQUEST", tmp_path / ".close-request")
+    monkeypatch.setattr(window, "OPEN_WINDOW", tmp_path / ".open-window")
+    monkeypatch.setattr(window.time, "sleep", lambda seconds: None)
+    window.OPEN_WINDOW.write_text("8765")
+    other_window_open = {"yes": True}
+    asked_to_close = []
+
+    def running(port=window.PORT):
+        if port != 8765:
+            return False
+        if window.CLOSE_REQUEST.exists():
+            asked_to_close.append(port)
+            other_window_open["yes"] = False
+        return other_window_open["yes"]
+
+    monkeypatch.setattr(window, "running", running)
+    window.close_previous_windows()
+    assert asked_to_close == [8765]
+    assert not window.CLOSE_REQUEST.exists()
+
+
+def test_a_window_only_unregisters_itself(tmp_path, monkeypatch):
+    window = _window_module(monkeypatch)
+    monkeypatch.setattr(window, "OPEN_WINDOW", tmp_path / ".open-window")
+    window.OPEN_WINDOW.write_text("8765")
+    window.unregister_window()
+    assert window.OPEN_WINDOW.exists()
+    window.OPEN_WINDOW.write_text(str(window.PORT))
+    window.unregister_window()
+    assert not window.OPEN_WINDOW.exists()
+
+
 def test_helper_environment_drops_what_the_server_was_given(monkeypatch):
     monkeypatch.setenv("VIRTUAL_ENV", "/somewhere")
     monkeypatch.setenv("BIOMNIKHIL_REINSTALL", "1")

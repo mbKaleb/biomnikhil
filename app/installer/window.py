@@ -5,7 +5,9 @@ Python environment (it has pywebview) once biomnikhil is installed:
 
 It starts the server (waitress, from runtime/.venv) in the background and shows
 the app in its own window instead of a browser tab. Closing the window stops
-the server. When biomnikhil is already running, it just opens another window.
+the server. Only one window is open at a time: a new launch closes the old
+windows (stopping the old server) and starts fresh, even when the old one is
+on another port (the dev guest window, dev/guest_window.py, shares this).
 The window also closes when data/.close-request appears: the Settings tab does
 that to run setup or cleanup (app/services/maintenance.py).
 """
@@ -30,6 +32,7 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
 URL = f"http://localhost:{PORT}"
 LOG = DATA / "server.log"
 CLOSE_REQUEST = DATA / ".close-request"
+OPEN_WINDOW = DATA / ".open-window"  # the port of the window that's open
 
 PAGE = """<!doctype html><html><body style="margin:0;height:100vh;display:flex;
 align-items:center;justify-content:center;background:#0d1526;color:#cbd5e1;
@@ -42,12 +45,25 @@ def error_page(title, message):
     return PAGE.format(f'<div style="color:#fff;font-size:17px;margin-bottom:8px">{title}</div>{message}')
 
 
-def running():
+def running(port=PORT):
     try:
-        with urllib.request.urlopen(f"{URL}/ping", timeout=2) as r:
+        with urllib.request.urlopen(f"http://localhost:{port}/ping", timeout=2) as r:
             return b"biomnikhil" in r.read()
     except Exception:
         return False
+
+
+def registered_port():
+    """The port of the window that registered itself as open, if any."""
+    try:
+        return int(OPEN_WINDOW.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def unregister_window():
+    if registered_port() == PORT:
+        OPEN_WINDOW.unlink(missing_ok=True)
 
 
 def port_taken():
@@ -101,8 +117,37 @@ def close_when_asked(window):
     window.destroy()
 
 
-def main():
+def close_previous_windows():
+    """Asks any window already open to close (each stops its own server on the
+    way out), then waits for the old servers to stop answering. That covers a
+    window on another port too, like the guest window next to the real app."""
+    ports = {PORT}
+    other_port = registered_port()
+    if other_port:
+        ports.add(other_port)
+
+    def any_running():
+        for port in ports:
+            if running(port):
+                return True
+        return False
+
+    if not any_running():
+        CLOSE_REQUEST.unlink(missing_ok=True)
+        return
+    CLOSE_REQUEST.touch()
+    for _ in range(40):
+        if not any_running():
+            break
+        time.sleep(0.5)
+    # Windows poll every half second; give them time to see the request.
+    time.sleep(1.5)
     CLOSE_REQUEST.unlink(missing_ok=True)
+
+
+def main():
+    close_previous_windows()
+    OPEN_WINDOW.write_text(str(PORT))
     server = None
     page = STARTING
     if not running():
@@ -122,6 +167,7 @@ def main():
         # On a Mac, closing the last window doesn't end the app, so
         # webview.start() wouldn't return: stop the server and quit here.
         stop(server)
+        unregister_window()
         sys.stdout.flush()
         os._exit(0)
 
@@ -143,6 +189,7 @@ def main():
             server.wait()
     finally:
         stop(server)
+        unregister_window()
 
 
 if __name__ == "__main__":
