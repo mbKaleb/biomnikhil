@@ -157,6 +157,45 @@ def test_effort_is_sent_only_for_the_run_llm_and_supporting_models(monkeypatch):
     assert effort(agent_llm) is None
 
 
+def test_prompt_caching_only_for_the_run_llm(monkeypatch):
+    biomni_runner._patch_sampling_params()
+    import json
+
+    import anthropic
+    import httpx2
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import SystemMessage
+
+    messages = [SystemMessage("biomni's system prompt"), HumanMessage("task")]
+    agent_llm = ChatAnthropic(model="anthropic.claude-haiku-4-5", api_key="unused")
+    tool_llm = ChatAnthropic(model="anthropic.claude-haiku-4-5", api_key="unused")
+    monkeypatch.setattr(biomni_runner, "_run_effort", (agent_llm, None))
+
+    helper_payload = tool_llm._get_request_payload(messages)
+    assert "cache_control" not in helper_payload
+    assert helper_payload["system"] == "biomni's system prompt"
+
+    agent_payload = agent_llm._get_request_payload(messages)
+    assert agent_payload["cache_control"] == {"type": "ephemeral"}
+    assert agent_payload["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    # The SDK must put both on the wire, not drop the top-level field.
+    sent_bodies = []
+
+    def capture(request):
+        sent_bodies.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+            "content": [], "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+
+    client = anthropic.Anthropic(api_key="unused", http_client=httpx2.Client(transport=httpx2.MockTransport(capture)))
+    client.messages.create(**agent_payload)
+    assert sent_bodies[0]["cache_control"] == {"type": "ephemeral"}
+    assert sent_bodies[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_explicit_thinking_only_where_models_need_it(monkeypatch):
     biomni_runner._patch_sampling_params()
     from langchain_anthropic import ChatAnthropic
@@ -218,3 +257,35 @@ def test_uncapped_agent_llm_streams_a_full_size_request(monkeypatch):
     # What the refusal check and usage line read.
     assert reply.response_metadata["stop_reason"] == "refusal"
     assert reply.usage_metadata["input_tokens"] == 5
+
+
+def test_usage_is_counted_per_stage():
+    biomni_runner._run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
+    biomni_runner._stage_usage.clear()
+
+    biomni_runner._current_stage["name"] = "main"
+    biomni_runner._record_usage({"input_tokens": 1000, "output_tokens": 100,
+                                 "input_token_details": {"cache_read": 800}})
+    biomni_runner._current_stage["name"] = "assay"
+    biomni_runner._record_usage({"input_tokens": 500, "output_tokens": 50})
+    biomni_runner._record_usage({"input_tokens": 500, "output_tokens": 50})
+
+    assert biomni_runner._run_usage["calls"] == 3
+    assert biomni_runner._run_usage["input_tokens"] == 2000
+    assert biomni_runner._stage_usage["main"]["cached_tokens"] == 800
+    assert biomni_runner._stage_usage["assay"]["calls"] == 2
+
+    rows = biomni_runner.stage_breakdown(biomni_runner._stage_usage)
+    assert [row["name"] for row in rows] == ["main", "assay"]
+    assert abs(sum(row["share"] for row in rows) - 1.0) < 1e-9
+    # Main: 200 fresh + 80 cached-weighted + 500 output = 780; assay: 1000 + 500 = 1500.
+    assert rows[0]["share"] < rows[1]["share"]
+
+    line = biomni_runner._usage_line({
+        "tools": [], "data_lake": [], **biomni_runner._run_usage,
+        "stages": biomni_runner._stage_usage,
+    })
+    assert "share of cost by stage: main 34%, assay 66%" in line
+
+    biomni_runner._stage_usage.clear()
+    biomni_runner._current_stage["name"] = "main"

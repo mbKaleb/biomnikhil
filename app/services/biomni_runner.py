@@ -183,6 +183,58 @@ def _uncap_agent_llm(llm, model: str) -> None:
 # database tools make their own LLM calls, which aren't counted here.
 _run_usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
+# The same counts split by stage (main, preprocess, assay, review, revision),
+# so the cost of each optional stage is visible. Stages run one after another,
+# so the callback adds to whichever one _drive_agent last announced.
+_stage_usage: dict[str, dict] = {}
+_current_stage = {"name": "main"}
+
+# Relative cost of a token, against a fresh input token: Anthropic bills
+# output at 5x and cache reads at 0.1x. These weight the stage shares; they
+# are not dollars, which depend on the model's price.
+OUTPUT_COST_WEIGHT = 5.0
+CACHED_COST_WEIGHT = 0.1
+
+
+def _record_usage(usage: dict) -> None:
+    """Adds one model call's token counts to the run and to its stage."""
+    details = usage.get("input_token_details") or {}
+    call = {
+        "calls": 1,
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "cached_tokens": details.get("cache_read", 0) or 0,
+    }
+    stage = _stage_usage.setdefault(
+        _current_stage["name"],
+        {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0},
+    )
+    for key, amount in call.items():
+        _run_usage[key] += amount
+        stage[key] += amount
+
+
+def _cost_weight(counts: dict) -> float:
+    fresh_input = counts["input_tokens"] - counts["cached_tokens"]
+    cached_input = counts["cached_tokens"] * CACHED_COST_WEIGHT
+    output = counts["output_tokens"] * OUTPUT_COST_WEIGHT
+    return fresh_input + cached_input + output
+
+
+def stage_breakdown(stages: dict) -> list[dict]:
+    """The stages in run order, each with its share (0 to 1) of the run's
+    relative cost."""
+    total_weight = 0.0
+    for counts in stages.values():
+        total_weight += _cost_weight(counts)
+    rows = []
+    for name, counts in stages.items():
+        share = 0.0
+        if total_weight > 0:
+            share = _cost_weight(counts) / total_weight
+        rows.append({"name": name, **counts, "share": share})
+    return rows
+
 # The latest run's usage summary, for the Integrity tab.
 last_run_usage: dict | None = None
 
@@ -203,18 +255,28 @@ def _biomni_usage(texts: list[str], agent) -> dict:
         lake = sorted(f for f in data_lake_dict if f in trace)
     except Exception:  # noqa: BLE001
         lake = []
-    return {"tools": tools, "data_lake": lake, **_run_usage}
+    stages = {}
+    for name, counts in _stage_usage.items():
+        stages[name] = dict(counts)
+    return {"tools": tools, "data_lake": lake, **_run_usage, "stages": stages}
 
 
 def _usage_line(u: dict) -> str:
     tools = ", ".join(u["tools"]) if u["tools"] else "none"
     lake = ", ".join(u["data_lake"]) if u["data_lake"] else "none"
     cached = f" ({u['cached_tokens']:,} cached)" if u["cached_tokens"] else ""
-    return (
+    line = (
         f"biomni usage — tools: {tools} · data lake: {lake} · "
         f"{u['calls']} model calls, {u['input_tokens']:,} input{cached} / "
         f"{u['output_tokens']:,} output tokens"
     )
+    rows = stage_breakdown(u.get("stages") or {})
+    if len(rows) > 1:
+        parts = []
+        for row in rows:
+            parts.append(f"{row['name']} {row['share']:.0%}")
+        line += " · share of cost by stage: " + ", ".join(parts)
+    return line
 
 
 # Tools left out of the agent's prompt because they can't run in this install,
@@ -305,11 +367,7 @@ def _untagged_reply_logger():
                 for gen in gens:
                     message = getattr(gen, "message", None)
                     usage = getattr(message, "usage_metadata", None) or {}
-                    _run_usage["calls"] += 1
-                    _run_usage["input_tokens"] += usage.get("input_tokens", 0)
-                    _run_usage["output_tokens"] += usage.get("output_tokens", 0)
-                    details = usage.get("input_token_details") or {}
-                    _run_usage["cached_tokens"] += details.get("cache_read", 0) or 0
+                    _record_usage(usage)
                     content = message.content if message is not None else gen.text
                     text = content if isinstance(content, str) else repr(content)
                     meta = getattr(message, "response_metadata", {}) or {}
@@ -354,6 +412,25 @@ def _observations_as_user_turns(messages: list) -> None:
     messages[:] = out
 
 
+
+
+def _add_cache_breakpoints(payload: dict) -> None:
+    """Caches the agent loop's prompt between its calls. Every step resends
+    the same system prompt plus the history so far, so after the first call
+    those tokens are read from cache at a tenth of the input price.
+
+    Two breakpoints: one on the system prompt, which never changes within a
+    run, and Bedrock's automatic one (top-level cache_control), which moves to
+    the end of the history as it grows. Prefixes under the model's minimum
+    (4096 tokens on Haiku 4.5) silently aren't cached."""
+    system = payload.get("system")
+    if isinstance(system, str) and system:
+        payload["system"] = [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}},
+        ]
+    payload["cache_control"] = {"type": "ephemeral"}
+
+
 def _patch_sampling_params() -> None:
     """biomni's get_llm() always passes a temperature to ChatAnthropic (0.7
     by default, 0.0 for its database tools), but Claude Opus 4.7+, Sonnet 5+
@@ -361,7 +438,8 @@ def _patch_sampling_params() -> None:
     deprecated for this model"). get_llm is imported by name in six biomni
     modules, so rather than repoint each one, strip the params from the
     outgoing request payload for those models. Older models (Haiku 4.5,
-    Sonnet 4.5, …) keep them.
+    Sonnet 4.5, …) keep them. The agent loop's requests also get prompt
+    caching (_add_cache_breakpoints).
 
     Also ends every request on a user turn. biomni appends each code result
     as an *assistant* message ("<observation>…"), so the call after any code
@@ -388,8 +466,12 @@ def _patch_sampling_params() -> None:
                 extra.pop(key, None)
             if "extra_body" in payload and not extra:
                 payload.pop("extra_body")
+        is_agent_llm = bool(_run_effort and self is _run_effort[0])
         _observations_as_user_turns(payload.get("messages") or [])
-        if _run_effort and self is _run_effort[0]:
+        if is_agent_llm:
+            # Only the agent loop: biomni's helper LLMs make one-off calls that
+            # would pay the cache write and never read it back.
+            _add_cache_breakpoints(payload)
             effort = _run_effort[1]
             # Omitted when this model doesn't take that level, which would 400.
             if effort in supported_efforts(payload.get("model", "")):
@@ -735,6 +817,7 @@ def _run(
         holds_slot = True
         auth.set_run_user(user)
         _run_usage.update(calls=0, input_tokens=0, output_tokens=0, cached_tokens=0)
+        _stage_usage.clear()
         # Both stay fixed for the whole run, even if the UI changes them mid-way.
         run_model = _current_model
         run_effort = _current_effort
@@ -750,11 +833,15 @@ def _run(
             if chat_id:
                 chat_store.add_message(chat_id, "trace", text)
 
-        def run_stage(role: str, stage_prompt: str) -> tuple[str, list[str]]:
+        def run_stage(role: str, stage_prompt: str, usage_name: str | None = None) -> tuple[str, list[str]]:
             stage_agent = agent if role == "main" else _get_stage_agent(role, run_model)
             stage_texts: list[str] = []
             try:
-                return _drive_agent(stage_agent, stage_prompt, task_id, chat_id, stage_texts, run_effort), stage_texts
+                answer = _drive_agent(
+                    stage_agent, stage_prompt, task_id, chat_id, stage_texts, run_effort,
+                    stage=usage_name or role,
+                )
+                return answer, stage_texts
             finally:
                 texts.extend(stage_texts)
 
@@ -851,13 +938,17 @@ def _is_stop(exc: Exception) -> bool:
     return "stopped by user" in str(exc)
 
 
-def _drive_agent(agent, prompt: str, task_id: str, chat_id: str | None, texts: list[str], effort: str | None) -> str:
+def _drive_agent(
+    agent, prompt: str, task_id: str, chat_id: str | None, texts: list[str],
+    effort: str | None, stage: str = "main",
+) -> str:
     """One agent's run, from an emptied namespace; returns its answer and adds
-    its messages to `texts`."""
+    its messages to `texts`. `stage` is the name its token usage is counted under."""
     from . import chat_store
 
     global _run_effort
     _reset_run_namespace()
+    _current_stage["name"] = stage
     _run_effort = (agent.llm, effort)
 
     if hasattr(agent, "go_stream"):
@@ -950,6 +1041,7 @@ def _review_answer(
         revised, _revision_texts = run_stage(
             "main",
             workflow.revision_prompt(task_prompt, str(answer), review, output_dir / workflow.REVISION_FOLDER),
+            usage_name="revision",
         )
     except Exception as exc:  # noqa: BLE001
         if not _is_stop(exc):

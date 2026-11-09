@@ -367,6 +367,17 @@ def spending_route():
     return jsonify(data)
 
 
+@bp.get("/spending/stages")
+def spending_stages():
+    """Token use of the latest run, split by stage (main, preprocess, assay,
+    review, revision), so the Spending tab can show what each stage cost."""
+    usage = biomni_runner.last_run_usage
+    if not usage or not usage.get("stages"):
+        return jsonify(stages=[])
+    rows = biomni_runner.stage_breakdown(usage["stages"])
+    return jsonify(stages=rows, task_id=usage["task_id"], at=usage["at"])
+
+
 @bp.get("/integrity")
 def integrity():
     """Pass/fail health of the data lake, the agent, and its harness (saved
