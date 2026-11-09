@@ -1351,7 +1351,8 @@
       transition: opacity .15s ease, transform .15s ease;
     }
     #model-menu .mm-flyout .mm-name { text-transform: none; }
-    #composer-row { display: flex; align-items: flex-end; gap: .4rem; }
+    /* Same side inset as #composer-features, so the buttons line up with the chips. */
+    #composer-row { display: flex; align-items: flex-end; gap: .4rem; padding: 0 .25rem; }
     #composer-features {
       display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
       padding: .2rem .25rem .55rem;
@@ -1558,6 +1559,8 @@
       flex: none; display: flex; align-items: center; justify-content: center;
       width: 36px; height: 36px; margin: 0; padding: 0; border: 0; border-radius: 50%;
     }
+    /* Smaller than Send and Stop: it's the secondary action. */
+    #attach-wrap > #composer-attach { width: 30px; height: 30px; }
     #composer-row > button[hidden] { display: none; }
     #attach-wrap { position: relative; flex: none; }
     #attach-menu {
@@ -1574,7 +1577,7 @@
     }
     #composer-row #attach-menu button:hover { background: #24345a; color: #fff; }
     #composer-attach {
-      background: linear-gradient(135deg, #4f74f0, #3553c7); color: #fff; font-size: 1.05rem;
+      background: linear-gradient(135deg, #4f74f0, #3553c7); color: #fff; font-size: .88rem;
       box-shadow: 0 2px 8px rgba(61, 94, 214, .45), inset 0 1px 0 rgba(255, 255, 255, .25);
       transition: transform .15s, box-shadow .15s, filter .15s;
     }
