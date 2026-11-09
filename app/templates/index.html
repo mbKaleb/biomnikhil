@@ -13,12 +13,9 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='fontawesome/css/solid.min.css') }}">
   <style>
     :root { color-scheme: dark; }
-    html {
-      /* Reserve the scrollbar gutter permanently — switching Task/Outputs/
-         Files changes page height, which otherwise toggles the scrollbar
-         on/off and shifts the whole layout sideways by its width. */
-      scrollbar-gutter: stable;
-    }
+    /* No scrollbars anywhere; content still scrolls. */
+    * { scrollbar-width: none !important; }
+    *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
     body {
       margin: 0; background: #0d1526; color: #dbe4f3;
       font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
@@ -33,17 +30,17 @@
     }
     header h1 { font-size: 1.05rem; margin: 0; }
     #chat-name {
-      font-size: .85rem; color: #7c90b4; overflow: hidden;
+      font-size: 1.05rem; font-weight: 600; color: #dbe4f3; overflow: hidden;
       text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-      padding-left: .8rem; border-left: 1px solid #2c3f63;
+      margin-bottom: .5rem;
     }
     #chat-name:empty { display: none; }
-    header .provider-badge {
-      margin-left: auto; font-size: .74rem; color: #7c90b4;
-      padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
-      background: #131f38;
-    }
-    header .model-select {
+    #files-btn { margin-left: auto; }
+    /* Everything but the task is a back room: darker, and without the task's title. */
+    body { transition: background-color .25s ease; }
+    body.back-room { background: #080d18; }
+    body.back-room #chat-name { display: none; }
+    .model-select {
       font: inherit; font-size: .74rem; color: #cdd6e4; background-color: #131f38;
       border: 1px solid #2c3f63; border-radius: 999px;
       padding: .2rem 1.6rem .2rem .65rem; max-width: 14rem;
@@ -55,14 +52,14 @@
     }
     #model-family { text-transform: capitalize; }
     #model-version { margin-left: -.4rem; }
-    header .model-select:hover { border-color: #3a567f; color: #dbe4f3; }
-    header .model-select:focus { outline: none; border-color: #5b7fe8; }
+    .model-select:hover { border-color: #3a567f; color: #dbe4f3; }
+    .model-select:focus { outline: none; border-color: #5b7fe8; }
     /* Disabled = nothing to choose (one version, or no models): readable,
        just inert. The wait cursor is only for an actual save in flight. */
-    header .model-select:disabled { opacity: .75; cursor: default; }
-    header .model-select:disabled:hover { border-color: #2c3f63; color: #cdd6e4; }
-    header .model-select.saving { opacity: .5; cursor: wait; }
-    header .model-select option,
+    .model-select:disabled { opacity: .75; cursor: default; }
+    .model-select:disabled:hover { border-color: #2c3f63; color: #cdd6e4; }
+    .model-select.saving { opacity: .5; cursor: wait; }
+    .model-select option,
     #file-sort option { background: #0e1729; color: #dbe4f3; }
     .content { flex: 1; display: flex; justify-content: center; padding: 1.5rem 1rem; }
     main { width: min(760px, 100%); display: flex; flex-direction: column; }
@@ -86,7 +83,7 @@
     #stop:hover { background: #93293d; }
     /* ---- terminal-style trace panel (right) ---- */
     #trace {
-      position: fixed; inset: 0 0 0 auto; width: min(400px, 85vw); z-index: 18;
+      position: fixed; inset: 0 0 0 auto; width: 50vw; z-index: 18;
       background: #05090f; border-left: 1px solid #1c2a2a;
       box-shadow: -8px 0 32px rgba(0, 0, 0, .5);
       transform: translateX(100%);
@@ -255,19 +252,98 @@
       animation: blink 1.1s steps(1) infinite;
     }
     @keyframes blink { 50% { opacity: 0; } }
-    #user-link {
-      font-size: .74rem; color: #7c90b4; text-decoration: none;
-      padding: .2rem .65rem; border: 1px solid #2c3f63; border-radius: 999px;
-      background: #131f38;
+    .header-btn, #user-link, #trace-btn {
+      position: relative;
+      box-sizing: border-box; display: grid; place-items: center;
+      width: 2rem; height: 2rem; margin: 0; padding: 0; cursor: pointer;
+      background: transparent; border: 1px solid #2c3f63; border-radius: 8px;
+      color: #7c90b4; font-size: .85rem; line-height: 1; text-decoration: none;
     }
-    #user-link:hover { color: #dbe4f3; border-color: #3b5bdb; }
+    .header-btn, #user-link { border-color: transparent; color: #5f7396; }
     #trace-btn {
-      margin: 0; padding: .35rem .6rem; background: transparent;
-      border: 1px solid #2c3f63; border-radius: 8px; color: #7c90b4;
-      font-family: ui-monospace, Consolas, monospace; font-size: .78rem;
-      line-height: 1;
+      margin-left: auto; align-self: center;
+      display: inline-flex; align-items: center; gap: .4rem;
+      width: auto; padding: 0 .7rem; font-size: .8rem;
     }
-    #trace-btn:hover { background: #1a2a4c; color: #dbe4f3; }
+    #trace-btn i { font-size: .85rem; }
+    .header-btn.active, #user-link.active { color: #dbe4f3; border-color: #3b5bdb; background: #1a2a4c; }
+    /* Same box as the .tabs bar it replaces (height, margin, rule), so the
+       page below doesn't jump when you move between the task and a back room. */
+    #app-bar {
+      display: flex; align-items: center; gap: .8rem; box-sizing: border-box;
+      height: 40px; margin: 0 0 1rem; border-bottom: 1px solid #2c3f63;
+    }
+    #app-bar[hidden] { display: none; }
+    #back-to-task {
+      margin: 0; padding: .35rem .8rem; background: #131f38; color: #a9bce0;
+      border: 1px solid #2c3f63; border-radius: 999px; font-size: .8rem; cursor: pointer;
+    }
+    #back-to-task:hover { color: #dbe4f3; border-color: #3b5bdb; }
+    #app-bar-title { color: #dbe4f3; font-weight: 600; }
+    #task-status {
+      margin: 0 0 0 auto; padding: .35rem .8rem; background: #131f38; color: #a9bce0;
+      border: 1px solid #2c3f63; border-radius: 999px; font-size: .8rem; cursor: pointer;
+    }
+    #task-status[hidden] { display: none; }
+    #task-status:hover { color: #dbe4f3; border-color: #3b5bdb; }
+    #task-status.running i { color: #5b7fe8; animation: blink 1.4s infinite; }
+    #task-status.done { color: #86efac; border-color: #2f6b4a; }
+    #task-status.waiting { color: #fcd34d; border-color: #7a6320; }
+    .tabs[hidden] { display: none; }
+    .header-btn:hover, #user-link:hover, #trace-btn:hover {
+      background: #1a2a4c; color: #dbe4f3; border-color: #3b5bdb;
+    }
+    #spending-sections-task { margin-top: .9rem; }
+
+    /* ---- first-run tour ---- */
+    #tour { position: fixed; inset: 0; z-index: 100; background: rgba(5, 9, 20, .82); }
+    body:has(#tour) { overflow: hidden; }
+    /* The data lake popup waits for the tour to close. */
+    body:has(#tour) #dl-modal { display: none; }
+    #tour svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    #tour path { fill: none; stroke: #5b7fe8; stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 600; animation: tour-draw .7s ease-out forwards; }
+    #tour circle { fill: #5b7fe8; }
+    @keyframes tour-draw { to { stroke-dashoffset: 0; } }
+    .tour-label {
+      position: absolute; box-sizing: border-box; width: 272px; padding: .35rem .7rem; background: #131f38;
+      border: 1px solid #2c3f63; border-radius: 10px; font-size: .8rem; color: #a9bce0;
+      opacity: 0; animation: tour-fade .4s .35s ease-out forwards;
+    }
+    .tour-label.narrow { width: auto; }
+    .tour-label b { display: block; color: #dbe4f3; font-size: .85rem; }
+    @keyframes tour-fade { to { opacity: 1; } }
+    .tour-list {
+      position: absolute; top: 4.5rem; left: 16px; right: 16px;
+      display: flex; flex-direction: column; gap: .5rem;
+    }
+    .tour-list .tour-label { position: static; width: auto; }
+    #tour-controls {
+      position: absolute; right: 1.5rem; bottom: 1.5rem; z-index: 102;
+      display: flex; align-items: center; gap: .6rem;
+    }
+    #tour-progress { color: #a9bce0; font-size: .8rem; font-variant-numeric: tabular-nums; }
+    #tour-back, #tour-done {
+      margin: 0;
+      padding: .5rem 1.4rem; color: #fff; border: 0;
+      border-radius: 999px; font: inherit; cursor: pointer;
+    }
+    #tour-back { background: #22304f; }
+    #tour-back[hidden] { display: none; }
+    #tour-back:hover { background: #2c3f63; }
+    #tour-done { background: #3b5bdb; }
+    #tour-done:hover { background: #4c6ef0; }
+    .tour-lifted {
+      position: relative; z-index: 101;
+      /* important: controls like #user-link and #run:disabled set these by id */
+      color: #fff !important; background: #1a2a4c !important; border-color: #5b7fe8 !important;
+      box-shadow: 0 0 0 3px rgba(91, 127, 232, .35), 0 0 14px rgba(91, 127, 232, .6);
+      pointer-events: none; animation: tour-pop .4s ease-out backwards;
+    }
+    @keyframes tour-pop { from { box-shadow: 0 0 0 0 rgba(91, 127, 232, 0); transform: scale(.94); } }
+    header:has(.tour-lifted) { z-index: 101; }
+    /* sticky would trap the lifted icons below the dim, so only they rise above it */
+    #composer-dock:has(.tour-lifted) { position: relative; z-index: auto; }
+    @media (prefers-reduced-motion: reduce) { #tour path, .tour-label, .tour-lifted { animation: none; opacity: 1; stroke-dashoffset: 0; } }
     /* ---- sidebar ---- */
     /* Monospace, set quietly: two type sizes, hairlines, no boxes. */
     #sidebar {
@@ -772,6 +848,7 @@
       border-radius: 8px 8px 0 0; cursor: pointer;
     }
     .tabs button.active { background: #131f38; color: #dbe4f3; }
+    .tabs button kbd { margin-left: .4rem; font: inherit; font-size: .66rem; color: #7485a6; }
     #viewer-toolbar { display: flex; align-items: stretch; gap: .5rem; }
     #viewer-toolbar > * {
       box-sizing: border-box; height: 2.35rem; font-size: .82rem;
@@ -892,6 +969,7 @@
     }
     .spend-service .name { color: #a9bce0; overflow-wrap: anywhere; }
     .spend-service .amount { text-align: right; font-variant-numeric: tabular-nums; }
+    .spend-service .detail { display: block; color: #7c90b4; font-size: .72rem; }
     .spend-service .track { height: 10px; }
     .spend-service .fill { height: 100%; min-width: 2px; background: #3987e5; border-radius: 0 4px 4px 0; }
     @media (max-width: 520px) {
@@ -929,7 +1007,8 @@
     #settings-message { margin-top: .9rem; color: #e0a458; font-size: .85rem; }
     #integrity-badge:empty { display: none; }
     #integrity-badge {
-      display: inline-block; min-width: 1.1rem; padding: 0 .3rem; margin-left: .25rem;
+      position: absolute; top: -.4rem; right: -.4rem;
+      min-width: 1.1rem; padding: 0 .3rem; box-sizing: border-box; text-align: center;
       font-size: .7rem; line-height: 1.1rem; border-radius: 999px;
       background: #7a2333; color: #ffd9df;
     }
@@ -996,7 +1075,9 @@
       border-top: 1px solid #16233d;
     }
     .panel { display: none; }
-    .panel.active { display: block; }
+    .panel.active { display: block; animation: panel-in .18s ease-out; }
+    @keyframes panel-in { from { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .panel.active { animation: none; } }
     #dropzone {
       border: 1.5px dashed #35507f; border-radius: 12px; padding: 2rem 1rem;
       text-align: center; color: #7c90b4; cursor: pointer;
@@ -1126,6 +1207,39 @@
     .msg.assistant.stopped { background: #131f38; border-color: #2c3f63; }
     .copy-btn { margin-left: 0; border-color: transparent; }
 
+    /* A question the agent asked mid-run, waiting on the user's reply. */
+    .msg.assistant.question {
+      padding: .75rem 1rem; background: #12233c; border: 1px solid #2c4a74;
+      border-left: 3px solid #5b7fe8; border-radius: 12px; white-space: normal;
+    }
+    .question-label {
+      display: flex; align-items: center; gap: .45rem; margin-bottom: .3rem;
+      color: #8fb0ff; font-size: .78rem; font-weight: 600;
+    }
+
+    /* The agent-is-working line under the last message during a run. */
+    #messages .thinking {
+      display: flex; align-items: center; gap: .65rem; max-width: 100%;
+      margin: 1.4rem 0 0; padding: .3rem 0; background: none; border: 0;
+      color: #7c90b4; font-size: .88rem; text-align: left;
+    }
+    #messages .thinking:hover .thinking-status { color: #b9c8e4; }
+    .thinking-dots { display: inline-flex; gap: 4px; flex: none; }
+    .thinking-dots span {
+      width: 6px; height: 6px; border-radius: 50%; background: #5b7fe8;
+      animation: thinking-bounce 1.2s infinite ease-in-out;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: .15s; }
+    .thinking-dots span:nth-child(3) { animation-delay: .3s; }
+    @keyframes thinking-bounce {
+      0%, 80%, 100% { opacity: .3; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-3px); }
+    }
+    .thinking-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (prefers-reduced-motion: reduce) {
+      .thinking-dots span { animation: none; opacity: .7; }
+    }
+
     .empty-state {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       min-height: 45vh; margin: 0; text-align: center;
@@ -1147,17 +1261,245 @@
       transition: border-color .15s;
     }
     #composer:focus-within { border-color: #4a6596; }
-    #composer-row { display: flex; align-items: flex-end; gap: .4rem; }
-    #composer-features { display: flex; align-items: center; gap: .3rem; padding: 0 .3rem .35rem; }
-    .feature-toggle, #lab-context-edit {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 2rem; height: 2rem; padding: 0; border-radius: 50%; cursor: pointer;
-      background: none; border: 1px solid #3a4f77; color: #7c90b4;
+    #composer-models { display: flex; flex-wrap: wrap; gap: .4rem; padding: .35rem .6rem 0; }
+    #composer-models { position: relative; }
+    #model-picker {
+      display: inline-flex; align-items: center; gap: .4rem; background: none; border: 0;
+      color: #8a9bba; font: inherit; font-size: .8rem; padding: .25rem .55rem;
+      border-radius: 8px; cursor: pointer; transition: background .15s, color .15s;
     }
-    .feature-toggle:hover { border-color: #5b7fe8; color: #dbe4f3; }
-    .feature-toggle[aria-pressed="true"] { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
-    #lab-context-edit { border-color: transparent; font-size: .75rem; }
+    #model-picker:hover:not(:disabled), #model-picker[aria-expanded="true"] { background: #22304f; color: #dbe4f3; }
+    #model-picker:disabled { cursor: default; }
+    #model-picker i { font-size: .6rem; }
+    #model-picker:disabled i { display: none; }
+    #model-picker-label b { font-weight: 600; color: #dbe4f3; }
+    #model-menu {
+      position: absolute; left: .5rem; bottom: calc(100% + .3rem); z-index: 20; width: 20rem;
+      background: #0e1729; border: 1px solid #2c3f63; border-radius: 12px; padding: .35rem;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+      opacity: 0; visibility: hidden; transform: translateY(4px); pointer-events: none;
+      transition: opacity .15s ease, transform .15s ease, visibility 0s .15s;
+    }
+    #model-menu.open {
+      opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+      transition: opacity .15s ease, transform .15s ease;
+    }
+    #model-menu .mm-head { font-size: .68rem; letter-spacing: .02em; color: #6b7d9f; padding: .5rem .6rem .25rem; text-transform: capitalize; }
+    #model-menu .mm-head:not(:first-child) { margin-top: .3rem; border-top: 1px solid #1d2c4a; padding-top: .6rem; }
+    #model-menu .mm-row {
+      display: flex; align-items: center; gap: .5rem; width: 100%; height: 2.1rem;
+      background: none; border: 0; color: #cdd6e4; font: inherit; font-size: .82rem;
+      text-align: left; padding: 0 .6rem; border-radius: 8px; cursor: pointer;
+      transition: background .12s;
+    }
+    #model-menu .mm-name { text-transform: capitalize; }
+    #model-menu .mm-sub { color: #6b7d9f; font-size: .76rem; margin-right: auto; }
+    #model-menu .mm-row:hover:not(:disabled) { background: #1a2745; }
+    #model-menu .mm-row:disabled { color: #5c6c8a; cursor: default; }
+    #model-menu .mm-row i { font-size: .7rem; color: #5b7fe8; opacity: 0; transition: opacity .12s; }
+    #model-menu .mm-row.on i { opacity: 1; }
+    #model-menu .mm-seg { display: flex; gap: .2rem; padding: .1rem .35rem .35rem; transition: opacity .15s; }
+    #model-menu .mm-seg.off { opacity: .4; pointer-events: none; }
+    #model-menu .mm-seg button {
+      flex: 1; height: 1.9rem; background: #131f38; border: 1px solid #2c3f63; color: #8a9bba; font: inherit;
+      font-size: .72rem; padding: 0; border-radius: 8px; cursor: pointer;
+      transition: background .12s, color .12s, border-color .12s;
+    }
+    #model-menu .mm-seg button:hover { color: #dbe4f3; }
+    #model-menu .mm-seg button.on { background: #22304f; color: #dbe4f3; border-color: #4a6596; }
+    #model-menu .mm-flyout {
+      position: absolute; left: calc(100% + .35rem); bottom: 0; width: 13rem;
+      background: #0e1729; border: 1px solid #2c3f63; border-radius: 12px; padding: .35rem;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+      opacity: 0; visibility: hidden; transform: translateX(-6px); pointer-events: none;
+      transition: opacity .15s ease, transform .15s ease, visibility 0s .15s;
+    }
+    #model-menu .mm-flyout.show {
+      opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+      transition: opacity .15s ease, transform .15s ease;
+    }
+    #model-menu .mm-flyout .mm-name { text-transform: none; }
+    #composer-row { display: flex; align-items: flex-end; gap: .4rem; }
+    #composer-features {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+      padding: .2rem .25rem .55rem;
+    }
+    .feature { position: relative; }
+    .feature-chip {
+      display: flex; align-items: stretch; height: 1.9rem; border-radius: 999px;
+      border: 1px solid #33476d; background: transparent;
+      transition: background .15s, border-color .15s;
+    }
+    .feature-chip:hover { border-color: #4c6496; background: #1d2b4a; }
+    .feature-toggle {
+      display: inline-flex; align-items: center; gap: .45rem; margin: 0; padding: 0 .8rem;
+      background: none; border: none; border-radius: 999px; cursor: pointer;
+      color: #8fa3c6; font: inherit; font-size: .8rem; white-space: nowrap;
+    }
+    .feature-toggle .fa-solid { font-size: .78rem; }
+    .feature:has(.feature-toggle[aria-pressed="true"]) .feature-chip,
+    .feature:has(.feature-toggle[aria-pressed="true"]) .feature-chip:hover {
+      background: #3b5bdb; border-color: #3b5bdb;
+    }
+    .feature-toggle[aria-pressed="true"],
+    .feature:has(.feature-toggle[aria-pressed="true"]) #lab-context-edit { color: #fff; }
+    .feature-toggle:focus-visible, #lab-context-edit:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+    #lab-context-edit {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 1.9rem; margin: 0 0 0 -.35rem; padding: 0; cursor: pointer;
+      background: none; border: none; border-left: 1px solid #33476d;
+      border-radius: 0 999px 999px 0; color: #7c90b4; font-size: .68rem;
+    }
+    .feature:has(.feature-toggle[aria-pressed="true"]) #lab-context-edit { border-left-color: rgba(255, 255, 255, .25); }
     #lab-context-edit:hover { color: #fff; }
+    .feature-tip {
+      position: absolute; bottom: calc(100% + .95rem); left: 0; z-index: 10;
+      display: flex; flex-direction: column; gap: .35rem;
+      width: max-content; max-width: min(19rem, calc(100vw - 2rem)); padding: .7rem .8rem;
+      border-radius: 10px; background: #0f1830; border: 1px solid #2c3f63;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+      font-size: .78rem; line-height: 1.45; color: #a9bce0;
+      opacity: 0; transform: translateY(4px); pointer-events: none;
+      transition: opacity .12s, transform .12s;
+    }
+    .feature:hover .feature-tip, .feature:focus-within .feature-tip {
+      opacity: 1; transform: none; transition-delay: .25s;
+    }
+    .feature:last-of-type .feature-tip { left: auto; right: 0; }
+    .feature-tip strong { color: #e3e9ff; font-weight: 600; font-size: .82rem; }
+    .feature-tip-cost { display: flex; align-items: center; gap: .4rem; color: #e0b86a; }
+    .feature-tip-cost .fa-solid { font-size: .7rem; }
+    .feature-tip-state { padding-top: .35rem; border-top: 1px solid #1f2e4d; color: #7c90b4; }
+    .feature-tip-state .when-on { display: none; }
+    .feature:has(.feature-toggle[aria-pressed="true"]) .feature-tip-state .when-on { display: inline; color: #91a7ff; }
+    .feature:has(.feature-toggle[aria-pressed="true"]) .feature-tip-state .when-off { display: none; }
+    /* A chat's stages are fixed once its first task starts. The chips still
+       show what's on; the pen stays live because lab notes aren't per chat. */
+    .feature-toggle:disabled { opacity: 1; cursor: not-allowed; }
+    /* Locked, the row is just a read-out: the stages that are on, as text. */
+    #composer-features.locked { gap: .9rem; }
+    #composer-features.locked .feature:not(:has(.feature-toggle[aria-pressed="true"])) { display: none; }
+    #composer-features.locked #lab-context-edit { display: none; }
+    #composer-features.locked .feature-chip,
+    #composer-features.locked .feature-chip:hover,
+    #composer-features.locked .feature:has(.feature-toggle[aria-pressed="true"]) .feature-chip,
+    #composer-features.locked .feature:has(.feature-toggle[aria-pressed="true"]) .feature-chip:hover {
+      height: auto; border: none; background: none;
+    }
+    #composer-features.locked .feature-toggle,
+    #composer-features.locked .feature-toggle[aria-pressed="true"] {
+      gap: .35rem; padding: 0; color: #8fa3c6; font-size: .76rem; cursor: default;
+    }
+    #composer-features.locked .feature-toggle .fa-solid { font-size: .68rem; }
+    .feature-tip-state .when-locked { display: none; }
+    #composer-features.locked .feature-tip-state .when-on,
+    #composer-features.locked .feature-tip-state .when-off { display: none; }
+    #composer-features.locked .feature-tip-state .when-locked { display: inline; }
+    #features-locked-note { display: none; align-items: center; gap: .35rem; margin-left: auto; color: #7c90b4; font-size: .76rem; }
+    #features-locked-note .fa-solid { font-size: .68rem; }
+    #composer-features.locked #features-locked-note { display: inline-flex; }
+    #fork-chat {
+      margin: 0 0 0 .15rem; padding: 0; background: none; border: none;
+      color: #a9bce0; font: inherit; text-decoration: underline; text-underline-offset: 2px;
+    }
+    #fork-chat:hover:not(:disabled) { color: #fff; }
+    #fork-chat:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+    #fork-chat:disabled { cursor: not-allowed; }
+
+    /* Entering a new or forked chat: a band of light crosses the window while
+       the chat slides in behind it. Backwards fill only, so the transform is
+       gone afterwards and can't affect anything fixed inside .content. */
+    #chat-enter-fx { position: fixed; inset: 0; z-index: 60; overflow: hidden; pointer-events: none; }
+    .chat-enter-band {
+      position: absolute; top: 0; bottom: 0; left: 0; width: 45%; opacity: 0;
+      background: linear-gradient(90deg, transparent, rgba(91, 127, 232, .3), transparent);
+    }
+    /* The content starts 36px to the right, which would flash a horizontal scrollbar. */
+    body.chat-entering { overflow-x: hidden; }
+    body.chat-entering .chat-enter-band { animation: chat-enter-band .55s ease-out; }
+    body.chat-entering .content { animation: chat-enter-content .55s cubic-bezier(.2, .7, .2, 1) backwards; }
+    @keyframes chat-enter-band {
+      0% { opacity: 1; transform: translateX(-100%); }
+      100% { opacity: 1; transform: translateX(225%); }
+    }
+    @keyframes chat-enter-content {
+      0% { opacity: 0; transform: translateX(36px); }
+    }
+    @keyframes chat-enter-fade {
+      0% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body.chat-entering .chat-enter-band { animation: none; }
+      body.chat-entering .content { animation-name: chat-enter-fade; }
+    }
+
+    /* Plays over the whole window when a chat's first task starts: the frame
+       closes in from past the window's edges and the lock snaps shut as it
+       lands. Never takes clicks, so the run stays usable underneath. */
+    #chat-lock-fx {
+      position: fixed; inset: 0; z-index: 60; overflow: hidden; pointer-events: none;
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+    .chat-lock-frame {
+      position: absolute; inset: 0; opacity: 0;
+      background: rgba(7, 12, 24, .4);
+      box-shadow: inset 0 0 0 3px #5b7fe8, inset 0 0 110px rgba(91, 127, 232, .4);
+    }
+    .chat-lock-card {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: .15rem;
+      max-width: 100%; padding: 1.1rem 1.6rem; border-radius: 14px; text-align: center;
+      background: #0f1830; border: 1px solid #3a567f; box-shadow: 0 14px 44px rgba(0, 0, 0, .55);
+      color: #a9bce0; font-size: .82rem; opacity: 0;
+    }
+    .chat-lock-card strong { color: #e3e9ff; font-size: .98rem; font-weight: 600; }
+    .chat-lock-icon { display: grid; place-items: center; margin-bottom: .45rem; color: #91a7ff; font-size: 1.5rem; }
+    .chat-lock-icon .fa-solid { grid-area: 1 / 1; }
+    .chat-lock-icon .fa-lock { opacity: 0; }
+    #chat-lock-fx.play .chat-lock-frame { animation: chat-lock-frame 1.9s ease-out both; }
+    #chat-lock-fx.play .chat-lock-card { animation: chat-lock-card 1.9s ease-out both; }
+    #chat-lock-fx.play .chat-lock-icon .fa-lock-open { animation: chat-lock-open 1.9s linear both; }
+    #chat-lock-fx.play .chat-lock-icon .fa-lock { animation: chat-lock-shut 1.9s ease-out both; }
+    @keyframes chat-lock-frame {
+      0% { opacity: 0; transform: scale(1.06); }
+      18% { opacity: .6; }
+      40% { opacity: .6; transform: scale(1); }
+      48% { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(1); }
+    }
+    @keyframes chat-lock-card {
+      0% { opacity: 0; transform: translateY(10px) scale(.96); }
+      16% { opacity: 1; transform: none; }
+      80% { opacity: 1; transform: none; }
+      100% { opacity: 0; transform: translateY(-6px); }
+    }
+    @keyframes chat-lock-open {
+      0%, 38% { opacity: 1; }
+      42%, 100% { opacity: 0; }
+    }
+    @keyframes chat-lock-shut {
+      0%, 38% { opacity: 0; transform: scale(1.35); }
+      46% { opacity: 1; transform: scale(.92); }
+      54%, 100% { opacity: 1; transform: scale(1); }
+    }
+    @keyframes chat-lock-fade {
+      0%, 100% { opacity: 0; }
+      12%, 82% { opacity: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #chat-lock-fx.play .chat-lock-frame,
+      #chat-lock-fx.play .chat-lock-card { animation-name: chat-lock-fade; }
+      #chat-lock-fx.play .chat-lock-icon .fa-solid { animation: none; }
+      .chat-lock-icon .fa-lock-open { opacity: 0; }
+      .chat-lock-icon .fa-lock { opacity: 1; }
+    }
+    /* Narrow screens: the chips wrap, so cards span the whole row instead of
+       sitting over their chip, where they'd run off the edge. */
+    @media (max-width: 600px) {
+      #composer-features { position: relative; gap: .4rem; }
+      .feature { position: static; }
+      .feature-toggle { padding: 0 .65rem; }
+      .feature-tip, .feature:last-of-type .feature-tip { left: 0; right: 0; width: auto; max-width: none; }
+    }
     #lab-context-modal {
       position: fixed; inset: 0; z-index: 50; display: none; padding: 16px;
       align-items: center; justify-content: center; background: rgba(0, 0, 0, .6);
@@ -1180,11 +1522,25 @@
       background: none; border: 0; border-radius: 0; outline: none; resize: none;
       line-height: 1.5;
     }
-    #composer-row > button {
+    #composer-row > button, #attach-wrap > #composer-attach {
       flex: none; display: flex; align-items: center; justify-content: center;
       width: 36px; height: 36px; margin: 0; padding: 0; border: 0; border-radius: 50%;
     }
     #composer-row > button[hidden] { display: none; }
+    #attach-wrap { position: relative; flex: none; }
+    #attach-menu {
+      position: absolute; bottom: calc(100% + .4rem); left: 0; z-index: 30;
+      min-width: 14rem; padding: .3rem; background: #0e1729;
+      border: 1px solid #2c3f63; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    }
+    #attach-menu[hidden] { display: none; }
+    #composer-row #attach-menu button {
+      display: flex; align-items: center; gap: .6rem; width: 100%; height: auto;
+      margin: 0; padding: .5rem .6rem; background: none; border: 0;
+      border-radius: 7px; color: #a9bce0; font-size: .82rem; text-align: left;
+    }
+    #composer-row #attach-menu button:hover { background: #24345a; color: #fff; }
     #composer-attach { background: none; color: #a9bce0; }
     #composer-attach:hover { background: #24345a; color: #fff; }
     #run { background: #dbe4f3; color: #0d1526; }
@@ -1204,6 +1560,8 @@
     #composer .task-upload-status { margin: 0 .5rem .4rem; }
     #composer .task-upload-status[hidden] { display: none; }
     @media (max-width: 520px) {
+      .tabs button { padding: .5rem .4rem; font-size: .85rem; }
+      .tabs button kbd { display: none; }
       .msg.user { max-width: 88%; }
       .empty-state { font-size: 1.3rem; }
     }
@@ -1211,22 +1569,25 @@
 </head>
 <body>
   <header>
-    <button id="menu-btn" title="Chats"><i class="fa-solid fa-bars"></i></button>
+    <button id="menu-btn" title="Chats (⌘B)"><i class="fa-solid fa-bars"></i></button>
     <h1>biomnikhil</h1>
-    <span id="chat-name"></span>
-    <span class="provider-badge">Biomni agent · Bedrock</span>
-    <select id="model-family" class="model-select" title="Model for new runs" disabled>
-      <option value="">Models unavailable</option>
-    </select>
-    <select id="model-version" class="model-select" title="Model version" disabled>
-      <option value="">—</option>
-    </select>
-    <select id="model-effort" class="model-select" title="Effort" disabled>
-      <option value="">Default effort</option>
-    </select>
-    {% if user %}<a id="user-link" href="#" title="Settings">{{ user.email }}</a>{% endif %}
-    <button id="trace-btn" title="Agent trace">&gt;_</button>
+    <button id="files-btn" class="header-btn" title="User files" aria-label="User files"><i class="fa-solid fa-folder-open"></i></button>
+    <button id="integrity-btn" class="header-btn" title="Integrity" aria-label="Integrity"><i class="fa-solid fa-shield-halved"></i><span id="integrity-badge"></span></button>
+    <button id="account-spend-btn" class="header-btn" title="Account spending" aria-label="Account spending"><i class="fa-solid fa-coins"></i></button>
+    <button id="help-btn" class="header-btn" title="Replay the tour" aria-label="Replay the tour"><i class="fa-solid fa-question"></i></button>
+    {% if user %}<a id="user-link" href="#" title="Settings" aria-label="Settings"><i class="fa-solid fa-gear"></i></a>{% endif %}
   </header>
+
+  <div id="chat-enter-fx"><div class="chat-enter-band"></div></div>
+
+  <div id="chat-lock-fx">
+    <div class="chat-lock-frame"></div>
+    <div class="chat-lock-card" id="chat-lock-card" role="status">
+      <span class="chat-lock-icon"><i class="fa-solid fa-lock-open"></i><i class="fa-solid fa-lock"></i></span>
+      <strong id="chat-lock-title"></strong>
+      <span id="chat-lock-hint"></span>
+    </div>
+  </div>
 
   <aside id="trace">
     <div id="trace-resizer" title="Drag to resize"></div>
@@ -1309,15 +1670,21 @@
   <div class="content">
   <main>
 
+    <div id="app-bar" hidden>
+      <button type="button" id="back-to-task"><i class="fa-solid fa-arrow-left"></i> Back to task</button>
+      <span id="app-bar-title"></span>
+      <button type="button" id="task-status" hidden></button>
+    </div>
+
+    <div id="chat-name"></div>
+
     <nav class="tabs">
       <button class="active" data-tab="task">Task</button>
       <button data-tab="outputs">Outputs <span id="output-count-badge"></span></button>
       <button data-tab="citations">Citations <span id="citation-badge"></span></button>
-      <button data-tab="files">Files</button>
       <button data-tab="viewer">Viewer</button>
-      <button data-tab="integrity">Integrity <span id="integrity-badge"></span></button>
-      <button data-tab="spending">Spending</button>
-      <button data-tab="settings">Settings</button>
+      <button data-tab="taskspend">Spending</button>
+      <button id="trace-btn" title="Agent trace" aria-label="Agent trace"><i class="fa-solid fa-terminal"></i> Trace</button>
     </nav>
 
     <section id="tab-task" class="panel active">
@@ -1326,19 +1693,96 @@
         <div id="composer">
           <div class="attach-hint" id="attach-hint" hidden></div>
           <div class="task-upload-status" id="task-upload-status" hidden></div>
-          <div id="composer-features" role="group" aria-label="Workflow agents">
-            <button type="button" class="feature-toggle" data-feature="context" aria-pressed="false" aria-label="Lab context" title="Lab context: add your saved lab notes to the agents' prompts"><i class="fa-solid fa-book-open"></i></button>
-            <button type="button" id="lab-context-edit" aria-label="Edit lab context" title="Edit lab context"><i class="fa-solid fa-pen"></i></button>
-            <button type="button" class="feature-toggle" data-feature="preprocess" aria-pressed="false" aria-label="Data preprocessing" title="Data preprocessing: a separate agent checks and cleans attached files first. Uses more tokens."><i class="fa-solid fa-broom"></i></button>
-            <button type="button" class="feature-toggle" data-feature="review" aria-pressed="false" aria-label="Adversarial review" title="Adversarial review: a separate agent tries to disprove the answer afterwards. Can double a run's tokens."><i class="fa-solid fa-shield-halved"></i></button>
+          <!-- Workflow stages: each chip turns one on or off for this chat
+               (renderFeatures in app.js sets aria-pressed). Hovering or
+               focusing a chip shows its card; the card's last line follows
+               aria-pressed through CSS. -->
+          <div id="composer-features" role="group" aria-label="Workflow stages for this chat">
+            <div class="feature">
+              <div class="feature-chip">
+                <button type="button" class="feature-toggle" data-feature="context" aria-pressed="false" aria-describedby="feature-tip-context">
+                  <i class="fa-solid fa-book-open"></i><span>Lab notes</span>
+                </button>
+                <button type="button" id="lab-context-edit" aria-label="Edit lab notes"><i class="fa-solid fa-pen"></i></button>
+              </div>
+              <div class="feature-tip" id="feature-tip-context" role="tooltip">
+                <strong>Lab notes</strong>
+                <span>Adds your saved protocols, conventions and thresholds to every agent's prompt. The pen edits them.</span>
+                <span class="feature-tip-state"><span class="when-on">On for this chat. Click to turn off.</span><span class="when-off">Off for this chat. Click to turn on.</span><span class="when-locked">Locked for this chat. Fork the chat to change it.</span></span>
+              </div>
+            </div>
+            <div class="feature">
+              <div class="feature-chip">
+                <button type="button" class="feature-toggle" data-feature="preprocess" aria-pressed="false" aria-describedby="feature-tip-preprocess">
+                  <i class="fa-solid fa-broom"></i><span>Clean data</span>
+                </button>
+              </div>
+              <div class="feature-tip" id="feature-tip-preprocess" role="tooltip">
+                <strong>Clean data first</strong>
+                <span>Before the task, a separate agent checks attached files for format problems, missing values, duplicates and outliers, and saves cleaned copies. It stops the run if the data can't support the task. Only runs when files are attached.</span>
+                <span class="feature-tip-cost"><i class="fa-solid fa-coins"></i>Uses more tokens</span>
+                <span class="feature-tip-state"><span class="when-on">On for this chat. Click to turn off.</span><span class="when-off">Off for this chat. Click to turn on.</span><span class="when-locked">Locked for this chat. Fork the chat to change it.</span></span>
+              </div>
+            </div>
+            <div class="feature">
+              <div class="feature-chip">
+                <button type="button" class="feature-toggle" data-feature="assay" aria-pressed="false" aria-describedby="feature-tip-assay">
+                  <i class="fa-solid fa-bullseye"></i><span>Test analysis</span>
+                </button>
+              </div>
+              <div class="feature-tip" id="feature-tip-assay" role="tooltip">
+                <strong>Test the analysis</strong>
+                <span>After the answer, a separate agent plants known effects in shuffled copies of your data and reruns the same analysis. It reports the effect sizes the analysis can find and how many hits it gives when nothing is there. Only runs when files are attached.</span>
+                <span class="feature-tip-cost"><i class="fa-solid fa-coins"></i>Can double a run's tokens</span>
+                <span class="feature-tip-state"><span class="when-on">On for this chat. Click to turn off.</span><span class="when-off">Off for this chat. Click to turn on.</span><span class="when-locked">Locked for this chat. Fork the chat to change it.</span></span>
+              </div>
+            </div>
+            <div class="feature">
+              <div class="feature-chip">
+                <button type="button" class="feature-toggle" data-feature="review" aria-pressed="false" aria-describedby="feature-tip-review">
+                  <i class="fa-solid fa-shield-halved"></i><span>Review answer</span>
+                </button>
+              </div>
+              <div class="feature-tip" id="feature-tip-review" role="tooltip">
+                <strong>Review the answer</strong>
+                <span>After the answer, a separate agent re-runs the key steps and tries to prove it wrong. If it doesn't hold up, the answer is redone.</span>
+                <span class="feature-tip-cost"><i class="fa-solid fa-coins"></i>Can double a run's tokens</span>
+                <span class="feature-tip-state"><span class="when-on">On for this chat. Click to turn off.</span><span class="when-off">Off for this chat. Click to turn on.</span><span class="when-locked">Locked for this chat. Fork the chat to change it.</span></span>
+              </div>
+            </div>
+            <span id="features-locked-note">
+              <i class="fa-solid fa-lock"></i>Locked
+              <button type="button" id="fork-chat" title="Copy this chat and choose different settings for the copy">Fork to change</button>
+            </span>
           </div>
           <div id="composer-row">
-            <button id="composer-attach" type="button" title="Attach files" aria-label="Attach files"><i class="fa-solid fa-plus"></i></button>
+            <div id="attach-wrap">
+              <button id="composer-attach" type="button" title="Attach files" aria-label="Attach files" aria-haspopup="true" aria-expanded="false"><i class="fa-solid fa-plus"></i></button>
+              <div id="attach-menu" hidden>
+                <button type="button" id="attach-upload"><i class="fa-solid fa-upload"></i> Upload from computer</button>
+                <button type="button" id="attach-library"><i class="fa-solid fa-folder-open"></i> Choose from User Files</button>
+              </div>
+            </div>
             <textarea id="prompt" rows="1" placeholder="Ask the agent something…"></textarea>
             <button id="stop" title="Stop" aria-label="Stop" hidden><i class="fa-solid fa-stop"></i></button>
             <button id="run" title="Run task" aria-label="Run task"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
         </div>
+          <div id="composer-models">
+        <button id="model-picker" type="button" aria-haspopup="true" aria-expanded="false" disabled><span id="model-picker-label">Models</span><i class="fa-solid fa-chevron-down"></i></button>
+        <div id="model-menu"></div>
+        <div id="model-selects" hidden>
+        <select id="model-family" class="model-select" title="Model for new runs" disabled>
+          <option value="">Models unavailable</option>
+        </select>
+        <select id="model-version" class="model-select" title="Model version" disabled>
+          <option value="">—</option>
+        </select>
+        <select id="model-effort" class="model-select" title="Effort" disabled>
+          <option value="">Default effort</option>
+        </select>
+        </div>
+          </div>
       </div>
     </section>
 
@@ -1382,6 +1826,12 @@
 
     <!-- Spending: AWS costs. Built by renderSpending() in app.js from
          GET /api/spending. -->
+    <section id="tab-taskspend" class="panel">
+      <div id="spending-sections-task">
+        <div id="spending-stages"></div>
+      </div>
+    </section>
+
     <section id="tab-spending" class="panel">
       <div id="spending-summary"></div>
       <div id="spending-sections">

@@ -87,6 +87,34 @@ traceLive.append(traceCursor, traceStatusEl);
 
 function setTraceStatus(text) {
   traceStatusEl.textContent = text;
+  thinkingStatusEl.textContent = text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+// The chat's "agent is working" line, under the last message during a run.
+// It mirrors the trace's status line and opens the trace when clicked. It's
+// hidden while the agent waits for the user to answer a question.
+const thinkingEl = document.createElement("button");
+thinkingEl.type = "button";
+thinkingEl.className = "thinking";
+thinkingEl.title = "Show the agent's steps";
+const thinkingDots = document.createElement("span");
+thinkingDots.className = "thinking-dots";
+for (let i = 0; i < 3; i++) {
+  thinkingDots.appendChild(document.createElement("span"));
+}
+const thinkingStatusEl = document.createElement("span");
+thinkingStatusEl.className = "thinking-status";
+thinkingEl.append(thinkingDots, thinkingStatusEl);
+thinkingEl.addEventListener("click", () => traceOpen());
+
+function showThinking() {
+  const wasNearBottom = messagesNearBottom();
+  messagesEl.appendChild(thinkingEl); // moves it below anything added since
+  if (wasNearBottom) thinkingEl.scrollIntoView({ block: "end" });
+}
+
+function hideThinking() {
+  thinkingEl.remove();
 }
 
 // The current run's progress, for the live status line. The trace panel keeps
@@ -177,6 +205,7 @@ function traceStart() {
   stepsEl.appendChild(traceLive);
   traceEl.classList.add("open", "running");
   startElapsed();
+  showThinking();
   stepsEl.scrollTop = stepsEl.scrollHeight;
 }
 // Strip biomni's log noise before showing a step in the terminal panel.
@@ -463,11 +492,21 @@ copyTraceBtn.addEventListener("click", async () => {
 function traceEnd() {
   traceEl.classList.remove("running");
   traceLive.remove();
+  hideThinking();
   stopElapsed();
 }
 document.getElementById("trace-btn").addEventListener("click", () =>
   traceEl.classList.toggle("open")
 );
+// Cmd+J on a Mac, Alt+J on Windows (VS Code's panel toggle), same split as the sidebar's B.
+const traceKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘J" : "Alt+J";
+document.getElementById("trace-btn").title = `Agent trace (${traceKeyLabel})`;
+document.addEventListener("keydown", (e) => {
+  const isTraceKey = e.code === "KeyJ" && (e.metaKey || e.altKey) && !e.ctrlKey && !e.shiftKey;
+  if (!isTraceKey) return;
+  e.preventDefault();
+  traceEl.classList.toggle("open");
+});
 document.getElementById("close-trace").addEventListener("click", () =>
   traceEl.classList.remove("open")
 );
@@ -1565,6 +1604,45 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
   return div;
 }
 
+// A question the agent asked mid-run (ask_user), or the user's reply to it.
+// `key` ("q0", "a0", ...) is the bubble's place in the current run, so the
+// stream's replay of a run doesn't add bubbles the chat history already shows.
+function addTurnMessage(kind, text, key = null, options = {}) {
+  removeEmptyState();
+  const wasNearBottom = messagesNearBottom();
+  const div = document.createElement("div");
+  if (kind === "question") {
+    div.className = "msg assistant question";
+    const label = document.createElement("div");
+    label.className = "question-label";
+    label.append(faIcon("circle-question"), document.createTextNode("The agent needs your input"));
+    const body = renderMarkdown(text, []);
+    if (body) {
+      div.append(label, body);
+    } else {
+      div.append(label, document.createTextNode(text));
+    }
+  } else {
+    div.className = "msg user answer";
+    div.textContent = text;
+  }
+  if (key) div.dataset.runTurn = key;
+  const thinkingShown = thinkingEl.parentNode === messagesEl;
+  messagesEl.insertBefore(div, thinkingShown ? thinkingEl : null);
+  if (!options.noScroll && (kind === "answer" || wasNearBottom)) {
+    div.scrollIntoView({ block: "end" });
+  }
+  return div;
+}
+
+// Bubbles from earlier runs keep their text but lose their keys, so a new
+// run's questions aren't mistaken for them.
+function forgetRunTurnKeys() {
+  for (const bubble of messagesEl.querySelectorAll("[data-run-turn]")) {
+    delete bubble.dataset.runTurn;
+  }
+}
+
 async function selectChat(chatId) {
   try {
     const res = await fetch(`/api/chats/${chatId}`);
@@ -1580,12 +1658,26 @@ async function selectChat(chatId) {
     resetOutputTray();
     loadAttachedForChat(chatId);
     loadFeaturesForChat(chatId);
+    syncModelSelects(chatId);
     refreshFiles(); // a file may have gone since the list was last fetched
+    let replayedQuestions = 0;
+    let replayedAnswers = 0;
     for (const m of chat.messages) {
       if (m.role === "trace") {
         traceLine("agent", m.content, m.created); // replay into the terminal panel
       } else if (m.role === "run_start" || m.role === "run_end") {
         traceLine(m.role, m.content, m.created); // run boundary markers
+        if (m.role === "run_start") {
+          forgetRunTurnKeys();
+          replayedQuestions = 0;
+          replayedAnswers = 0;
+        }
+      } else if (m.role === "question") {
+        addTurnMessage("question", m.content, `q${replayedQuestions}`, { noScroll: true });
+        replayedQuestions += 1;
+      } else if (m.role === "answer") {
+        addTurnMessage("answer", m.content, `a${replayedAnswers}`, { noScroll: true });
+        replayedAnswers += 1;
       } else if (m.content === `[error] ${STOPPED_ERROR_TEXT}`) {
         addMessage(m.role, "Stopped by user", false, m.files, m.created, m.id, { noScroll: true, stopped: true });
       } else {
@@ -1622,6 +1714,7 @@ async function selectChat(chatId) {
         // Same run, stream still open: the panel was rebuilt from history
         // above, so put the live status line back under it.
         stepsEl.appendChild(traceLive);
+        if (!awaitingAnswer) showThinking();
       }
     } catch {
       /* active-task lookup is best-effort */
@@ -1657,37 +1750,147 @@ function startNewChat() {
   resetOutputTray();
   loadAttachedForChat(null);
   loadFeaturesForChat(null);
+  syncModelSelects(null);
   refreshFiles(); // a file may have gone since the list was last fetched
   renderEmptyState();
   promptEl.focus();
 }
+
+const chatContentEl = document.querySelector(".content");
+
+function playChatEnterAnimation() {
+  document.body.classList.remove("chat-entering");
+  void document.body.offsetWidth; // restarts it if one is still playing
+  document.body.classList.add("chat-entering");
+}
+
+chatContentEl.addEventListener("animationend", (event) => {
+  if (event.target !== chatContentEl) return; // animations inside the chat bubble up
+  document.body.classList.remove("chat-entering");
+});
+
 newChatBtn.addEventListener("click", () => {
   startNewChat();
+  playChatEnterAnimation();
   closeSidebar();
   document.querySelector('.tabs button[data-tab="task"]').click();
 });
 
 // ---- tabs ----
-document.querySelectorAll(".tabs button").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-    if (btn.dataset.tab === "files") refreshFiles();
-    if (btn.dataset.tab === "outputs") renderOutputTray();
-    if (btn.dataset.tab === "citations") refreshCitations();
-    if (btn.dataset.tab === "integrity") startIntegrity();
-    else stopIntegrity();
-    if (btn.dataset.tab === "spending") refreshSpending();
-    if (btn.dataset.tab === "settings") refreshSettings();
+// Shows one tab's panel. "settings" has no button in the bar; the header
+// gear opens it, so no button is highlighted then.
+const APP_LEVEL_BUTTONS = {
+  files: "files-btn",
+  spending: "account-spend-btn",
+  integrity: "integrity-btn",
+  settings: "user-link",
+};
+
+const APP_LEVEL_TITLES = {
+  files: "User Files",
+  spending: "Account spending",
+  integrity: "Integrity",
+  settings: "Settings",
+};
+
+// While an app-level panel is open, the app bar says what the task is doing.
+// "done" sticks until the user returns to the task screen.
+let finishedWhileAway = false;
+
+function updateTaskStatus() {
+  const pill = document.getElementById("task-status");
+  const onAppPanel = !document.getElementById("app-bar").hidden;
+  pill.classList.remove("running", "done", "waiting");
+  if (!onAppPanel) {
+    finishedWhileAway = false;
+    pill.hidden = true;
+    return;
+  }
+  if (runInProgress && awaitingAnswer) {
+    pill.className = "waiting";
+    pill.innerHTML = '<i class="fa-solid fa-comment-dots"></i> Task needs your reply';
+  } else if (runInProgress) {
+    pill.className = "running";
+    pill.innerHTML = '<i class="fa-solid fa-circle"></i> Task running';
+  } else if (finishedWhileAway) {
+    pill.className = "done";
+    pill.innerHTML = '<i class="fa-solid fa-check"></i> Task finished';
+  } else {
+    pill.hidden = true;
+    return;
+  }
+  pill.hidden = false;
+}
+
+document.getElementById("task-status").addEventListener("click", () => activateTab("task"));
+
+// Page scroll belongs to the task; back rooms are short and would reset it.
+let taskScrollY = 0;
+let currentTabName = "task";
+
+function activateTab(name) {
+  if (currentTabName === "task" && name in APP_LEVEL_BUTTONS) taskScrollY = window.scrollY;
+  const returningToTask = name === "task" && currentTabName in APP_LEVEL_BUTTONS;
+  currentTabName = name;
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === name);
   });
+  document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+  document.getElementById(`tab-${name}`).classList.add("active");
+  // App-level panels aren't about the current task, so the task tab bar hides.
+  const isAppLevel = name in APP_LEVEL_BUTTONS;
+  document.querySelector(".tabs").hidden = isAppLevel;
+  document.body.classList.toggle("back-room", isAppLevel);
+  document.getElementById("app-bar").hidden = !isAppLevel;
+  document.getElementById("app-bar-title").textContent = APP_LEVEL_TITLES[name] || "";
+  updateTaskStatus();
+  for (const [panel, buttonId] of Object.entries(APP_LEVEL_BUTTONS)) {
+    document.getElementById(buttonId)?.classList.toggle("active", panel === name);
+  }
+  if (name === "files") refreshFiles();
+  if (name === "outputs") renderOutputTray();
+  if (name === "citations") refreshCitations();
+  if (name === "integrity") startIntegrity();
+  else stopIntegrity();
+  if (name === "spending") refreshSpending();
+  if (name === "taskspend") refreshSpendingStages();
+  if (name === "settings") refreshSettings();
+  if (returningToTask) window.scrollTo(0, taskScrollY);
+  else if (name in APP_LEVEL_BUTTONS) window.scrollTo(0, 0);
+}
+
+document.getElementById("back-to-task").addEventListener("click", () => activateTab("task"));
+document.addEventListener("keydown", (e) => {
+  const appBar = document.getElementById("app-bar");
+  if (e.key === "Escape" && !appBar.hidden) activateTab("task");
 });
+
+// A header button opens its panel; clicking it again returns to the task.
+function toggleAppPanel(name) {
+  const isOpen = document.getElementById(`tab-${name}`).classList.contains("active");
+  activateTab(isOpen ? "task" : name);
+}
+
+// The Trace button sits in this bar too, but opens a drawer instead of a tab.
+const tabButtons = document.querySelectorAll(".tabs button[data-tab]");
+const tabKeyPrefix = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+
+function addTabKeyHint(button, label) {
+  const hint = document.createElement("kbd");
+  hint.setAttribute("aria-hidden", "true");
+  hint.textContent = label;
+  button.append(hint);
+}
+
+tabButtons.forEach((btn, position) => {
+  btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+  addTabKeyHint(btn, `${tabKeyPrefix}${position + 1}`);
+});
+addTabKeyHint(document.getElementById("trace-btn"), traceKeyLabel);
 
 // Cmd+1..n (Ctrl on Windows) picks a tab by its position in the bar.
 document.addEventListener("keydown", (e) => {
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-  const tabButtons = document.querySelectorAll(".tabs button");
   const tabButton = tabButtons[Number(e.key) - 1];
   if (!tabButton) return;
   e.preventDefault();
@@ -1725,7 +1928,7 @@ function saveAttached() {
 }
 
 // ---- workflow icons: each chat remembers which stages are on ----
-const DEFAULT_FEATURES = { context: true, preprocess: false, review: false };
+const DEFAULT_FEATURES = { context: true, preprocess: false, assay: false, review: false };
 let features = { ...DEFAULT_FEATURES };
 
 function featuresKeyFor(chatId) {
@@ -1749,7 +1952,75 @@ function loadFeaturesForChat(chatId) {
     /* blocked or corrupt storage: use the defaults */
   }
   renderFeatures();
+  setFeaturesLocked(chatSettingsAreFixed(chatId));
 }
+
+function unstartedForkKey(chatId) {
+  return `unstartedFork:${chatId}`;
+}
+
+function isUnstartedFork(chatId) {
+  try {
+    return localStorage.getItem(unstartedForkKey(chatId)) !== null;
+  } catch {
+    return false; // blocked storage: the fork stays locked like any other chat
+  }
+}
+
+// A chat only gets an id when its first task starts, so having one means its
+// stages are fixed. The exception is a fork, which is open until its own
+// first task starts.
+function chatSettingsAreFixed(chatId) {
+  return Boolean(chatId) && !isUnstartedFork(chatId);
+}
+
+function setFeaturesLocked(locked) {
+  document.getElementById("composer-features").classList.toggle("locked", locked);
+  for (const button of document.querySelectorAll(".feature-toggle")) {
+    button.disabled = locked;
+  }
+}
+
+const chatLockFx = document.getElementById("chat-lock-fx");
+const chatLockCard = document.getElementById("chat-lock-card");
+const chatLockTitle = document.getElementById("chat-lock-title");
+const chatLockHint = document.getElementById("chat-lock-hint");
+
+function playChatLockAnimation() {
+  chatLockTitle.textContent = "Settings locked for this chat";
+  chatLockHint.textContent = "Fork the chat to change them.";
+  chatLockFx.classList.add("play");
+}
+
+chatLockCard.addEventListener("animationend", (event) => {
+  if (event.target !== chatLockCard) return; // the icon's own animations bubble up
+  chatLockFx.classList.remove("play");
+  chatLockTitle.textContent = "";
+  chatLockHint.textContent = "";
+});
+
+const forkChatBtn = document.getElementById("fork-chat");
+
+async function forkCurrentChat() {
+  forkChatBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/chats/${currentChatId}/fork`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    const forkId = body.chat.id;
+    // The fork starts from this chat's stages and attachments.
+    localStorage.setItem(unstartedForkKey(forkId), "1");
+    localStorage.setItem(featuresKeyFor(forkId), JSON.stringify(features));
+    localStorage.setItem(attachedKeyFor(forkId), JSON.stringify([...attached]));
+    saveChatModel(forkId, shownChatModel());
+    await selectChat(forkId);
+    playChatEnterAnimation();
+  } catch (err) {
+    addMessage("assistant", `Fork failed: ${err.message || err}`, true);
+  }
+  forkChatBtn.disabled = runInProgress;
+}
+forkChatBtn.addEventListener("click", forkCurrentChat);
 
 function saveFeatures() {
   try {
@@ -2160,7 +2431,24 @@ async function uploadFiles(files) {
 }
 
 dropzone.addEventListener("click", () => fileInput.click());
-document.getElementById("composer-attach").addEventListener("click", () => fileInput.click());
+const attachButton = document.getElementById("composer-attach");
+const attachMenu = document.getElementById("attach-menu");
+
+function setAttachMenuOpen(open) {
+  attachMenu.hidden = !open;
+  attachButton.setAttribute("aria-expanded", String(open));
+}
+
+attachButton.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setAttachMenuOpen(attachMenu.hidden);
+});
+document.addEventListener("click", () => setAttachMenuOpen(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setAttachMenuOpen(false);
+});
+document.getElementById("attach-upload").addEventListener("click", () => fileInput.click());
+document.getElementById("attach-library").addEventListener("click", () => activateTab("files"));
 fileInput.addEventListener("change", () => {
   uploadFiles([...fileInput.files]);
   fileInput.value = "";
@@ -2246,11 +2534,25 @@ taskPanel.addEventListener("paste", (event) => {
 // currentTaskId isn't known yet). runBtn.disabled can't answer this: it's also
 // disabled for an empty prompt, and retry buttons run with an empty prompt.
 let runInProgress = false;
+// The current run asked the user something and is waiting: the composer
+// sends its text there as the reply instead of starting a new run.
+let awaitingAnswer = false;
+const DEFAULT_PLACEHOLDER = promptEl.placeholder;
+
+function setAwaitingAnswer(waiting) {
+  awaitingAnswer = waiting;
+  updateTaskStatus();
+  promptEl.placeholder = waiting ? "Reply to the agent…" : DEFAULT_PLACEHOLDER;
+  runBtn.title = waiting ? "Send reply" : "Run task";
+  runBtn.setAttribute("aria-label", runBtn.title);
+  updateRunEnabled();
+}
 
 function updateRunEnabled() {
   const hasPrompt = promptEl.value.trim() !== "";
-  runBtn.disabled = runInProgress || !hasPrompt;
-  runBtn.classList.toggle("nothing-to-send", !runInProgress && !hasPrompt);
+  const busy = runInProgress && !awaitingAnswer;
+  runBtn.disabled = busy || !hasPrompt;
+  runBtn.classList.toggle("nothing-to-send", !busy && !hasPrompt);
 }
 
 function growPrompt() {
@@ -2276,7 +2578,42 @@ function clearPrompt() {
 function submitPrompt() {
   const prompt = promptEl.value.trim();
   if (!prompt) return;
+  if (awaitingAnswer && currentTaskId) {
+    sendAnswer(currentTaskId, prompt);
+    return;
+  }
   runTask(prompt, { fromComposer: true });
+}
+
+async function sendAnswer(taskId, text) {
+  setAwaitingAnswer(false); // no second send while this one is in flight
+  clearPrompt();
+  const bubble = addTurnMessage("answer", text, `a${runAnswerCount}`);
+  showThinking();
+  setTraceStatus("reading your reply…");
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  } catch (err) {
+    bubble.remove();
+    if (!promptEl.value.trim()) fillPrompt(text);
+    let errorText = err.message || String(err);
+    if (err instanceof TypeError) {
+      errorText = "Can't reach the server. Is it still running?";
+    }
+    addMessage("assistant", `Your reply wasn't sent: ${errorText}`, true);
+    // Still waiting unless the run moved on (answered elsewhere, or ended).
+    if (currentTaskId === taskId && !(err.message || "").includes("isn't waiting")) {
+      hideThinking();
+      setTraceStatus("waiting for your reply");
+      setAwaitingAnswer(true);
+    }
+  }
 }
 
 runBtn.addEventListener("click", submitPrompt);
@@ -2295,6 +2632,10 @@ updateRunEnabled();
 const stopBtn = document.getElementById("stop");
 let currentTaskId = null;
 let activeEventSource = null; // the one live SSE connection this tab should have open
+// Questions and replies the current stream has seen; the stream replays a
+// run from its start, so these restart with each attachStream().
+let runQuestionCount = 0;
+let runAnswerCount = 0;
 
 let stopRequestedTaskId = null; // the run the server has been asked to stop
 let stopQueued = false; // Stop was clicked before the server gave a task id
@@ -2351,8 +2692,13 @@ async function restoreStoppingState(taskId) {
 }
 
 function setRunning(running) {
+  if (runInProgress && !running && !document.getElementById("app-bar").hidden) {
+    finishedWhileAway = true;
+  }
   runInProgress = running;
+  updateTaskStatus();
   updateRunEnabled();
+  forkChatBtn.disabled = running; // the server refuses to copy a live run
   stopBtn.hidden = !running;
   // A reconnect calls this mid-run, and must not undo a pending stop.
   const stopPending = stopQueued || (currentTaskId && stopRequestedTaskId === currentTaskId);
@@ -2365,6 +2711,7 @@ function setRunning(running) {
     currentTaskId = null;
     stopRequestedTaskId = null;
     stopQueued = false;
+    setAwaitingAnswer(false);
   }
 }
 
@@ -2401,6 +2748,11 @@ async function runTask(prompt, options = {}) {
   if (runInProgress) return; // one task at a time
 
   setRunning(true);
+  setFeaturesLocked(true); // what's sent below is what the chat keeps
+  const chatModel = shownChatModel();
+  lockedChatModel = chatModel;
+  fillEfforts(); // disables the selects
+  forgetRunTurnKeys();
   const previousUserPrompt = lastUserPrompt;
   const userDiv = addMessage("user", prompt);
   traceStart();
@@ -2418,7 +2770,14 @@ async function runTask(prompt, options = {}) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, files: [...attached], chat_id: currentChatId, features }),
+      body: JSON.stringify({
+        prompt,
+        files: [...attached],
+        chat_id: currentChatId,
+        features,
+        model: chatModel.model,
+        effort: chatModel.effort,
+      }),
     });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({}));
@@ -2439,15 +2798,21 @@ async function runTask(prompt, options = {}) {
     if (options.fromComposer && promptEl.value.trim() === prompt) clearPrompt();
     // These attachments now belong to this chat; left in the "new" bucket,
     // they'd be attached to every chat started after it.
+    const isFirstTask = !currentChatId || isUnstartedFork(currentChatId);
     if (!currentChatId) localStorage.removeItem(attachedKeyFor(null));
     currentChatId = chat_id;
+    localStorage.removeItem(unstartedForkKey(chat_id));
+    saveChatModel(chat_id, chatModel);
     localStorage.setItem("lastChatId", chat_id);
     saveAttached(); // persist under the now-real chat id, not the "new" bucket
     saveFeatures();
     refreshChats();
     attachStream(task_id);
+    if (isFirstTask) playChatLockAnimation();
   } catch (err) {
     setRunning(false);
+    setFeaturesLocked(chatSettingsAreFixed(currentChatId));
+    syncModelSelects(currentChatId);
     traceEnd();
     // The message was never sent, so it goes back to the prompt box instead
     // of staying in the chat. A draft typed since then is kept.
@@ -2481,6 +2846,9 @@ function attachStream(taskId) {
   } else {
     restoreStoppingState(taskId);
   }
+  runQuestionCount = 0;
+  runAnswerCount = 0;
+  setAwaitingAnswer(false);
   const source = new EventSource(`/api/tasks/${taskId}/stream`);
   activeEventSource = source;
   const isStale = () => source !== activeEventSource;
@@ -2494,7 +2862,11 @@ function attachStream(taskId) {
       // timestamp is when the run truly began — sync the elapsed ticker.
       const ms = msg.step.t * 1000;
       if (runT0 && ms < runT0) runT0 = ms;
-      traceLine(msg.step.kind, msg.step.text, msg.step.t);
+      if (msg.step.kind === "question" || msg.step.kind === "answer") {
+        showTurnStep(msg.step);
+      } else {
+        traceLine(msg.step.kind, msg.step.text, msg.step.t);
+      }
     }
     if (msg.status) {
       source.close();
@@ -2556,6 +2928,32 @@ function attachStream(taskId) {
         traceEnd();
       });
   };
+}
+
+// A question or reply from the run's stream. Either may already be on screen:
+// from the chat history on a re-attach, or a reply this tab just sent.
+function showTurnStep(step) {
+  let key;
+  if (step.kind === "question") {
+    key = `q${runQuestionCount}`;
+    runQuestionCount += 1;
+  } else {
+    key = `a${runAnswerCount}`;
+    runAnswerCount += 1;
+  }
+  if (!messagesEl.querySelector(`[data-run-turn="${key}"]`)) {
+    addTurnMessage(step.kind, step.text, key);
+  }
+  if (step.kind === "question") {
+    hideThinking();
+    setTraceStatus("waiting for your reply");
+    setAwaitingAnswer(true);
+    promptEl.focus();
+  } else {
+    showThinking();
+    setTraceStatus("reading your reply…");
+    setAwaitingAnswer(false);
+  }
 }
 
 // ---- data lake first-run modal ----
@@ -2780,6 +3178,53 @@ const versionSelect = document.getElementById("model-version");
 const effortSelect = document.getElementById("model-effort");
 let modelFamilies = [];
 let currentEffort = null; // the level in effect on the server; null = default
+// The {model, effort} the selects are held on while this chat is locked.
+let lockedChatModel = null;
+const FAMILY_TITLE = "Model for new runs, on Bedrock. Switching applies to the next task.";
+const LOCKED_MODEL_TITLE = "Locked for this chat. Fork the chat to change it.";
+
+function chatModelKey(chatId) {
+  return `chatModel:${chatId}`;
+}
+
+function readChatModel(chatId) {
+  try {
+    return JSON.parse(localStorage.getItem(chatModelKey(chatId)));
+  } catch {
+    return null; // blocked or corrupt storage: use what the selects show
+  }
+}
+
+function saveChatModel(chatId, chatModel) {
+  try {
+    localStorage.setItem(chatModelKey(chatId), JSON.stringify(chatModel));
+  } catch {
+    /* blocked storage: the chat keeps whatever the selects show next time */
+  }
+}
+
+function shownChatModel() {
+  return { model: versionSelect.value, effort: effortSelect.value };
+}
+
+// Puts the selects on this chat's model: held there once its settings are
+// fixed, or just a starting point for a fork that hasn't run yet.
+function syncModelSelects(chatId) {
+  const savedChatModel = readChatModel(chatId);
+  if (chatSettingsAreFixed(chatId)) {
+    lockedChatModel = savedChatModel || shownChatModel();
+  } else {
+    lockedChatModel = null;
+    if (savedChatModel) {
+      currentModel = savedChatModel.model;
+      currentEffort = savedChatModel.effort;
+    }
+  }
+  if (!modelFamilies.length) return;
+  familySelect.disabled = false;
+  familySelect.title = FAMILY_TITLE;
+  showModel(lockedChatModel ? lockedChatModel.model : currentModel);
+}
 
 function option(value, text) {
   const opt = document.createElement("option");
@@ -2795,6 +3240,7 @@ function showModelPlaceholder(text, title) {
   versionSelect.replaceChildren(option("", "—"));
   familySelect.disabled = versionSelect.disabled = true;
   familySelect.title = title;
+  refreshModelPicker();
 }
 
 // Versions the endpoint lists as unavailable (e.g. not offered under the
@@ -2831,11 +3277,19 @@ function fillEfforts() {
     option("", "Default effort"),
     ...levels.map((e) => option(e, `${e} effort`)),
   );
-  effortSelect.value = levels.includes(currentEffort) ? currentEffort : "";
+  const shownEffort = lockedChatModel ? lockedChatModel.effort : currentEffort;
+  effortSelect.value = levels.includes(shownEffort) ? shownEffort : "";
   effortSelect.disabled = !levels.length;
   effortSelect.title = levels.length
     ? "How hard the model works on each step; higher costs more and takes longer. Applies to the next task."
     : "This model doesn't support effort levels.";
+  if (lockedChatModel) {
+    for (const select of [familySelect, versionSelect, effortSelect]) {
+      select.disabled = true;
+      select.title = LOCKED_MODEL_TITLE;
+    }
+  }
+  refreshModelPicker();
 }
 
 function renderModels(info) {
@@ -2865,7 +3319,8 @@ function renderModels(info) {
   familySelect.disabled = false;
   fillVersions(current.name, info.current);
   currentModel = versionSelect.value || info.current;
-  familySelect.title = "Model for new runs, on Bedrock. Switching applies to the next task.";
+  familySelect.title = FAMILY_TITLE;
+  if (lockedChatModel) showModel(lockedChatModel.model);
 }
 
 // Render instantly from the list embedded in the page, then re-check the
@@ -2953,6 +3408,159 @@ effortSelect.addEventListener("change", async () => {
     console.warn("effort switch failed; keeping", currentEffort, err);
   }
   fillEfforts(); // what the server has, success or not
+});
+
+// ---- composer model picker: a quiet trigger plus popover that drives the
+// (hidden) selects above, so all the save/lock logic stays in one place. ----
+const pickerButton = document.getElementById("model-picker");
+const pickerLabel = document.getElementById("model-picker-label");
+const pickerMenu = document.getElementById("model-menu");
+
+// "Opus 5" under family "opus" -> "5"; unavailable markers dropped.
+function shortVersion(text, family) {
+  const plain = text.replace(/ \(unavailable\)$/, "");
+  return plain.replace(new RegExp(`^${family}\\s*`, "i"), "");
+}
+
+const EFFORT_SHORT = { "": "Auto", Default: "Auto", Medium: "Med", Xhigh: "XHigh" };
+
+function chosenOption(select) {
+  return select.options[select.selectedIndex];
+}
+
+function refreshModelPicker() {
+  const family = chosenOption(familySelect);
+  const version = chosenOption(versionSelect);
+  const picked = Boolean(familySelect.value);
+  pickerLabel.replaceChildren();
+  if (!picked) {
+    pickerLabel.textContent = family ? family.textContent : "Models";
+    pickerButton.disabled = true;
+    closeModelMenu();
+    return;
+  }
+  const name = el("b", null, familySelect.value);
+  name.style.textTransform = "capitalize";
+  pickerLabel.append(name);
+  const versionText = version ? shortVersion(version.textContent, familySelect.value) : "";
+  if (versionText) pickerLabel.append(` ${versionText}`);
+  if (effortSelect.value) pickerLabel.append(` · ${effortSelect.value}`);
+  const single = modelFamilies.length < 2 && versionSelect.disabled && effortSelect.disabled;
+  pickerButton.disabled = Boolean(lockedChatModel) || single;
+  pickerButton.title = lockedChatModel ? LOCKED_MODEL_TITLE : FAMILY_TITLE;
+  if (pickerButton.disabled) closeModelMenu();
+  else syncModelMenu();
+}
+
+// The menu is built once and then only updated in place (check marks, the
+// flyout's rows, the effort buttons), so a click never redraws what's under
+// the cursor and nothing jumps. Every click does the same thing: select it,
+// keep the menu open, move the check.
+const menuModels = el("div", "mm-section");
+const menuEffort = el("div", "mm-seg");
+const menuFlyout = el("div", "mm-flyout");
+pickerMenu.append(
+  el("div", "mm-head", "Model"),
+  menuModels,
+  el("div", "mm-head", "Effort"),
+  menuEffort,
+  menuFlyout,
+);
+let flyoutOpen = false;
+let flyoutFamily = null;
+
+function isModelMenuOpen() {
+  return pickerMenu.classList.contains("open");
+}
+
+function closeModelMenu() {
+  flyoutOpen = false;
+  pickerMenu.classList.remove("open");
+  menuFlyout.classList.remove("show");
+  pickerButton.setAttribute("aria-expanded", "false");
+}
+
+function choose(select, value) {
+  select.value = value;
+  select.dispatchEvent(new Event("change"));
+}
+
+function menuRow(text, onClick) {
+  const row = el("button", "mm-row");
+  row.type = "button";
+  row.append(el("span", "mm-name", text), el("span", "mm-sub"), el("i", "fa-solid fa-check"));
+  row.addEventListener("click", onClick);
+  return row;
+}
+
+// Keeps a list of buttons matching the options; rebuilds only when the
+// options themselves changed, otherwise just moves the active mark.
+function syncRows(container, select, makeRow) {
+  const signature = Array.from(select.options, (o) => `${o.value}|${o.textContent}|${o.disabled}`).join("\n");
+  if (container.dataset.signature !== signature) {
+    container.dataset.signature = signature;
+    container.replaceChildren(...Array.from(select.options, makeRow));
+  }
+  Array.from(select.options).forEach((opt, index) => {
+    const row = container.children[index];
+    row.classList.toggle("on", opt.value === select.value);
+    row.disabled = opt.disabled;
+  });
+}
+
+function syncModelMenu() {
+  syncRows(menuModels, familySelect, (opt) =>
+    menuRow(opt.textContent, () => {
+      flyoutOpen = true;
+      choose(familySelect, opt.value);
+    }),
+  );
+  // Each model row shows the version it would run: the chosen one for the
+  // active model, otherwise its newest usable one.
+  modelFamilies.forEach((fam, index) => {
+    const row = menuModels.children[index];
+    if (!row) return;
+    const active = fam.name === familySelect.value;
+    const shown = active
+      ? chosenOption(versionSelect)?.textContent
+      : (fam.versions.find((v) => v.available) || fam.versions[0])?.label;
+    row.querySelector(".mm-sub").textContent = shown ? shortVersion(shown, fam.name) : "";
+  });
+  syncRows(menuEffort, effortSelect, (opt) => {
+    const label = opt.textContent.replace(/ effort$/, "");
+    const btn = el("button", null, EFFORT_SHORT[label] || EFFORT_SHORT[opt.textContent] || label);
+    btn.type = "button";
+    btn.addEventListener("click", () => choose(effortSelect, opt.value));
+    return btn;
+  });
+  // No effort levels for this model: keep the row (so the menu doesn't change
+  // height) but dim it.
+  menuEffort.classList.toggle("off", effortSelect.disabled);
+  if (flyoutFamily !== familySelect.value) {
+    flyoutFamily = familySelect.value;
+    menuFlyout.replaceChildren(el("div", "mm-head", `${familySelect.value} versions`));
+  }
+  const flyoutRows = menuFlyout.querySelector(".mm-rows") || menuFlyout.appendChild(el("div", "mm-rows"));
+  syncRows(flyoutRows, versionSelect, (opt) =>
+    menuRow(opt.textContent.replace(new RegExp(`^${familySelect.value}\\s*`, "i"), ""), () => choose(versionSelect, opt.value)),
+  );
+  menuFlyout.classList.toggle("show", flyoutOpen && versionSelect.options.length > 1);
+}
+
+pickerButton.addEventListener("click", () => {
+  if (isModelMenuOpen()) {
+    closeModelMenu();
+    return;
+  }
+  syncModelMenu();
+  pickerMenu.classList.add("open");
+  pickerButton.setAttribute("aria-expanded", "true");
+});
+document.addEventListener("click", (event) => {
+  if (isModelMenuOpen() && !event.target.closest("#composer-models")) closeModelMenu();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeModelMenu();
 });
 
 initModels();
@@ -3420,6 +4028,48 @@ function spendingServicesCard(services, currency) {
   return card;
 }
 
+// What each stage of the latest run used. Token counts, not dollars: the
+// share weights output and cached tokens by their usual price ratios.
+const spendingStagesEl = document.getElementById("spending-stages");
+
+function renderSpendingStages(stages) {
+  const card = el("section", "spend-card");
+  card.append(
+    el("h2", null, "Latest run by stage"),
+    el("p", "note", "Share of the run's cost, from token counts. The optional stages (preprocess, assay, review) are the extra cost over the main analysis."),
+  );
+  if (!stages.length) {
+    card.append(el("p", "note", "No run since the app started."));
+    spendingStagesEl.replaceChildren(card);
+    return;
+  }
+  for (const stage of stages) {
+    const row = el("div", "spend-service");
+    const track = el("div", "track");
+    const fill = el("div", "fill");
+    fill.style.width = `${stage.share * 100}%`;
+    track.append(fill);
+    const name = el("div", "name", stage.name);
+    const cached = stage.cached_tokens ? ` (${stage.cached_tokens.toLocaleString()} cached)` : "";
+    name.append(el("span", "detail",
+      `${stage.calls} calls · ${stage.input_tokens.toLocaleString()} in${cached} · ${stage.output_tokens.toLocaleString()} out`));
+    row.append(name, track, el("div", "amount", `${Math.round(stage.share * 100)}%`));
+    card.append(row);
+  }
+  spendingStagesEl.replaceChildren(card);
+}
+
+async function refreshSpendingStages() {
+  try {
+    const res = await fetch("/api/spending/stages");
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSpendingStages(data.stages);
+  } catch (err) {
+    spendingStagesEl.replaceChildren(); // Cost Explorer's figures above don't depend on this
+  }
+}
+
 // Grey shapes in the layout of the real tab, while the first fetch runs.
 function renderSpendingLoading() {
   spendingSummaryEl.replaceChildren(
@@ -3647,7 +4297,11 @@ settingsCleanupBtn.addEventListener("click", () => {
   }, "Closing biomnikhil to clean up. Answer the questions in the window that opens.");
 });
 
+document.getElementById("files-btn").addEventListener("click", () => toggleAppPanel("files"));
+document.getElementById("integrity-btn").addEventListener("click", () => toggleAppPanel("integrity"));
+document.getElementById("account-spend-btn").addEventListener("click", () => toggleAppPanel("spending"));
+
 document.getElementById("user-link")?.addEventListener("click", (e) => {
   e.preventDefault();
-  document.querySelector('.tabs button[data-tab="settings"]').click();
+  toggleAppPanel("settings");
 });
