@@ -1567,7 +1567,7 @@
     }
   </style>
 </head>
-<body>
+<body{% if always_show_tour %} data-always-tour{% endif %}>
   <header>
     <button id="menu-btn" title="Chats (⌘B)"><i class="fa-solid fa-bars"></i></button>
     <h1>biomnikhil</h1>
@@ -1952,5 +1952,6 @@
   <script src="{{ url_for('static', filename='vendor/marked.umd.js') }}"></script>
   <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='tour.js') }}"></script>
 </body>
 </html>
