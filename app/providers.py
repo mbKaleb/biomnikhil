@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE = "Anthropic"
 # The fallback list, and the default model (the first).
-MODELS: tuple[str, ...] = ("anthropic.claude-opus-5", "anthropic.claude-haiku-4-5")
+MODELS: tuple[str, ...] = ("anthropic.claude-opus-4-8", "anthropic.claude-opus-5", "anthropic.claude-haiku-4-5")
 
 EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 
