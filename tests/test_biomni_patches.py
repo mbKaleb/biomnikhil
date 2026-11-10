@@ -196,19 +196,66 @@ def test_prompt_caching_only_for_the_run_llm(monkeypatch):
     assert sent_bodies[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_explicit_thinking_only_where_models_need_it(monkeypatch):
+def test_thinking_is_sent_where_a_model_needs_it_or_hides_it(monkeypatch):
     biomni_runner._patch_sampling_params()
     from langchain_anthropic import ChatAnthropic
 
-    def sent(model):
+    def thinking(model, effort="high"):
         llm = ChatAnthropic(model=model, api_key="unused", temperature=0.7)
-        monkeypatch.setattr(biomni_runner, "_run_effort", (llm, "high"))
-        return llm._get_request_payload([HumanMessage("hi")])
+        monkeypatch.setattr(biomni_runner, "_run_effort", (llm, effort))
+        payload = llm._get_request_payload([HumanMessage("hi")])
+        return (payload.get("extra_body") or {}).get("thinking"), payload
 
-    older = sent("anthropic.claude-opus-4-8")
-    assert older["extra_body"]["thinking"] == {"type": "adaptive"}
-    assert _temperature(older) is None
-    assert "thinking" not in sent("anthropic.claude-opus-5-5")["extra_body"]
+    summarized = {"type": "adaptive", "display": "summarized"}
+    sent, payload = thinking("anthropic.claude-opus-4-8")
+    assert sent == summarized
+    assert _temperature(payload) is None
+    # Opus 4.6 needs it spelled out but already sends a summary.
+    assert thinking("anthropic.claude-opus-4-6")[0] == {"type": "adaptive"}
+    # Models that think by default are sent it for the summary, effort or not.
+    assert thinking("anthropic.claude-opus-5-5")[0] == summarized
+    assert thinking("anthropic.claude-opus-5-5", effort=None)[0] == summarized
+    # Without an effort level Opus 4.8 still runs without thinking, as before.
+    assert thinking("anthropic.claude-opus-4-8", effort=None)[0] is None
+    assert thinking("anthropic.claude-haiku-4-5")[0] is None
+
+    monkeypatch.setitem(biomni_runner._thinking_display, "summarized", False)
+    assert thinking("anthropic.claude-opus-4-8")[0] == {"type": "adaptive"}
+
+
+def test_a_rejected_thinking_display_is_dropped_and_the_call_repeated(monkeypatch):
+    import anthropic
+    import httpx2
+
+    def bad_request(message):
+        response = httpx2.Response(400, request=httpx2.Request("POST", "http://example.test"))
+        return anthropic.BadRequestError(message, response=response, body=None)
+
+    class FakeLLM:
+        def __init__(self, error):
+            self.error = error
+            self.calls = 0
+
+        def invoke(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise self.error
+            return "reply"
+
+    monkeypatch.setitem(biomni_runner._thinking_display, "summarized", True)
+    llm = FakeLLM(bad_request("thinking.adaptive.display: Extra inputs are not permitted"))
+    biomni_runner._drop_rejected_thinking_display(llm)
+    assert llm.invoke("hi") == "reply"
+    assert llm.calls == 2
+    assert biomni_runner._thinking_display["summarized"] is False
+
+    # Any other 400 is not ours to hide.
+    monkeypatch.setitem(biomni_runner._thinking_display, "summarized", True)
+    other = FakeLLM(bad_request("prompt is too long"))
+    biomni_runner._drop_rejected_thinking_display(other)
+    with pytest.raises(anthropic.BadRequestError):
+        other.invoke("hi")
+    assert biomni_runner._thinking_display["summarized"] is True
 
 
 def test_uncapped_agent_llm_streams_a_full_size_request(monkeypatch):
@@ -408,3 +455,217 @@ def test_usage_is_counted_per_stage():
 
     biomni_runner._stage_usage.clear()
     biomni_runner._current_stage["name"] = "main"
+
+
+def _watched_run(monkeypatch, cancelled=lambda: False):
+    """The reply logger, set up as _drive does for a run; returns it and the
+    lines it puts in the trace."""
+    lines = []
+    monkeypatch.setitem(biomni_runner._run_watch, "notice", lines.append)
+    monkeypatch.setitem(biomni_runner._run_watch, "cancelled", cancelled)
+    return biomni_runner._untagged_reply_logger(), lines
+
+
+def _result_with(content, output_tokens=1223, stop_reason="end_turn"):
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    message = AIMessage(
+        content=content,
+        usage_metadata={"input_tokens": 18291, "output_tokens": output_tokens, "total_tokens": 0},
+        response_metadata={"stop_reason": stop_reason},
+    )
+    return LLMResult(generations=[[ChatGeneration(message=message)]])
+
+
+def test_a_reply_of_only_hidden_thinking_says_so_in_the_trace(monkeypatch):
+    import uuid
+
+    logger, lines = _watched_run(monkeypatch)
+    thinking_only = ["", {"type": "thinking", "thinking": "", "signature": "abc"}]
+    logger.on_llm_end(_result_with(thinking_only), run_id=uuid.uuid4())
+    assert len(lines) == 1
+    assert "no text" in lines[0]
+    assert "1,223 output tokens" in lines[0]
+    assert "end_turn" in lines[0]
+
+
+def test_a_reply_with_text_adds_no_line(monkeypatch):
+    import uuid
+
+    logger, lines = _watched_run(monkeypatch)
+    logger.on_llm_end(_result_with("I'll look at the data first."), run_id=uuid.uuid4())
+    assert lines == []
+
+
+def test_a_slow_model_call_and_a_stop_waiting_on_it_show_in_the_trace(monkeypatch):
+    import time
+    import uuid
+
+    monkeypatch.setattr(biomni_runner, "CALL_CHECK_SECONDS", 0.05)
+    monkeypatch.setattr(biomni_runner, "CALL_NOTICE_AFTER_SECONDS", 0.1)
+    monkeypatch.setattr(biomni_runner, "CALL_NOTICE_EVERY_SECONDS", 100)
+    stop = []
+    logger, lines = _watched_run(monkeypatch, cancelled=lambda: bool(stop))
+    run_id = uuid.uuid4()
+    logger.on_chat_model_start({}, [], run_id=run_id)
+    deadline = time.time() + 5
+    while not lines and time.time() < deadline:
+        time.sleep(0.05)
+    assert lines[0].startswith("Still waiting for the model's reply")
+
+    stop.append(True)
+    while len(lines) < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert lines[1].startswith("Stop pressed")
+
+    # Once the call ends the watcher goes quiet.
+    logger.on_llm_error(RuntimeError("done"), run_id=run_id)
+    time.sleep(0.3)
+    assert len(lines) == 2
+
+
+def test_an_empty_reply_shows_the_models_thinking_summary(monkeypatch):
+    import uuid
+
+    logger, lines = _watched_run(monkeypatch)
+    summary = "The user didn't say which protein, so I should ask."
+    content = ["", {"type": "thinking", "thinking": summary, "signature": "abc"}]
+    logger.on_llm_end(_result_with(content), run_id=uuid.uuid4())
+    assert len(lines) == 1
+    assert lines[0].endswith("Its thinking, summarized: " + summary)
+
+
+def test_the_question_after_two_empty_replies_carries_the_thinking_summary(monkeypatch):
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+    def thinking_only(summary):
+        return AIMessage(content=["", {"type": "thinking", "thinking": summary, "signature": "abc"}])
+
+    llm = FakeMessagesListChatModel(responses=[
+        thinking_only("No protein was named."),
+        thinking_only("I need to ask which one.\nThen search."),
+    ])
+    biomni_runner._reset_untagged_streak()
+    biomni_runner._ask_when_stuck(llm)
+    assert llm.invoke("task").content == ["", {"type": "thinking", "thinking": "No protein was named.", "signature": "abc"}]
+    question_call = llm.invoke("task").content
+    assert biomni_runner.STUCK_QUESTION in question_call
+    assert "> No protein was named." in question_call
+    assert "> I need to ask which one.\\n> Then search." in question_call
+    assert biomni_runner._untagged_streak == {"count": 0, "thinking": []}
+
+
+def test_the_question_is_unchanged_when_thinking_was_not_summarized():
+    assert biomni_runner._stuck_question([]) == biomni_runner.STUCK_QUESTION
+
+
+def _streaming_llm(text):
+    """A ChatAnthropic that streams a reply of thinking and then `text`, the
+    way the endpoint does, ending on the </execute> stop sequence."""
+    import json
+
+    import anthropic
+    import httpx2
+    from langchain_anthropic import ChatAnthropic
+
+    message = {"id": "m", "type": "message", "role": "assistant", "model": "x", "content": [],
+               "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1}}
+    events = [
+        {"type": "message_start", "message": message},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "I'll pick TP53."}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": text}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "stop_sequence", "stop_sequence": "</execute>"},
+         "usage": {"output_tokens": 50}},
+        {"type": "message_stop"},
+    ]
+    body = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+    transport = httpx2.MockTransport(
+        lambda request: httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+    )
+    client = anthropic.Anthropic(api_key="unused", http_client=httpx2.Client(transport=transport))
+    llm = ChatAnthropic(model="claude-opus-4-8", api_key="unused", streaming=True)
+    llm.__dict__["_client"] = client
+    return llm
+
+
+def test_text_streamed_beside_thinking_reaches_biomni_as_a_text_block():
+    """biomni reads only {"type": "text"} blocks of a list reply; streamed text
+    arrives as a bare string, which made every such reply look empty."""
+    code = "<execute>\nprint(1)\n"
+    llm = _streaming_llm(code)
+    biomni_runner._reset_untagged_streak()
+    biomni_runner._label_streamed_text(llm)
+    biomni_runner._ask_when_stuck(llm)
+
+    reply = llm.invoke("hi")
+
+    assert {"type": "text", "text": code} in reply.content
+    biomnis_reading = "".join(
+        block.get("text", "") for block in reply.content if isinstance(block, dict) and block.get("type") == "text"
+    )
+    assert biomnis_reading == code
+    assert biomni_runner._untagged_streak["count"] == 0
+
+
+def test_text_beside_thinking_is_not_reported_as_an_empty_reply(monkeypatch):
+    import uuid
+
+    logger, lines = _watched_run(monkeypatch)
+    content = ["", {"type": "thinking", "thinking": "A plan.", "signature": "abc"}, "<execute>print(1)</execute>"]
+    logger.on_llm_end(_result_with(content), run_id=uuid.uuid4())
+    assert lines == []
+    assert biomni_runner._text_of(content) == "<execute>print(1)</execute>"
+
+
+def test_tool_selection_goes_out_at_low_effort_without_thinking(monkeypatch):
+    biomni_runner._patch_sampling_params()
+    from langchain_anthropic import ChatAnthropic
+
+    llm = ChatAnthropic(model="anthropic.claude-opus-4-8", api_key="unused")
+    monkeypatch.setattr(biomni_runner, "_run_effort", (llm, "max"))
+
+    def sent():
+        payload = llm._get_request_payload([HumanMessage("hi")])
+        extra = payload.get("extra_body") or {}
+        return (extra.get("output_config") or {}).get("effort"), extra.get("thinking")
+
+    assert sent() == ("max", {"type": "adaptive", "display": "summarized"})
+    monkeypatch.setitem(biomni_runner._retrieving, "active", True)
+    assert sent() == ("low", None)
+
+
+def test_tool_selection_is_marked_announced_and_not_counted_as_a_miss(monkeypatch):
+    seen = []
+
+    class Retriever:
+        def prompt_based_retrieval(self, query, resources, llm=None):
+            seen.append(biomni_runner._retrieving["active"])
+            return {"tools": []}
+
+    class Agent:
+        retriever = Retriever()
+
+    lines = []
+    monkeypatch.setitem(biomni_runner._run_watch, "notice", lines.append)
+    biomni_runner._quicken_tool_retrieval(Agent)
+
+    assert Agent.retriever.prompt_based_retrieval("task", {}) == {"tools": []}
+    assert seen == [True]
+    assert biomni_runner._retrieving["active"] is False
+    assert lines == ["Choosing the tools and data for this task."]
+
+    # The reply to it has no tags; it must not count toward asking the user.
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+    llm = FakeMessagesListChatModel(responses=[AIMessage("TOOLS: [1, 2]"), AIMessage("<execute>print(1)</execute>")])
+    biomni_runner._reset_untagged_streak()
+    biomni_runner._ask_when_stuck(llm)
+    monkeypatch.setitem(biomni_runner._retrieving, "active", True)
+    llm.invoke("select")
+    monkeypatch.setitem(biomni_runner._retrieving, "active", False)
+    assert biomni_runner._untagged_streak["count"] == 0

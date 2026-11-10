@@ -20,7 +20,8 @@ Messages from the worker:
     ready        {}
     agent        {tools, hidden}         the agent a run uses is built
     step         {id, text}              one agent message
-    ask          {id, question}          agent code called ask_user
+    note         {id, text}              a trace line that isn't one (a slow or empty model call)
+    ask         {id, question}          agent code called ask_user
     creds        {req}                   a model call needs the user's credentials
     done         {id, answer, usage}
     error        {id, kind, error_type, message, usage}
@@ -192,9 +193,12 @@ class Worker:
             def emit(text: str) -> None:
                 self.channel.send({"type": "step", "id": run_id, "text": text})
 
+            def notice(text: str) -> None:
+                self.channel.send({"type": "note", "id": run_id, "text": text})
+
             answer = biomni_runner._drive(
                 agent, job["prompt"], [], job.get("effort"), job.get("stage") or job["role"],
-                emit, self.cancelled.is_set, biomni_runner._wait_on_user(self.ask_function(run_id)),
+                emit, notice, self.cancelled.is_set, biomni_runner._wait_on_user(self.ask_function(run_id)),
             )
         except BaseException as exc:  # noqa: BLE001 — every failure goes back to the app
             self.channel.send({

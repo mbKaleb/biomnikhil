@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -168,6 +169,9 @@ def _new_agent(agent_class, kwargs: dict):
     agent = agent_class(path=str(Config.DATA_PATH), **kwargs)
     agent.llm.callbacks = [*(agent.llm.callbacks or []), _untagged_reply_logger()]
     _uncap_agent_llm(agent.llm, kwargs["llm"])
+    _quicken_tool_retrieval(agent)
+    _label_streamed_text(agent.llm)
+    _drop_rejected_thinking_display(agent.llm)
     _ask_when_stuck(agent.llm)
     return agent
 
@@ -376,26 +380,96 @@ class ModelRefused(RuntimeError):
     pass
 
 
+# What the model-call watcher below reports through, set by _drive for the run
+# in progress: notice(text) puts a line in the trace, cancelled() says whether
+# Stop was pressed.
+_run_watch: dict = {"notice": None, "cancelled": None}
+
+# A model call that takes longer than this gets a line in the trace, and
+# another each interval after. Thinking is hidden, so a long think and a hung
+# connection look the same until then.
+CALL_NOTICE_AFTER_SECONDS = 30
+CALL_NOTICE_EVERY_SECONDS = 60
+CALL_CHECK_SECONDS = 1  # how often the watcher looks at the clock and at Stop
+
+
+def _post_notice(task_id: str, chat_id: str | None, text: str) -> None:
+    """A line in the trace that isn't one of the agent's messages."""
+    from . import chat_store
+
+    registry.append_step(task_id, "system", text)
+    if chat_id:  # persist the trace so a page refresh keeps it
+        chat_store.add_message(chat_id, "trace", text)
+
+
+def _watch_model_call(finished: threading.Event, notice, cancelled) -> None:
+    """Runs on a thread of its own while a model call is out, until `finished`
+    is set. Says in the trace that the call is still going, and that a Stop
+    waits for it: the reply is read in one piece, so Stop acts once it ends."""
+    started = time.monotonic()
+    next_notice = CALL_NOTICE_AFTER_SECONDS
+    stop_noticed = False
+    while not finished.wait(CALL_CHECK_SECONDS):
+        elapsed = time.monotonic() - started
+        if cancelled() and not stop_noticed:
+            stop_noticed = True
+            notice("Stop pressed. It takes effect when the model's current reply ends.")
+        if elapsed >= next_notice:
+            next_notice += CALL_NOTICE_EVERY_SECONDS
+            notice(f"Still waiting for the model's reply ({_fmt_duration(elapsed)} so far).")
+
+
 def _untagged_reply_logger():
-    """A callback that logs the model's raw reply when it has neither
-    <execute> nor <solution>. biomni answers such a reply with a "no tags"
-    message and never shows it, so otherwise the trace only shows the
-    complaint. A refusal (stop_reason "refusal", empty reply) ends the run
-    right away instead: biomni would just ask again and get refused again.
+    """A callback that records each model call: its tokens, how long it took,
+    and the raw reply when it has neither <execute> nor <solution>. biomni
+    answers such a reply with a "no tags" message and never shows it, so
+    otherwise the trace only shows the complaint; a reply with no text at all
+    (only hidden thinking) gets a line of its own, since biomni skips it. A
+    call that runs long gets a line while it waits (_watch_model_call). A
+    refusal (stop_reason "refusal", empty reply) ends the run right away
+    instead: biomni would just ask again and get refused again.
     Built lazily: langchain_core is a heavy import."""
     from langchain_core.callbacks import BaseCallbackHandler
 
     class UntaggedReplyLogger(BaseCallbackHandler):
         raise_error = True  # so ModelRefused reaches the run
 
-        def on_llm_end(self, response, **kwargs):
+        def __init__(self) -> None:
+            self._calls: dict = {}  # run_id -> (finished event, start time)
+
+        def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
+            notice = _run_watch["notice"]
+            if notice is None:
+                return
+            finished = threading.Event()
+            self._calls[run_id] = (finished, time.monotonic())
+            threading.Thread(
+                target=_watch_model_call,
+                args=(finished, notice, _run_watch["cancelled"]),
+                daemon=True,
+            ).start()
+
+        def on_llm_error(self, error, *, run_id, **kwargs):
+            self._finish_call(run_id)
+
+        def _finish_call(self, run_id) -> float | None:
+            """Stops the call's watcher; returns how long the call took."""
+            call = self._calls.pop(run_id, None)
+            if call is None:
+                return None
+            finished, started = call
+            finished.set()
+            return time.monotonic() - started
+
+        def on_llm_end(self, response, *, run_id, **kwargs):
+            elapsed = self._finish_call(run_id)
             for gens in response.generations:
                 for gen in gens:
                     message = getattr(gen, "message", None)
                     usage = getattr(message, "usage_metadata", None) or {}
                     _record_usage(usage)
                     content = message.content if message is not None else gen.text
-                    text = content if isinstance(content, str) else repr(content)
+                    text = _text_of(content)
                     meta = getattr(message, "response_metadata", {}) or {}
                     if meta.get("stop_reason") == "refusal":
                         # "model_name" when the reply was streamed.
@@ -404,17 +478,52 @@ def _untagged_reply_logger():
                         raise ModelRefused(model or "the model")
                     if "<execute>" not in text and "<solution>" not in text:
                         logger.warning(
-                            "model reply without <execute>/<solution> (stop_reason=%s): %.1500s",
-                            meta.get("stop_reason"), text,
+                            "model reply without <execute>/<solution> (stop_reason=%s, %s output tokens, %s): %.1500s",
+                            meta.get("stop_reason"), usage.get("output_tokens", 0),
+                            _fmt_duration(elapsed or 0), text or "(no text)",
                         )
+                    if not _text_of(content).strip():
+                        notice = _run_watch["notice"]
+                        if notice is not None:
+                            line = (
+                                f"The model's reply had no text ({usage.get('output_tokens', 0):,} output "
+                                f"tokens, stop reason {meta.get('stop_reason')}, {_fmt_duration(elapsed or 0)})."
+                            )
+                            thinking = _thinking_of(content)
+                            if thinking:
+                                line += f" Its thinking, summarized: {thinking[:MAX_THINKING_NOTICE_CHARS]}"
+                            notice(line)
 
     return UntaggedReplyLogger()
 
 
 def _text_of(content) -> str:
+    """The text of a reply's content. A streamed reply with thinking has its
+    text as bare strings in the list, beside the thinking block."""
     if isinstance(content, str):
         return content
-    return "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return "".join(parts)
+
+
+MAX_THINKING_NOTICE_CHARS = 1500
+
+
+def _thinking_of(content) -> str:
+    """The thinking summary in a reply's content; empty when thinking was
+    hidden or the reply is a plain string."""
+    if isinstance(content, str):
+        return ""
+    summaries = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            summaries.append(block.get("thinking") or "")
+    return "\n".join(summaries).strip()
 
 
 def _observations_as_user_turns(messages: list) -> None:
@@ -452,8 +561,23 @@ STUCK_QUESTION = (
     "or what to focus on?"
 )
 
-# Replies in a row that biomni couldn't act on, in the run in progress.
-_untagged_streak = {"count": 0}
+# Replies in a row that biomni couldn't act on, in the run in progress, and
+# what the model's thinking said in each (when it was summarized).
+_untagged_streak: dict = {"count": 0, "thinking": []}
+
+
+def _reset_untagged_streak() -> None:
+    _untagged_streak["count"] = 0
+    _untagged_streak["thinking"].clear()
+
+
+def _stuck_question(summaries: list[str]) -> str:
+    """STUCK_QUESTION, with what the model's thinking said beneath it when
+    that was summarized, so the user can see what it was working on."""
+    if not summaries:
+        return STUCK_QUESTION
+    quoted = textwrap.indent("\n\n".join(summaries), "> ", lambda line: True)
+    return f"{STUCK_QUESTION}\n\nWhat the model was thinking, summarized:\n\n{quoted}"
 
 
 def _reword_format_nudge(messages: list) -> None:
@@ -496,14 +620,20 @@ def _ask_when_stuck(llm) -> None:
 
     def invoke(*args, **kwargs):
         response = model_invoke(*args, **kwargs)
+        if _retrieving["active"]:
+            return response
         if _is_actionable(_text_of(response.content)):
-            _untagged_streak["count"] = 0
+            _reset_untagged_streak()
             return response
         _untagged_streak["count"] += 1
+        thinking = _thinking_of(response.content)
+        if thinking:
+            _untagged_streak["thinking"].append(thinking[:MAX_THINKING_NOTICE_CHARS])
         if _untagged_streak["count"] < 2:
             return response
-        _untagged_streak["count"] = 0
-        code = f"ask_user({json.dumps(STUCK_QUESTION)})"
+        question = _stuck_question(_untagged_streak["thinking"])
+        _reset_untagged_streak()
+        code = f"ask_user({json.dumps(question)})"
         return AIMessage(content=f"<execute>\n{code}\n</execute>")
 
     # Set past pydantic, which refuses attributes the model doesn't declare.
@@ -527,6 +657,105 @@ def _add_cache_breakpoints(payload: dict) -> None:
     payload["cache_control"] = {"type": "ephemeral"}
 
 
+# Whether agent requests ask for thinking summaries. Thinking is hidden by
+# default on newer models, which leaves an empty reply with nothing to explain
+# it. Cleared for the process if the endpoint rejects the setting.
+_thinking_display = {"summarized": True}
+
+
+def _thinking_config(model: str, effort_sent: bool) -> dict | None:
+    """The `thinking` setting for an agent request, or None to send none.
+    Models that need it spelled out get it only along with an effort level,
+    as before; models that think by default are sent it to ask for summaries."""
+    from ..providers import can_summarize_thinking, needs_explicit_thinking
+
+    if needs_explicit_thinking(model):
+        if not effort_sent:
+            return None
+    elif not can_summarize_thinking(model):
+        return None
+    config = {"type": "adaptive"}
+    if can_summarize_thinking(model) and _thinking_display["summarized"]:
+        config["display"] = "summarized"
+    return config
+
+
+# True while biomni picks the tools and data for a task. That is one call that
+# answers with a list of numbers, so it needn't think at the run's effort: at
+# "max" it spent over a minute and 6-7k tokens of hidden thinking on it before
+# the agent began, with nothing to show for it in the chat.
+_retrieving = {"active": False}
+
+
+def _quicken_tool_retrieval(agent) -> None:
+    """Marks biomni's tool-selection call (see _retrieving), says in the trace
+    that it is under way, and keeps its reply, which has no tags by design,
+    from counting as a miss in _ask_when_stuck."""
+    retriever = getattr(agent, "retriever", None)
+    if retriever is None:
+        return
+    select = retriever.prompt_based_retrieval
+
+    def prompt_based_retrieval(*args, **kwargs):
+        notice = _run_watch["notice"]
+        if notice is not None:
+            notice("Choosing the tools and data for this task.")
+        _retrieving["active"] = True
+        try:
+            return select(*args, **kwargs)
+        finally:
+            _retrieving["active"] = False
+
+    retriever.prompt_based_retrieval = prompt_based_retrieval
+
+
+def _label_streamed_text(llm) -> None:
+    """With streaming and thinking both on, langchain-anthropic puts a reply's
+    text in the content list as bare strings beside the thinking block. biomni
+    reads only {"type": "text"} blocks of a list, so it saw every such reply as
+    empty, threw away the code in it and answered with its "no tags" complaint.
+    This labels the strings as text blocks before biomni sees the reply."""
+    model_invoke = llm.invoke
+
+    def invoke(*args, **kwargs):
+        response = model_invoke(*args, **kwargs)
+        if isinstance(response.content, list):
+            blocks = []
+            for block in response.content:
+                if isinstance(block, str):
+                    if block:
+                        blocks.append({"type": "text", "text": block})
+                else:
+                    blocks.append(block)
+            response.content = blocks
+        return response
+
+    # Set past pydantic, which refuses attributes the model doesn't declare.
+    object.__setattr__(llm, "invoke", invoke)
+
+
+def _drop_rejected_thinking_display(llm) -> None:
+    """If the endpoint rejects thinking.display (a 400 naming it), stops
+    sending it for the rest of the process and repeats the call without it,
+    so a setting the endpoint doesn't know costs a warning, not a run."""
+    from anthropic import BadRequestError
+
+    model_invoke = llm.invoke
+
+    def invoke(*args, **kwargs):
+        try:
+            return model_invoke(*args, **kwargs)
+        except BadRequestError as exc:
+            if "display" not in str(exc) or not _thinking_display["summarized"]:
+                raise
+            _thinking_display["summarized"] = False
+            logger.warning("the endpoint rejected thinking.display; going on without thinking summaries: %s", exc)
+            return model_invoke(*args, **kwargs)
+
+    # Set past pydantic, which refuses attributes the model doesn't declare.
+    object.__setattr__(llm, "invoke", invoke)
+
+
 def _patch_sampling_params() -> None:
     """biomni's get_llm() always passes a temperature to ChatAnthropic (0.7
     by default, 0.0 for its database tools), but Claude Opus 4.7+, Sonnet 5+
@@ -545,7 +774,7 @@ def _patch_sampling_params() -> None:
     as user turns. Idempotent."""
     from langchain_anthropic import ChatAnthropic
 
-    from ..providers import needs_explicit_thinking, rejects_sampling_params, supported_efforts
+    from ..providers import rejects_sampling_params, supported_efforts
 
     if getattr(ChatAnthropic._get_request_payload, "_biomnikhil_patched", False):
         return
@@ -570,9 +799,10 @@ def _patch_sampling_params() -> None:
             # Only the agent loop: biomni's helper LLMs make one-off calls that
             # would pay the cache write and never read it back.
             _add_cache_breakpoints(payload)
-            effort = _run_effort[1]
+            effort = "low" if _retrieving["active"] else _run_effort[1]
             # Omitted when this model doesn't take that level, which would 400.
-            if effort in supported_efforts(payload.get("model", "")):
+            effort_sent = effort in supported_efforts(payload.get("model", ""))
+            if effort_sent:
                 # extra_body for the same reason as above; merged so anything
                 # langchain put in output_config survives.
                 extra = payload.setdefault("extra_body", {})
@@ -581,11 +811,15 @@ def _patch_sampling_params() -> None:
                     **(extra.get("output_config") or {}),
                     "effort": effort,
                 }
-                if needs_explicit_thinking(payload["model"]):
-                    extra["thinking"] = {"type": "adaptive"}
-                    # Thinking 400s on biomni's non-default temperature.
-                    payload.pop("temperature", None)
-                    extra.pop("temperature", None)
+            thinking = None
+            if not _retrieving["active"]:
+                thinking = _thinking_config(payload.get("model", ""), effort_sent)
+            if thinking:
+                extra = payload.setdefault("extra_body", {})
+                extra["thinking"] = thinking
+                # Thinking 400s on biomni's non-default temperature.
+                payload.pop("temperature", None)
+                extra.pop("temperature", None)
         return payload
 
     _get_request_payload._biomnikhil_patched = True
@@ -1211,27 +1445,33 @@ def _drive_agent(
         if chat_id:  # persist the trace so a page refresh keeps it
             chat_store.add_message(chat_id, "trace", text)
 
+    def notice(text: str) -> None:
+        _post_notice(task_id, chat_id, text)
+
     def cancelled() -> bool:
         return registry.is_cancel_requested(task_id)
 
     return _drive(
-        agent, prompt, texts, effort, stage, emit, cancelled,
+        agent, prompt, texts, effort, stage, emit, notice, cancelled,
         _ask_user_function(task_id, chat_id),
     )
 
 
-def _drive(agent, prompt: str, texts: list[str], effort, stage: str, emit, cancelled, ask_user) -> str:
-    """Runs an agent. `emit(text)` gets each of its messages, `cancelled()` says
-    whether to stop, and `ask_user` is what its code calls to ask the user; this
-    is the part that runs wherever the agent lives, the app or the worker."""
+def _drive(agent, prompt: str, texts: list[str], effort, stage: str, emit, notice, cancelled, ask_user) -> str:
+    """Runs an agent. `emit(text)` gets each of its messages, `notice(text)` a
+    line for the trace that isn't one (a model call that is slow, or came back
+    empty), `cancelled()` says whether to stop, and `ask_user` is what its code
+    calls to ask the user; this is the part that runs wherever the agent lives,
+    the app or the worker."""
     global _run_effort
     from biomni.tool import support_tools
 
     _reset_run_namespace()
-    _untagged_streak["count"] = 0
+    _reset_untagged_streak()
     _current_stage["name"] = stage
     support_tools._persistent_namespace["ask_user"] = ask_user
     _run_effort = (agent.llm, effort)
+    _run_watch.update(notice=notice, cancelled=cancelled)
 
     if hasattr(agent, "go_stream"):
         # Streams each agent message as it happens, so the UI trace

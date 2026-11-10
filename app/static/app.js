@@ -2676,6 +2676,7 @@ function setAwaitingAnswer(waiting) {
   promptEl.placeholder = waiting ? "Reply to the agent…" : DEFAULT_PLACEHOLDER;
   runBtn.title = waiting ? "Send reply" : "Run task";
   runBtn.setAttribute("aria-label", runBtn.title);
+  runBtn.classList.toggle("sends-reply", waiting);
   updateRunEnabled();
 }
 
@@ -2767,6 +2768,7 @@ let activeEventSource = null; // the one live SSE connection this tab should hav
 // run from its start, so these restart with each attachStream().
 let runQuestionCount = 0;
 let runAnswerCount = 0;
+let traceClosedForQuestion = false; // reopened when the reply goes in
 
 let stopRequestedTaskId = null; // the run the server has been asked to stop
 let stopQueued = false; // Stop was clicked before the server gave a task id
@@ -2981,6 +2983,7 @@ function attachStream(taskId) {
   }
   runQuestionCount = 0;
   runAnswerCount = 0;
+  traceClosedForQuestion = false;
   setAwaitingAnswer(false);
   const source = new EventSource(`/api/tasks/${taskId}/stream`);
   activeEventSource = source;
@@ -3081,11 +3084,16 @@ function showTurnStep(step) {
     hideThinking();
     setTraceStatus("waiting for your reply");
     setAwaitingAnswer(true);
+    // The open trace covers the question and the send button.
+    traceClosedForQuestion = traceEl.classList.contains("open");
+    traceEl.classList.remove("open");
     promptEl.focus();
   } else {
     showThinking();
     setTraceStatus("reading your reply…");
     setAwaitingAnswer(false);
+    if (traceClosedForQuestion) traceEl.classList.add("open");
+    traceClosedForQuestion = false;
   }
 }
 

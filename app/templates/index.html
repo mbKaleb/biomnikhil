@@ -1710,8 +1710,9 @@
       width: auto; padding: 0 .9rem; border-radius: 18px;
       background: #2c3f63; color: #a9bce0; opacity: 1;
     }
-    /* Stop takes the send button's place during a run. */
-    #stop:not([hidden]) + #run { display: none; }
+    /* Stop takes the send button's place during a run, except while the
+       agent is waiting on a reply, which needs both. */
+    #stop:not([hidden]) + #run:not(.sends-reply) { display: none; }
     #composer .attach-hint { margin: 0 .3rem .45rem; }
     #composer .attach-hint[hidden] { display: none; }
     #composer .task-upload-status { margin: 0 .5rem .4rem; }

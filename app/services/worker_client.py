@@ -220,6 +220,8 @@ class RemoteAgent:
                 registry.append_step(task_id, "agent", text)
                 if chat_id:  # persist the trace so a page refresh keeps it
                     chat_store.add_message(chat_id, "trace", text)
+            elif kind == "note":
+                biomni_runner._post_notice(task_id, chat_id, message["text"])
             elif kind == "ask":
                 self._show_question(worker, task_id, chat_id, message["question"])
             elif kind == "done":

@@ -139,6 +139,24 @@ def needs_explicit_thinking(model_id: str) -> bool:
     return (family == "opus" and (4, 6) <= version <= (4, 8)) or (family == "sonnet" and version == (4, 6))
 
 
+def can_summarize_thinking(model_id: str) -> bool:
+    """True for models whose thinking comes back empty unless the request asks
+    for thinking.display "summarized": Opus 4.7+, Sonnet 5+, and every
+    Fable/Mythos. Opus 4.6 and Sonnet 4.6 send a summary already, and older
+    models don't take the field."""
+    parsed = _parse_version(model_id)
+    if not parsed:
+        return False
+    family, version, _ = parsed
+    if family in ("fable", "mythos"):
+        return True
+    if family == "opus":
+        return version >= (4, 7)
+    if family == "sonnet":
+        return version >= (5, 0)
+    return False
+
+
 def group_models(models: list[dict]) -> list[dict]:
     """Split model objects into the family/version pair the UI shows as two
     selects: [{"name": "opus", "versions": [{"id", "label", "available",

@@ -37,6 +37,9 @@ class Agent:
         elif prompt.startswith("hang"):
             yield {{"output": "<execute>sleep forever</execute>"}}
             time.sleep(120)
+        elif prompt.startswith("note"):
+            biomni_runner._run_watch["notice"]("Still waiting for the model's reply (30s so far).")
+            yield {{"output": "<solution>done</solution>"}}
         elif prompt.startswith("crash"):
             yield {{"output": "<execute>about to die</execute>"}}
             os._exit(3)
@@ -112,6 +115,17 @@ def test_steps_answer_and_usage_come_back(worker_command):
     assert biomni_runner._run_usage["input_tokens"] == 100
     assert biomni_runner._stage_usage["main"]["output_tokens"] == 10
     assert worker_client.state == {"built": True, "tools": ["tool_a"]}
+
+
+def test_a_note_from_the_worker_lands_in_the_trace(worker_command):
+    chat_id = chat_store.create_chat("worker")["id"]
+    task_id, answer = _drive("note", chat_id)
+    assert answer == "done"
+    line = "Still waiting for the model's reply (30s so far)."
+    system_lines = [s["text"] for s in registry.get(task_id)["steps"] if s["kind"] == "system"]
+    assert system_lines == [line]
+    traces = [m["content"] for m in chat_store.get_chat(chat_id)["messages"] if m["role"] == "trace"]
+    assert line in traces
 
 
 def test_the_worker_is_reused_between_runs(worker_command):
