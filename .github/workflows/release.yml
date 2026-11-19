@@ -27,11 +27,31 @@ permissions:
   contents: write
 
 jobs:
+  # The tests already ran when this commit was pushed to main, so a tag on a
+  # commit that passed there doesn't run them again. A tag on any other commit
+  # (or one pushed while main's run is still going) runs them here as before.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.q.outputs.passed }}
+    steps:
+      - id: q
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main&status=success" --jq .total_count)
+          if [ "$n" -gt 0 ]; then echo "passed=true" >> "$GITHUB_OUTPUT"; else echo "passed=false" >> "$GITHUB_OUTPUT"; fi
+
   test:
+    needs: check
+    if: needs.check.outputs.passed != 'true'
     uses: ./.github/workflows/test.yml
 
   release:
-    needs: test
+    needs: [check, test]
+    if: ${{ !cancelled() && needs.check.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
