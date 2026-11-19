@@ -71,6 +71,7 @@ const outputCountEl = document.getElementById("output-count");
 const outputSearchEl = document.getElementById("output-search");
 const outputBadgeEl = document.getElementById("output-count-badge");
 const outputDownloadAllBtn = document.getElementById("output-download-all");
+const outputSaveAllEl = document.getElementById("output-save-all");
 const sidebar = document.getElementById("sidebar");
 const backdrop = document.getElementById("backdrop");
 const menuBtn = document.getElementById("menu-btn");
@@ -334,7 +335,172 @@ function isTabular(text) {
   return columnish >= Math.min(3, lines.length - 1) && columnish >= lines.length / 2;
 }
 
+// biomni prints each message under a banner naming its sender. Only the
+// agent's own messages carry one, which is how a replayed chat (where notices
+// and agent messages are all stored as "trace") tells them apart.
+const MESSAGE_BANNER = /^\s*=+ (Ai|Human|System) Message =+/;
+
+function messageSender(text) {
+  const match = text.match(MESSAGE_BANNER);
+  if (!match) return null;
+  return match[1];
+}
+
+// The current run's run_start text: the user's message plus the note about
+// their attached files. The run's first Human Message begins with it, which
+// is how the user's own words are told from what the app wrapped around them.
+let currentRunPrompt = "";
+
+// What the app adds around the user's message. Each note opens with these
+// words, after a blank line. Text that follows a note without opening a new
+// one (a lab context's own paragraphs, say) belongs to that note.
+const HARNESS_NOTES = [
+  { label: "files", opening: "The user attached " },
+  { label: "chat history", opening: "This request continues an earlier conversation" },
+  { label: "lab context", opening: "This lab's saved context follows" },
+  { label: "leads board", opening: "The lab's leads board records" },
+  { label: "run hints", opening: "(Execution note:" },
+  { label: "asking the user", opening: "If the task can't be done without something only the user knows" },
+  { label: "output folder", opening: "Save any output files you generate" },
+  { label: "earlier attempt", opening: "An earlier attempt answered:" },
+];
+
+function harnessLabelFor(paragraph) {
+  for (const note of HARNESS_NOTES) {
+    if (paragraph.startsWith(note.opening)) return note.label;
+  }
+  return null;
+}
+
+// Splits a Human Message into the user's own text and the harness notes
+// after it. A message that doesn't start with the run's prompt (a stage
+// agent's brief, say) is all harness: it has none of the user's words up front.
+function splitHumanMessage(body) {
+  if (!currentRunPrompt || !body.startsWith(currentRunPrompt)) {
+    return { userText: "", notes: [{ label: "instructions", text: body }] };
+  }
+  const userParagraphs = [];
+  const notes = [];
+  for (const paragraph of body.split("\n\n")) {
+    const label = harnessLabelFor(paragraph);
+    if (label) {
+      notes.push({ label, text: paragraph });
+    } else if (notes.length > 0) {
+      const lastNote = notes[notes.length - 1];
+      lastNote.text += "\n\n" + paragraph;
+    } else {
+      userParagraphs.push(paragraph);
+    }
+  }
+  return { userText: userParagraphs.join("\n\n"), notes };
+}
+
+function firstLineOf(text) {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) return trimmed;
+  }
+  return "";
+}
+
+// Long text gets cut off behind a "show all" button. `maxChars` and `maxLines`
+// say how long is too long.
+function clampWhenLong(el, text, maxChars, maxLines) {
+  const lineCount = text.split("\n").length;
+  if (text.length <= maxChars && lineCount <= maxLines) return;
+  el.classList.add("clamped");
+  const toggle = document.createElement("button");
+  toggle.className = "seg-toggle";
+  const size =
+    text.length > 1024 ? `${(text.length / 1024).toFixed(1)} KB` : `${text.length} chars`;
+  toggle.textContent = `▾ show all (${size})`;
+  toggle.addEventListener("click", () => {
+    const clamped = el.classList.toggle("clamped");
+    toggle.textContent = clamped ? `▾ show all (${size})` : "▴ collapse";
+  });
+  el.appendChild(toggle);
+}
+
+// One labeled block inside an opened context row.
+function buildContextBlock(className, labelText, text, maxChars, maxLines) {
+  const el = document.createElement("div");
+  el.className = `seg ${className}`;
+  const label = document.createElement("span");
+  label.className = "seg-label";
+  label.textContent = labelText;
+  const body = document.createElement("div");
+  body.className = "seg-body";
+  body.textContent = text;
+  el.append(label, body);
+  clampWhenLong(el, text, maxChars, maxLines);
+  return el;
+}
+
+// A Human or System message folds into one row: the user's first line, and
+// how many harness notes came with it. Opening it shows the user's text, then
+// each note under a "harness" label.
+function fillContextCard(ln, sender, body, ts) {
+  ln.className = "ln context";
+  let title = "context";
+  let parts = splitHumanMessage(body);
+  if (sender === "System") {
+    title = "system prompt";
+    parts = { userText: "", notes: [{ label: "instructions", text: body }] };
+  } else if (!parts.userText) {
+    title = "brief";
+  }
+
+  const head = document.createElement("button");
+  head.className = "ctx-head";
+  head.setAttribute("aria-expanded", "false");
+  const arrow = document.createElement("span");
+  arrow.className = "ctx-arrow";
+  arrow.textContent = "▸";
+  const titleEl = document.createElement("span");
+  titleEl.className = "ctx-title";
+  titleEl.textContent = title;
+  const preview = document.createElement("span");
+  preview.className = "ctx-preview";
+  preview.textContent = firstLineOf(parts.userText || body);
+  head.append(arrow, titleEl, preview);
+  if (parts.userText && parts.notes.length > 0) {
+    const count = document.createElement("span");
+    count.className = "ctx-count";
+    const noun = parts.notes.length === 1 ? "harness note" : "harness notes";
+    count.textContent = `+${parts.notes.length} ${noun}`;
+    head.appendChild(count);
+  }
+  if (ts) {
+    const time = document.createElement("span");
+    time.className = "ts";
+    time.textContent = fmtTime(ts);
+    head.appendChild(time);
+  }
+  head.addEventListener("click", () => {
+    const isOpen = ln.classList.toggle("open");
+    head.setAttribute("aria-expanded", String(isOpen));
+  });
+
+  const contents = document.createElement("div");
+  contents.className = "ctx-body";
+  if (parts.userText) {
+    contents.appendChild(buildContextBlock("seg-user", "you", parts.userText, 1200, 25));
+  }
+  for (const note of parts.notes) {
+    const labelText = `harness · ${note.label}`;
+    contents.appendChild(buildContextBlock("seg-note", labelText, note.text, 700, 10));
+  }
+  ln.append(head, contents);
+}
+
 function traceLine(kind, text, ts) {
+  // Replayed history stores the app's notices as "trace" like the agent's
+  // messages; one without a banner isn't the agent's.
+  let sender = null;
+  if (kind === "agent") {
+    sender = messageSender(text);
+    if (sender === null) kind = "system";
+  }
   // Counted before filtering: the server's step cap counts hidden steps too.
   if (kind === "agent" && traceLive.parentNode === stepsEl) runStepCount += 1;
   const cleaned = kind === "agent" ? cleanTrace(text) : text;
@@ -343,6 +509,9 @@ function traceLine(kind, text, ts) {
   ln.className = `ln ${kind}`;
   let lastSegType = null;
   let lastSegTool = null;
+  if (kind === "run_start") {
+    currentRunPrompt = cleaned.replace(/\n{3,}/g, "\n\n").trim();
+  }
   if (kind === "run_start" || kind === "run_end") {
     // Run boundary divider: play icon at start, outcome icon at end.
     const icons = { done: "square", failed: "xmark", stopped: "ban" };
@@ -353,9 +522,12 @@ function traceLine(kind, text, ts) {
     icon.appendChild(faIcon(kind === "run_start" ? "play" : icons[outcome] || "square"));
     const label = document.createElement("span");
     label.className = "run-label";
+    // The run's prompt carries the note about attached files after the user's
+    // words; the divider only needs the first line of what they wrote.
+    const runTitle = firstLineOf(cleaned);
     label.textContent =
       kind === "run_start"
-        ? `run — "${cleaned.length > 80 ? cleaned.slice(0, 80) + "…" : cleaned}"`
+        ? `run — "${runTitle.length > 80 ? runTitle.slice(0, 80) + "…" : runTitle}"`
         : `run ${cleaned}`;
     ln.append(icon, label);
     if (ts) {
@@ -365,10 +537,21 @@ function traceLine(kind, text, ts) {
       ln.appendChild(time);
     }
   } else if (kind !== "agent") {
-    const k = document.createElement("span");
-    k.className = "k";
-    k.textContent = (ts ? `${fmtTime(ts)} ` : "") + `[${kind}] `;
-    ln.append(k, document.createTextNode(cleaned));
+    // A notice from the app (tool selection, a slow model call, the usage
+    // summary): one quiet line, so the agent's own steps stay what you read.
+    const message = document.createElement("span");
+    message.className = "notice-text";
+    message.textContent = cleaned;
+    ln.appendChild(message);
+    if (ts) {
+      const time = document.createElement("span");
+      time.className = "ts";
+      time.textContent = fmtTime(ts);
+      ln.appendChild(time);
+    }
+  } else if (sender === "Human" || sender === "System") {
+    // The user's message and what the app wrapped around it: folded away.
+    fillContextCard(ln, sender, cleaned, ts);
   } else {
     // Each agent message is one numbered step; the header carries the
     // step count and the time the step arrived.
@@ -433,21 +616,7 @@ function traceLine(kind, text, ts) {
       // models (gpt-5-mini etc.) routinely write long plans, and that's
       // exactly the content people open the trace panel to read — auto-
       // collapsing it defeats the point.
-      if (seg.type !== "thought" && (seg.text.length > 1200 || seg.text.split("\n").length > 25)) {
-        el.classList.add("clamped");
-        const toggle = document.createElement("button");
-        toggle.className = "seg-toggle";
-        const size =
-          seg.text.length > 1024
-            ? `${(seg.text.length / 1024).toFixed(1)} KB`
-            : `${seg.text.length} chars`;
-        toggle.textContent = `▾ show all (${size})`;
-        toggle.addEventListener("click", () => {
-          const clamped = el.classList.toggle("clamped");
-          toggle.textContent = clamped ? `▾ show all (${size})` : "▴ collapse";
-        });
-        el.appendChild(toggle);
-      }
+      if (seg.type !== "thought") clampWhenLong(el, seg.text, 1200, 25);
       ln.appendChild(el);
     }
     if (!ln.querySelector(".seg")) return; // header alone isn't worth a line
@@ -487,7 +656,12 @@ copyTraceBtn.addEventListener("click", async () => {
   // .innerText (not .textContent) so it naturally respects whatever the
   // active all/errors filter has hidden via CSS — hidden elements don't
   // contribute to innerText, no need to duplicate the filter logic here.
-  await copyToClipboard(stepsEl.innerText);
+  // The folded context rows are hidden, so open them for the read: a copied
+  // trace should still show what the agent was given.
+  traceEl.classList.add("copying");
+  const traceText = stepsEl.innerText;
+  traceEl.classList.remove("copying");
+  await copyToClipboard(traceText);
   copyTraceBtn.classList.add("copied");
   copyTraceBtn.replaceChildren(faIcon("check"), document.createTextNode(" copied"));
   setTimeout(() => {
@@ -910,6 +1084,196 @@ const VIEWABLE_EXT = new Set([
   "png", "jpg", "jpeg", "gif", "svg", "pdf", "html", "htm",
 ]);
 
+// ---- saving a run's output files into User Files ----
+// Outputs belong to the run that made them. "Save to app" copies one into
+// User Files, where any chat can attach it and it can be tagged. The keys are
+// `${task_id}/${path}` of outputs that already have a copy there, learned from
+// the file list (see refreshFiles), so a button can start out as "Saved".
+const savedOutputKeys = new Set();
+const SAVE_BUTTON_STATES = ["idle", "saving", "saved", "failed"];
+
+function outputKey(f) {
+  return `${f.task_id}/${f.path}`;
+}
+
+function paintSaveButton(button, state) {
+  const looks = {
+    idle: ["folder-plus", button.idleLabel, "Copy into User Files so any chat can use it"],
+    saving: ["spinner", "Saving…", ""],
+    saved: ["check", "Saved", "In User Files. Click to open it"],
+    failed: ["triangle-exclamation", "Retry save", "Couldn't save. Click to try again"],
+  };
+  const [iconName, label, tip] = looks[state];
+  for (const name of SAVE_BUTTON_STATES) button.classList.remove(name);
+  button.classList.add(state);
+  button.disabled = state === "saving";
+  button.title = tip;
+  button.replaceChildren(faIcon(iconName), document.createTextNode(label));
+}
+
+// Brings every save button in line with the saved set.
+function syncSaveButtons() {
+  for (const button of document.querySelectorAll(".save-app-btn")) {
+    if (button.classList.contains("saving")) continue;
+    let allSaved = true;
+    for (const f of button.outputFiles) {
+      if (!savedOutputKeys.has(outputKey(f))) allSaved = false;
+    }
+    if (allSaved) paintSaveButton(button, "saved");
+    else if (!button.classList.contains("failed")) paintSaveButton(button, "idle");
+  }
+}
+
+async function saveOutputsToApp(button) {
+  if (button.classList.contains("saved")) {
+    activateTab("files");
+    return;
+  }
+  const pending = [];
+  for (const f of button.outputFiles) {
+    if (!savedOutputKeys.has(outputKey(f))) pending.push({ task_id: f.task_id, path: f.path });
+  }
+  paintSaveButton(button, "saving");
+  try {
+    const res = await fetch("/api/files/from-outputs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: pending, chat_id: currentChatId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    for (const entry of data.saved) savedOutputKeys.add(`${entry.task_id}/${entry.path}`);
+  } catch (err) {
+    paintSaveButton(button, "failed");
+    button.title = `Couldn't save: ${err.message || err}`;
+    return;
+  }
+  paintSaveButton(button, "idle"); // the sync below turns it to "saved" if everything is
+  await refreshFiles(); // so the Files tab and the other buttons agree
+  syncSaveButtons();
+}
+
+// A labelled button that saves `outputFiles` (normalized {task_id, path, ...}).
+function buildSaveToAppButton(outputFiles, label = "Save to app") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "save-app-btn";
+  button.outputFiles = outputFiles;
+  button.idleLabel = label;
+  button.addEventListener("click", () => saveOutputsToApp(button));
+  let allSaved = true;
+  for (const f of outputFiles) {
+    if (!savedOutputKeys.has(outputKey(f))) allSaved = false;
+  }
+  paintSaveButton(button, allSaved ? "saved" : "idle");
+  return button;
+}
+
+// ---- the files under an answer ----
+// One slim row per file. Past a few, the rest fold away behind "Show more".
+const FILES_SHOWN_BEFORE_COLLAPSE = 4;
+
+function buildMessageFileRow(f) {
+  const row = document.createElement("div");
+  row.className = "msg-file";
+
+  const icon = document.createElement("span");
+  icon.className = "msg-file-icon";
+  icon.appendChild(faIcon(fileIconClass(f.name)));
+
+  const label = document.createElement("span");
+  label.className = "msg-file-label";
+  label.title = f.path || f.name;
+  const name = document.createElement("span");
+  name.className = "msg-file-name";
+  name.textContent = f.name;
+  label.appendChild(name);
+  const folder = (f.path || "").slice(0, (f.path || "").lastIndexOf("/") + 1);
+  if (folder) {
+    const folderEl = document.createElement("span");
+    folderEl.className = "msg-file-dir";
+    folderEl.textContent = folder;
+    label.appendChild(folderEl);
+  }
+
+  const size = document.createElement("span");
+  size.className = "msg-file-size";
+  size.textContent = formatFileSize(f.size);
+
+  row.append(icon, label, size);
+
+  const ext = f.name.split(".").pop().toLowerCase();
+  if (VIEWABLE_EXT.has(ext)) {
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "msg-file-btn";
+    view.title = `View ${f.name}`;
+    view.setAttribute("aria-label", `View ${f.name}`);
+    view.replaceChildren(faIcon("eye"));
+    view.addEventListener("click", () => openPreview(f));
+    row.appendChild(view);
+  }
+
+  const download = document.createElement("a");
+  download.className = "msg-file-btn";
+  download.href = `${outputFileUrl(f)}?dl=1`;
+  download.download = f.name;
+  download.title = `Download ${f.name}`;
+  download.setAttribute("aria-label", `Download ${f.name}`);
+  download.replaceChildren(faIcon("download"));
+  row.appendChild(download);
+
+  row.appendChild(buildSaveToAppButton([f]));
+  return row;
+}
+
+function buildMessageFiles(files) {
+  const entries = [];
+  let totalBytes = 0;
+  for (const file of files) {
+    const entry = normalizeOutputFile(file);
+    entries.push(entry);
+    totalBytes += entry.size || 0;
+  }
+
+  const box = document.createElement("div");
+  box.className = "msg-files";
+
+  if (entries.length > 1) {
+    const head = document.createElement("div");
+    head.className = "msg-files-head";
+    const title = document.createElement("span");
+    title.className = "msg-files-title";
+    title.textContent = `${entries.length} files · ${formatFileSize(totalBytes)}`;
+    head.append(title, buildSaveToAppButton(entries, "Save all to app"));
+    box.appendChild(head);
+  }
+
+  for (let index = 0; index < entries.length; index++) {
+    const row = buildMessageFileRow(entries[index]);
+    if (index >= FILES_SHOWN_BEFORE_COLLAPSE) row.classList.add("extra");
+    box.appendChild(row);
+  }
+
+  const hiddenCount = entries.length - FILES_SHOWN_BEFORE_COLLAPSE;
+  if (hiddenCount > 0) {
+    box.classList.add("collapsed");
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "msg-files-more";
+    const setLabel = () => {
+      more.textContent = box.classList.contains("collapsed") ? `Show ${hiddenCount} more` : "Show fewer";
+    };
+    more.addEventListener("click", () => {
+      box.classList.toggle("collapsed");
+      setLabel();
+    });
+    setLabel();
+    box.appendChild(more);
+  }
+  return box;
+}
+
 // Minimal CSV/TSV split — good enough for the well-formed exports this
 // app generates itself; doesn't attempt full RFC 4180 quoting edge cases.
 function renderDelimited(text, delim) {
@@ -1075,12 +1439,15 @@ function registerOutputFiles(files, prompt, ts) {
 // ---- viewer: renders a webpage the agent generated, by URL (not srcdoc)
 // so its relative CSS/JS/images resolve against the run's output folder.
 // Defaults to the newest index.html in the chat (else the newest .html);
-// once the user picks a page it sticks until that chat is left. ----
+// once the user picks a page it sticks until that chat is left. Markdown
+// files are fetched and rendered in place instead of framed. ----
 const viewerPageEl = document.getElementById("viewer-page");
 const viewerFrame = document.getElementById("viewer-frame");
 const viewerEmpty = document.getElementById("viewer-empty");
 const viewerOpen = document.getElementById("viewer-open");
 const viewerReload = document.getElementById("viewer-reload");
+const viewerMarkdown = document.getElementById("viewer-md");
+let viewerMarkdownUrl = null; // the .md file currently rendered, if any
 let viewerChoice = null; // `${task_id}/${path}` the user picked, or null = auto
 
 function outputFileUrl(f) {
@@ -1088,19 +1455,57 @@ function outputFileUrl(f) {
     .split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function isMarkdownFile(f) {
+  return /\.(md|markdown)$/i.test(f.name);
+}
+
+async function showMarkdownFile(url) {
+  viewerMarkdownUrl = url;
+  let text;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    text = await response.text();
+  } catch (err) {
+    if (viewerMarkdownUrl !== url) return;
+    viewerMarkdown.textContent = `Couldn't load this file (${err.message}).`;
+    return;
+  }
+  if (viewerMarkdownUrl !== url) return; // the user moved on while it loaded
+
+  const body = renderMarkdown(text, []);
+  if (!body) {
+    const plain = document.createElement("pre");
+    plain.textContent = text;
+    viewerMarkdown.replaceChildren(plain);
+    return;
+  }
+  // Relative images and links point into the run's output folder.
+  for (const image of body.querySelectorAll("img[src]")) {
+    image.src = new URL(image.getAttribute("src"), new URL(url, location.href)).href;
+  }
+  for (const link of body.querySelectorAll("a[href]")) {
+    link.href = new URL(link.getAttribute("href"), new URL(url, location.href)).href;
+  }
+  viewerMarkdown.replaceChildren(body);
+}
+
 function renderViewer() {
   const pages = chatOutputFiles
-    .filter((f) => /\.html?$/i.test(f.name))
+    .filter((f) => /\.html?$/i.test(f.name) || isMarkdownFile(f))
     .sort((a, b) => b.ts - a.ts);
   const hasPages = pages.length > 0;
   viewerEmpty.hidden = hasPages;
   viewerFrame.hidden = !hasPages;
+  viewerMarkdown.hidden = true;
   viewerPageEl.disabled = viewerReload.disabled = !hasPages;
   viewerOpen.setAttribute("aria-disabled", String(!hasPages));
   if (!hasPages) {
     viewerPageEl.replaceChildren(option("", "No pages yet"));
     viewerOpen.removeAttribute("href");
     if (viewerFrame.getAttribute("src")) viewerFrame.removeAttribute("src");
+    viewerMarkdownUrl = null;
+    viewerMarkdown.replaceChildren();
     return;
   }
 
@@ -1122,6 +1527,14 @@ function renderViewer() {
 
   const url = outputFileUrl(selected);
   viewerOpen.href = url;
+  if (isMarkdownFile(selected)) {
+    viewerFrame.hidden = true;
+    viewerMarkdown.hidden = false;
+    if (viewerFrame.getAttribute("src")) viewerFrame.removeAttribute("src");
+    if (viewerMarkdownUrl !== url) showMarkdownFile(url);
+    return;
+  }
+  viewerMarkdownUrl = null;
   // Only navigate when the page changed, so new outputs arriving mid-run
   // don't reload (and reset) the page being looked at.
   if (viewerFrame.getAttribute("src") !== url) viewerFrame.src = url;
@@ -1132,6 +1545,10 @@ viewerPageEl.addEventListener("change", () => {
   renderViewer();
 });
 viewerReload.addEventListener("click", () => {
+  if (viewerMarkdownUrl) {
+    showMarkdownFile(viewerMarkdownUrl);
+    return;
+  }
   const url = viewerFrame.getAttribute("src");
   if (url) viewerFrame.src = url; // reassigning the same URL reloads it
 });
@@ -1152,6 +1569,18 @@ function renderOutputTray() {
     visible.length === chatOutputFiles.length
       ? `Download all${visible.length ? ` (${visible.length})` : ""}`
       : `Download shown (${visible.length})`;
+
+  // Rebuilt each render so it covers whatever is shown, unless a save is
+  // still running, which would lose its spinner.
+  const currentSaveAll = outputSaveAllEl.firstChild;
+  if (!currentSaveAll || !currentSaveAll.classList.contains("saving")) {
+    if (visible.length) {
+      const label = visible.length === chatOutputFiles.length ? "Save all to app" : "Save shown to app";
+      outputSaveAllEl.replaceChildren(buildSaveToAppButton(visible, label));
+    } else {
+      outputSaveAllEl.replaceChildren();
+    }
+  }
 
   outputCountEl.textContent = chatOutputFiles.length
     ? `${visible.length} of ${chatOutputFiles.length} files`
@@ -1206,6 +1635,7 @@ function renderOutputTray() {
     download.title = `Download ${f.name}`;
     download.replaceChildren(faIcon("download"));
     li.appendChild(download);
+    li.appendChild(buildSaveToAppButton([f]));
 
     outputListEl.appendChild(li);
   }
@@ -1410,6 +1840,57 @@ function messagesNearBottom() {
   return distanceBelowWindow < 80;
 }
 
+// The tabs stick just under the header, whose height varies with its contents.
+const pageHeader = document.querySelector("header");
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty("--header-height", `${pageHeader.offsetHeight}px`);
+}).observe(pageHeader);
+
+// ---- appearance: task view width, kept per computer ----
+const TASK_WIDTH_KEY = "taskWidth";
+const taskWidthSelect = document.getElementById("settings-task-width");
+
+function applyTaskWidth(width) {
+  document.documentElement.style.setProperty("--task-width", `${width}px`);
+}
+
+let savedTaskWidth = "760";
+try {
+  savedTaskWidth = localStorage.getItem(TASK_WIDTH_KEY) || "760";
+} catch (_) {}
+if (![...taskWidthSelect.options].some((o) => o.value === savedTaskWidth)) savedTaskWidth = "760";
+taskWidthSelect.value = savedTaskWidth;
+applyTaskWidth(savedTaskWidth);
+
+taskWidthSelect.addEventListener("change", () => {
+  applyTaskWidth(taskWidthSelect.value);
+  try { localStorage.setItem(TASK_WIDTH_KEY, taskWidthSelect.value); } catch (_) {}
+});
+
+// ---- page scroll buttons ----
+// Each button hides when the page is already at its end.
+const scrollTopButton = document.getElementById("scroll-top");
+const scrollBottomButton = document.getElementById("scroll-bottom");
+
+function updateScrollButtons() {
+  const pageBottom = document.documentElement.scrollHeight - window.innerHeight;
+  const atTop = window.scrollY < 40;
+  const atBottom = pageBottom - window.scrollY < 40;
+  scrollTopButton.classList.toggle("hidden-by-scroll", atTop);
+  scrollBottomButton.classList.toggle("hidden-by-scroll", atBottom);
+}
+
+scrollTopButton.addEventListener("click", () => {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+scrollBottomButton.addEventListener("click", () => {
+  window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+});
+window.addEventListener("scroll", updateScrollButtons, { passive: true });
+window.addEventListener("resize", updateScrollButtons);
+new ResizeObserver(updateScrollButtons).observe(document.body);
+updateScrollButtons();
+
 // ---- example and follow-up prompts ----
 // A click only fills the prompt; it never starts a run.
 function createPromptChips(prompts) {
@@ -1537,11 +2018,14 @@ function renderCitations() {
     li.className = "citation-item";
     const head = document.createElement("div");
     head.className = "citation-head";
-    const link = document.createElement("a");
+    // A data lake file is on this machine, so it has no link to open.
+    const link = document.createElement(c.url ? "a" : "span");
     link.className = "citation-link";
-    link.href = c.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    if (c.url) {
+      link.href = c.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
     link.textContent = c.label;
     const kind = document.createElement("span");
     kind.className = "citation-kind";
@@ -1554,6 +2038,12 @@ function renderCitations() {
       head.appendChild(cited);
     }
     li.appendChild(head);
+    if (c.description) {
+      const description = document.createElement("div");
+      description.className = "citation-description";
+      description.textContent = c.description;
+      li.appendChild(description);
+    }
     for (const u of c.uses) {
       const use = document.createElement("div");
       use.className = "citation-use";
@@ -1616,57 +2106,6 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
   if (files && files.length) {
     registerOutputFiles(files, lastUserPrompt, ts);
   }
-  if (files && files.length) {
-    const list = document.createElement("div");
-    list.className = "msg-files";
-    for (const f of files.map(normalizeOutputFile)) {
-      const chip = document.createElement("div");
-      chip.className = "msg-file";
-
-      const icon = document.createElement("span");
-      icon.className = "msg-file-icon";
-      icon.appendChild(faIcon(fileIconClass(f.name)));
-
-      const info = document.createElement("span");
-      info.className = "msg-file-info";
-      const name = document.createElement("span");
-      name.className = "msg-file-name";
-      name.textContent = f.path || f.name;
-      name.title = f.path || f.name;
-      const size = document.createElement("span");
-      size.className = "msg-file-size";
-      size.textContent = formatFileSize(f.size);
-      info.append(name, size);
-
-      chip.append(icon, info);
-
-      const url = `/api/tasks/${f.task_id}/outputs/${f.path
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")}`;
-      const ext = f.name.split(".").pop().toLowerCase();
-
-      if (VIEWABLE_EXT.has(ext)) {
-        const view = document.createElement("button");
-        view.className = "msg-file-btn";
-        view.title = `View ${f.name}`;
-        view.replaceChildren(faIcon("eye"));
-        view.addEventListener("click", () => openPreview(f));
-        chip.appendChild(view);
-      }
-
-      const download = document.createElement("a");
-      download.className = "msg-file-btn";
-      download.href = `${url}?dl=1`;
-      download.download = f.name;
-      download.title = `Download ${f.name}`;
-      download.replaceChildren(faIcon("download"));
-      chip.appendChild(download);
-
-      list.appendChild(chip);
-    }
-    div.appendChild(list);
-  }
   if (role === "assistant") {
     const copy = document.createElement("button");
     copy.className = "copy-btn";
@@ -1686,6 +2125,10 @@ function addMessage(role, text, isError = false, files = [], ts = null, msgId = 
     actions.appendChild(copy);
     if (!isError && !options.stopped) actions.appendChild(buildSaveLeadButton(text));
     div.appendChild(actions);
+  }
+  // Files go last, below the copy and lead buttons.
+  if (files && files.length) {
+    div.appendChild(buildMessageFiles(files));
   }
   messagesEl.appendChild(div);
   // Someone reading further up shouldn't be pulled away by a new answer.
@@ -1742,6 +2185,7 @@ async function selectChat(chatId) {
     currentChatId = chatId;
     localStorage.setItem("lastChatId", chatId);
     setChatName(chat.title);
+    if (currentTabName === "taskspend") refreshSpendingStages();
     lastUserPrompt = "";
     messagesEl.innerHTML = "";
     stepsEl.innerHTML = "";
@@ -1835,6 +2279,7 @@ function startNewChat() {
   currentChatId = null;
   setChatName("");
   lastUserPrompt = "";
+  if (currentTabName === "taskspend") refreshSpendingStages();
   messagesEl.innerHTML = "";
   stepsEl.innerHTML = "";
   updateErrCount();
@@ -1871,6 +2316,7 @@ newChatBtn.addEventListener("click", () => {
 // Shows one tab's panel. "settings" has no button in the bar; the header
 // gear opens it, so no button is highlighted then.
 const APP_LEVEL_BUTTONS = {
+  about: "about-btn",
   leads: "leads-btn",
   files: "files-btn",
   spending: "account-spend-btn",
@@ -1879,6 +2325,7 @@ const APP_LEVEL_BUTTONS = {
 };
 
 const APP_LEVEL_TITLES = {
+  about: "About Biomni",
   leads: "Leads",
   files: "User Files",
   spending: "Account spending",
@@ -1940,13 +2387,17 @@ function activateTab(name) {
   for (const [panel, buttonId] of Object.entries(APP_LEVEL_BUTTONS)) {
     document.getElementById(buttonId)?.classList.toggle("active", panel === name);
   }
+  if (name === "about") refreshAbout();
   if (name === "leads") refreshLeads();
   if (name === "files") refreshFiles();
   if (name === "outputs") renderOutputTray();
   if (name === "citations") refreshCitations();
   if (name === "integrity") startIntegrity();
   else stopIntegrity();
-  if (name === "spending") refreshSpending();
+  if (name === "spending") {
+    refreshSpending();
+    refreshSpendingUsers();
+  }
   if (name === "taskspend") refreshSpendingStages();
   if (name === "settings") refreshSettings();
   if (returningToTask) window.scrollTo(0, taskScrollY);
@@ -2392,19 +2843,362 @@ function updateAttachHint() {
   attachHint.appendChild(clearAll);
 }
 
-// Full list from the server, cached so search/sort/attach-all don't need
-// a round trip — they just re-filter and re-render this.
+// Full list from the server, cached so search/filter/sort/attach-all don't
+// need a round trip — they just re-filter and re-render this.
 let allFiles = [];
 
-function renderFileList() {
-  const term = fileSearchEl.value.trim().toLowerCase();
-  const visible = term ? allFiles.filter((f) => f.name.toLowerCase().includes(term)) : allFiles.slice();
+// ---- how User Files are grouped ----
+// Where a file came from (uploaded, or saved from a chat) comes from the
+// server. The type is read off the extension. Tags are the user's own and
+// are stored by the app, so every chat sees the same ones.
+const FILE_KINDS = [
+  { id: "table", label: "Tables", extensions: ["csv", "tsv", "xlsx", "xls", "json", "parquet"] },
+  { id: "omics", label: "Sequences & omics", extensions: ["fa", "fasta", "fastq", "fq", "vcf", "bam", "sam", "bed", "gff", "mzml", "mzxml", "h5ad"] },
+  { id: "image", label: "Images", extensions: ["png", "jpg", "jpeg", "gif", "svg", "tif", "tiff"] },
+  { id: "document", label: "Documents", extensions: ["pdf", "md", "txt", "docx", "doc", "rtf"] },
+  { id: "web", label: "Code & web", extensions: ["html", "htm", "py", "r", "ipynb", "js"] },
+  { id: "archive", label: "Archives", extensions: ["zip", "gz", "tar", "bz2"] },
+];
+const OTHER_KIND = { id: "other", label: "Other" };
 
-  const [key, dir] = fileSortEl.value.split("-");
-  visible.sort((a, b) => {
-    const cmp = key === "size" ? a.size - b.size : a.name.localeCompare(b.name);
-    return dir === "desc" ? -cmp : cmp;
+function fileKind(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  for (const kind of FILE_KINDS) {
+    if (kind.extensions.includes(ext)) return kind;
+  }
+  return OTHER_KIND;
+}
+
+const fileScopeEl = document.getElementById("file-scope");
+const fileKindEl = document.getElementById("file-kind");
+const fileTagFiltersEl = document.getElementById("file-tag-filters");
+const fileTagOptionsEl = document.getElementById("file-tag-options");
+const fileClearFiltersBtn = document.getElementById("file-clear-filters");
+const tagFilter = new Set(); // tags a file must all have
+let tagEditingName = null; // the file whose tags are open for editing
+let focusTagInput = false; // set by a tag action, so the next render refocuses
+
+function filesMatchingSearch(file, term) {
+  if (file.name.toLowerCase().includes(term)) return true;
+  if ((file.chat_title || "").toLowerCase().includes(term)) return true;
+  for (const tag of file.tags) {
+    if (tag.includes(term)) return true;
+  }
+  return false;
+}
+
+function sortFiles(files) {
+  const [key, direction] = fileSortEl.value.split("-");
+  files.sort((a, b) => {
+    let order;
+    if (key === "size") order = a.size - b.size;
+    else if (key === "date") order = a.added - b.added;
+    else order = a.name.localeCompare(b.name);
+    return direction === "desc" ? -order : order;
   });
+}
+
+// The files that pass the search, the filters and the tag chips, in sort order.
+function filteredFiles() {
+  const term = fileSearchEl.value.trim().toLowerCase();
+  const scope = fileScopeEl.value;
+  const kind = fileKindEl.value;
+  const visible = [];
+  for (const file of allFiles) {
+    if (term && !filesMatchingSearch(file, term)) continue;
+    if (scope === "attached" && !attached.has(file.name)) continue;
+    if (scope === "upload" && file.source !== "upload") continue;
+    if (scope === "chat" && file.source !== "chat") continue;
+    if (kind !== "all" && fileKind(file.name).id !== kind) continue;
+    let hasEveryTag = true;
+    for (const tag of tagFilter) {
+      if (!file.tags.includes(tag)) hasEveryTag = false;
+    }
+    if (!hasEveryTag) continue;
+    visible.push(file);
+  }
+  sortFiles(visible);
+  return visible;
+}
+
+function anyFileFilter() {
+  const searching = fileSearchEl.value.trim() !== "";
+  return searching || fileScopeEl.value !== "all" || fileKindEl.value !== "all" || tagFilter.size > 0;
+}
+
+// The type menu lists only the types the library has, with how many of each.
+function renderKindFilter() {
+  const counts = new Map();
+  for (const file of allFiles) {
+    const kind = fileKind(file.name);
+    counts.set(kind.id, (counts.get(kind.id) || 0) + 1);
+  }
+  const previous = fileKindEl.value;
+  fileKindEl.replaceChildren(option("all", "All types"));
+  for (const kind of [...FILE_KINDS, OTHER_KIND]) {
+    if (counts.has(kind.id)) fileKindEl.append(option(kind.id, `${kind.label} (${counts.get(kind.id)})`));
+  }
+  fileKindEl.value = counts.has(previous) ? previous : "all";
+}
+
+// One chip per tag in use, with how many files carry it. Clicking narrows the
+// list to files with every chosen tag.
+function renderTagFilters() {
+  const counts = new Map();
+  for (const file of allFiles) {
+    for (const tag of file.tags) {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+  }
+  for (const tag of [...tagFilter]) {
+    if (!counts.has(tag)) tagFilter.delete(tag);
+  }
+
+  const tags = [...counts.keys()].sort();
+  fileTagOptionsEl.replaceChildren();
+  fileTagFiltersEl.replaceChildren();
+  fileTagFiltersEl.hidden = tags.length === 0;
+  for (const tag of tags) {
+    const optionEl = document.createElement("option");
+    optionEl.value = tag;
+    fileTagOptionsEl.appendChild(optionEl);
+
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "tag-pill";
+    chip.classList.toggle("on", tagFilter.has(tag));
+    chip.append(faIcon("tag"), document.createTextNode(` ${tag} `));
+    const count = document.createElement("span");
+    count.className = "tag-count";
+    count.textContent = counts.get(tag);
+    chip.appendChild(count);
+    chip.addEventListener("click", () => toggleTagFilter(tag));
+    fileTagFiltersEl.appendChild(chip);
+  }
+}
+
+function toggleTagFilter(tag) {
+  if (tagFilter.has(tag)) tagFilter.delete(tag);
+  else tagFilter.add(tag);
+  renderFileList();
+}
+
+async function saveFileTags(file, tags) {
+  const res = await fetch(`/api/files/${encodeURIComponent(file.name)}/tags`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `server returned HTTP ${res.status}`);
+  file.tags = data.tags;
+}
+
+async function changeFileTags(file, tags) {
+  try {
+    await saveFileTags(file, tags);
+  } catch (err) {
+    uploadStatus.textContent = `Couldn't save the tags for ${file.name}: ${err.message || err}`;
+    return;
+  }
+  uploadStatus.textContent = "";
+  focusTagInput = true;
+  renderFileList();
+}
+
+// The button that opens a file's tags for editing.
+function buildTagEditButton(file) {
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "tag-edit-btn";
+  const hasTags = file.tags.length > 0;
+  edit.replaceChildren(faIcon(hasTags ? "pen" : "plus"), document.createTextNode(hasTags ? " Edit tags" : " Add tag"));
+  edit.addEventListener("click", () => {
+    tagEditingName = file.name;
+    focusTagInput = true;
+    renderFileList();
+  });
+  return edit;
+}
+
+// A tagged row's third line: its tags as chips (click one to filter by it).
+function buildTagPills(file) {
+  const line = document.createElement("div");
+  line.className = "file-tags";
+  for (const tag of file.tags) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "tag-pill";
+    chip.classList.toggle("on", tagFilter.has(tag));
+    chip.title = `Show files tagged ${tag}`;
+    chip.textContent = tag;
+    chip.addEventListener("click", () => toggleTagFilter(tag));
+    line.appendChild(chip);
+  }
+  line.appendChild(buildTagEditButton(file));
+  return line;
+}
+
+// While editing, the chips remove their tag and a new one can be typed in;
+// the library's existing tags are offered as suggestions.
+function buildTagEditor(file) {
+  const line = document.createElement("div");
+  line.className = "file-tags";
+
+  for (const tag of file.tags) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "tag-pill";
+    chip.title = `Remove the tag ${tag}`;
+    chip.append(document.createTextNode(`${tag} `), faIcon("xmark"));
+    chip.addEventListener("click", () => {
+      const remaining = [];
+      for (const other of file.tags) {
+        if (other !== tag) remaining.push(other);
+      }
+      changeFileTags(file, remaining);
+    });
+    line.appendChild(chip);
+  }
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tag-input";
+  input.placeholder = "Add a tag…";
+  input.maxLength = 30;
+  input.setAttribute("list", "file-tag-options");
+  input.setAttribute("aria-label", `Add a tag to ${file.name}`);
+
+  const addTyped = () => {
+    const typed = [];
+    for (const piece of input.value.split(",")) {
+      const tag = piece.trim();
+      if (tag) typed.push(tag);
+    }
+    input.value = "";
+    if (typed.length === 0) return false;
+    changeFileTags(file, [...file.tags, ...typed]);
+    return true;
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTyped();
+    } else if (e.key === "Escape") {
+      tagEditingName = null;
+      renderFileList();
+    }
+  });
+
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "tag-edit-btn";
+  done.textContent = "Done";
+  done.addEventListener("click", () => {
+    tagEditingName = null;
+    if (!addTyped()) renderFileList();
+  });
+
+  line.append(input, done);
+  if (focusTagInput) {
+    focusTagInput = false;
+    requestAnimationFrame(() => input.focus());
+  }
+  return line;
+}
+
+function describeFileOrigin(file) {
+  const when = new Date(file.added * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+  let origin = "Uploaded";
+  if (file.source === "chat") {
+    origin = file.chat_title ? `Saved from “${file.chat_title}”` : "Saved from a chat";
+  }
+  return `${formatSize(file.size)} · ${origin} · ${when}`;
+}
+
+function buildFileRow(f) {
+  const li = document.createElement("li");
+
+  const icon = document.createElement("span");
+  icon.className = "file-icon";
+  icon.appendChild(faIcon(fileIconClass(f.name)));
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = f.name;
+  name.title = f.name;
+  const detail = document.createElement("span");
+  detail.className = "size";
+  const detailText = document.createElement("span");
+  detailText.className = "size-text";
+  detailText.textContent = describeFileOrigin(f);
+  detail.appendChild(detailText);
+  meta.append(name, detail);
+  // An untagged row stays two lines: its "Add tag" button sits beside the details.
+  if (tagEditingName === f.name) {
+    meta.appendChild(buildTagEditor(f));
+  } else if (f.tags.length > 0) {
+    meta.appendChild(buildTagPills(f));
+  } else {
+    detail.appendChild(buildTagEditButton(f));
+  }
+
+  const toggle = document.createElement("button");
+  toggle.className = "attach-toggle";
+  const renderToggle = () => {
+    const on = attached.has(f.name);
+    toggle.classList.toggle("on", on);
+    toggle.replaceChildren(
+      ...(on ? [faIcon("check"), document.createTextNode(" Attached")] : [document.createTextNode("Attach")])
+    );
+  };
+  toggle.addEventListener("click", () => {
+    if (attached.has(f.name)) attached.delete(f.name);
+    else attached.add(f.name);
+    renderToggle();
+    updateAttachHint();
+    saveAttached();
+    renderFileList(); // refresh the attach-all label/count too
+  });
+  renderToggle();
+  toggle.disabled = attachmentsLocked;
+
+  const remove = document.createElement("button");
+  remove.className = "file-remove";
+  remove.replaceChildren(faIcon("xmark"));
+  remove.title = `Remove ${f.name}`;
+  remove.addEventListener("click", async () => {
+    const ok = await confirmModal(
+      `This permanently deletes "${f.name}" from disk — it'll disappear from ` +
+        `the file list and from any chat that has it attached. This can't be undone.`
+    );
+    if (!ok) return;
+    remove.disabled = true;
+    try {
+      const res = await fetch(`/api/files/${encodeURIComponent(f.name)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `server returned HTTP ${res.status}`);
+      attached.delete(f.name);
+      removeFromSavedAttachments(f.name);
+      updateAttachHint();
+      saveAttached();
+      await refreshFiles();
+    } catch (err) {
+      remove.disabled = false;
+      uploadStatus.textContent = `Couldn't delete ${f.name}: ${err.message || err}`;
+    }
+  });
+
+  li.append(icon, meta, toggle, remove);
+  return li;
+}
+
+function renderFileList() {
+  renderKindFilter();
+  renderTagFilters();
+  const visible = filteredFiles();
 
   // "Attach All" acts on whatever's currently visible (filtered), and
   // flips to "Detach All" once every visible file is already attached.
@@ -2416,85 +3210,21 @@ function renderFileList() {
   fileCountEl.textContent = allFiles.length
     ? `${visible.length} of ${allFiles.length} shown · ${attached.size} attached`
     : "";
+  fileClearFiltersBtn.hidden = !anyFileFilter();
 
   fileList.innerHTML = "";
   for (const f of visible) {
-    const li = document.createElement("li");
-
-    const icon = document.createElement("span");
-    icon.className = "file-icon";
-    icon.appendChild(faIcon(fileIconClass(f.name)));
-
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = f.name;
-    name.title = f.name;
-    const size = document.createElement("span");
-    size.className = "size";
-    size.textContent = formatSize(f.size);
-    meta.append(name, size);
-
-    const toggle = document.createElement("button");
-    toggle.className = "attach-toggle";
-    const renderToggle = () => {
-      const on = attached.has(f.name);
-      toggle.classList.toggle("on", on);
-      toggle.replaceChildren(
-        ...(on ? [faIcon("check"), document.createTextNode(" Attached")] : [document.createTextNode("Attach")])
-      );
-    };
-    toggle.addEventListener("click", () => {
-      if (attached.has(f.name)) attached.delete(f.name);
-      else attached.add(f.name);
-      renderToggle();
-      updateAttachHint();
-      saveAttached();
-      renderFileList(); // refresh the attach-all label/count too
-    });
-    renderToggle();
-    toggle.disabled = attachmentsLocked;
-
-    const remove = document.createElement("button");
-    remove.className = "file-remove";
-    remove.replaceChildren(faIcon("xmark"));
-    remove.title = `Remove ${f.name}`;
-    remove.addEventListener("click", async () => {
-      const ok = await confirmModal(
-        `This permanently deletes "${f.name}" from disk — it'll disappear from ` +
-          `the file list and from any chat that has it attached. This can't be undone.`
-      );
-      if (!ok) return;
-      remove.disabled = true;
-      try {
-        const res = await fetch(`/api/files/${encodeURIComponent(f.name)}`, { method: "DELETE" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || `server returned HTTP ${res.status}`);
-        attached.delete(f.name);
-        removeFromSavedAttachments(f.name);
-        updateAttachHint();
-        saveAttached();
-        await refreshFiles();
-      } catch (err) {
-        remove.disabled = false;
-        uploadStatus.textContent = `Couldn't delete ${f.name}: ${err.message || err}`;
-      }
-    });
-
-    li.append(icon, meta, toggle, remove);
-    fileList.appendChild(li);
+    fileList.appendChild(buildFileRow(f));
   }
   if (allFiles.length === 0) {
-    fileList.innerHTML = '<li class="empty">No files uploaded yet</li>';
+    fileList.innerHTML = '<li class="empty">No files yet. Upload some, or use “Save to app” on a file an agent made.</li>';
   } else if (visible.length === 0) {
-    fileList.innerHTML = '<li class="empty">No files match your search</li>';
+    fileList.innerHTML = '<li class="empty">No files match these filters</li>';
   }
 }
 
 attachAllBtn.addEventListener("click", () => {
-  const term = fileSearchEl.value.trim().toLowerCase();
-  const visible = term ? allFiles.filter((f) => f.name.toLowerCase().includes(term)) : allFiles;
+  const visible = filteredFiles();
   const allVisibleAttached = visible.length > 0 && visible.every((f) => attached.has(f.name));
   for (const f of visible) {
     if (allVisibleAttached) attached.delete(f.name);
@@ -2506,6 +3236,15 @@ attachAllBtn.addEventListener("click", () => {
 });
 fileSearchEl.addEventListener("input", renderFileList);
 fileSortEl.addEventListener("change", renderFileList);
+fileScopeEl.addEventListener("change", renderFileList);
+fileKindEl.addEventListener("change", renderFileList);
+fileClearFiltersBtn.addEventListener("click", () => {
+  fileSearchEl.value = "";
+  fileScopeEl.value = "all";
+  fileKindEl.value = "all";
+  tagFilter.clear();
+  renderFileList();
+});
 
 async function refreshFiles() {
   try {
@@ -2514,6 +3253,11 @@ async function refreshFiles() {
     const { files } = await res.json();
     allFiles = files || [];
     filesLoaded = true;
+    savedOutputKeys.clear();
+    for (const file of allFiles) {
+      if (file.task_id && file.origin_path) savedOutputKeys.add(`${file.task_id}/${file.origin_path}`);
+    }
+    syncSaveButtons();
     // An attachment whose file is gone stays listed, so its chip can say so.
     updateAttachHint();
     renderFileList();
@@ -2828,7 +3572,9 @@ function setRunning(running) {
   if (runInProgress && !running && !document.getElementById("app-bar").hidden) {
     finishedWhileAway = true;
   }
+  const justFinished = runInProgress && !running;
   runInProgress = running;
+  if (justFinished && currentTabName === "taskspend") refreshSpendingStages();
   updateTaskStatus();
   updateRunEnabled();
   forkChatBtn.disabled = running; // the server refuses to copy a live run
@@ -4169,45 +4915,96 @@ function spendingServicesCard(services, currency) {
   return card;
 }
 
-// What each stage of the latest run used. Token counts, not dollars: the
-// share weights output and cached tokens by their usual price ratios.
+// What a chat's runs used, by stage and by run, and what everyone's runs in
+// this app used, by user. Token counts, not dollars: the share weights output
+// and cached tokens by their usual price ratios.
 const spendingStagesEl = document.getElementById("spending-stages");
+const spendingUsersEl = document.getElementById("spending-users");
+let spendingStagesRequest = 0; // bumped per fetch, so a slow one can't show the wrong chat
 
-function renderSpendingStages(stages) {
-  const card = el("section", "spend-card");
-  card.append(
-    el("h2", null, "Latest run by stage"),
-    el("p", "note", "Share of the run's cost, from token counts. The optional stages (preprocess, assay, review) are the extra cost over the main analysis."),
+function shareRow(name, detail, share) {
+  const row = el("div", "spend-service");
+  const track = el("div", "track");
+  const fill = el("div", "fill");
+  fill.style.width = `${share * 100}%`;
+  track.append(fill);
+  const label = el("div", "name", name);
+  label.append(el("span", "detail", detail));
+  row.append(label, track, el("div", "amount", `${Math.round(share * 100)}%`));
+  return row;
+}
+
+function stageRow(stage) {
+  const cached = stage.cached_tokens ? ` (${stage.cached_tokens.toLocaleString()} cached)` : "";
+  const detail = `${stage.calls} calls · ${stage.input_tokens.toLocaleString()} in${cached} · ${stage.output_tokens.toLocaleString()} out`;
+  return shareRow(stage.name, detail, stage.share);
+}
+
+function runRow(run) {
+  const detail = `${run.model || "default model"} · ${formatWhen(run.at)}`;
+  return shareRow(run.user, detail, run.share);
+}
+
+function renderSpendingStages(stages, runs) {
+  const stageCard = el("section", "spend-card");
+  stageCard.append(
+    el("h2", null, "This chat by stage"),
+    el("p", "note", "Share of this chat's cost, from token counts. The optional stages (preprocess, assay, review) are the extra cost over the main analysis."),
+  );
+  const runCard = el("section", "spend-card");
+  runCard.append(
+    el("h2", null, "This chat by run"),
+    el("p", "note", "Who ran each task, and its share of this chat's cost."),
   );
   if (!stages.length) {
-    card.append(el("p", "note", "No run since the app started."));
-    spendingStagesEl.replaceChildren(card);
+    stageCard.append(el("p", "note", "No runs in this chat yet."));
+    spendingStagesEl.replaceChildren(stageCard);
     return;
   }
-  for (const stage of stages) {
-    const row = el("div", "spend-service");
-    const track = el("div", "track");
-    const fill = el("div", "fill");
-    fill.style.width = `${stage.share * 100}%`;
-    track.append(fill);
-    const name = el("div", "name", stage.name);
-    const cached = stage.cached_tokens ? ` (${stage.cached_tokens.toLocaleString()} cached)` : "";
-    name.append(el("span", "detail",
-      `${stage.calls} calls · ${stage.input_tokens.toLocaleString()} in${cached} · ${stage.output_tokens.toLocaleString()} out`));
-    row.append(name, track, el("div", "amount", `${Math.round(stage.share * 100)}%`));
-    card.append(row);
-  }
-  spendingStagesEl.replaceChildren(card);
+  for (const stage of stages) stageCard.append(stageRow(stage));
+  for (const run of runs) runCard.append(runRow(run));
+  spendingStagesEl.replaceChildren(stageCard, runCard);
 }
 
 async function refreshSpendingStages() {
+  spendingStagesRequest += 1;
+  const request = spendingStagesRequest;
+  if (!currentChatId) {
+    renderSpendingStages([], []);
+    return;
+  }
   try {
-    const res = await fetch("/api/spending/stages");
+    const res = await fetch(`/api/spending/stages?chat=${encodeURIComponent(currentChatId)}`);
     if (!res.ok) return;
     const data = await res.json();
-    renderSpendingStages(data.stages);
+    if (request !== spendingStagesRequest) return; // the chat changed meanwhile
+    renderSpendingStages(data.stages, data.runs);
   } catch (err) {
-    spendingStagesEl.replaceChildren(); // Cost Explorer's figures above don't depend on this
+    if (request === spendingStagesRequest) spendingStagesEl.replaceChildren();
+  }
+}
+
+// Beside the account-wide bars, which count every user and every AWS
+// service: the part of that this app's runs can be traced to, by user.
+async function refreshSpendingUsers() {
+  try {
+    const res = await fetch("/api/spending/users");
+    if (!res.ok) return;
+    const data = await res.json();
+    const card = el("section", "spend-card");
+    card.style.order = 99; // after the sections the user can reorder
+    card.append(
+      el("h2", null, "This app's runs by user"),
+      el("p", "note", "The account-wide AWS figures include everyone and every AWS service. This is only runs started in this app, split by who ran them (share of their token cost)."),
+    );
+    if (!data.users.length) card.append(el("p", "note", "No runs recorded yet."));
+    for (const user of data.users) {
+      const runs = user.runs === 1 ? "1 run" : `${user.runs} runs`;
+      card.append(shareRow(user.user, `${runs} · ${user.calls} calls`, user.share));
+    }
+    spendingUsersEl.replaceChildren(card);
+  } catch (err) {
+    spendingUsersEl.replaceChildren();
   }
 }
 
@@ -4794,6 +5591,610 @@ leadsNewForm.addEventListener("submit", async (e) => {
 
 refreshLeads(); // for the header badge
 
+// ---- about biomni ----
+// What the agent can draw on, shown at four levels of detail (the tabs under the
+// search box): an overview of research areas against kinds of thing, each area
+// in full, the data by size and where it lives, and the plain full list.
+// Typing in the search box replaces the tab with matches from the full list.
+// Loaded once.
+let aboutData = null;
+let aboutByArea = {};
+let aboutAreaTitles = {};
+let aboutTab = "overview";
+let aboutJump = null; // {areaId, section}: what the "By research area" tab opens when it next shows
+const aboutSearch = document.getElementById("about-search");
+const aboutStatus = document.getElementById("about-status");
+const aboutContent = document.getElementById("about-content");
+const aboutTabsEl = document.getElementById("about-tabs");
+
+// The four kinds of thing, in the order the columns and sections run.
+const ABOUT_KINDS = [
+  { key: "live", label: "Live databases", where: "searched online", hint: "Looked up over the internet each time, so they need a connection and return current data." },
+  { key: "lake", label: "Data files", where: "on this computer", hint: "Read straight from disk, so they are fast and work offline." },
+  { key: "tools", label: "Tools", where: "analysis and protocols", hint: "Ready-made analyses, assay readers and lab-design helpers the agent can call." },
+  { key: "software", label: "Software", where: "packages and programs", hint: "Libraries and programs the agent can run code with." },
+];
+const ABOUT_KIND_BY_KEY = {};
+for (const kind of ABOUT_KINDS) {
+  ABOUT_KIND_BY_KEY[kind.key] = kind;
+}
+const SOFTWARE_KIND_LABELS = { python: "Python", r: "R", cli: "Program" };
+const SOFTWARE_KIND_HEADINGS = { python: "Python packages", r: "R packages", cli: "Command-line programs" };
+
+async function refreshAbout() {
+  if (aboutData) return;
+  aboutStatus.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/about");
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "Couldn't load what Biomni has");
+    aboutData = body;
+    indexAbout();
+    aboutStatus.textContent = "";
+    renderAbout();
+  } catch (err) {
+    aboutStatus.textContent = err.message || "Couldn't load what Biomni has";
+  }
+}
+
+// Sorts every database, file, tool and package under its research area.
+function indexAbout() {
+  aboutByArea = {};
+  aboutAreaTitles = {};
+  for (const area of aboutData.areas) {
+    aboutByArea[area.id] = { live: [], lake: [], tools: [], software: [] };
+    aboutAreaTitles[area.id] = area.title;
+  }
+  for (const file of aboutData.lake) {
+    for (const areaId of file.areas) {
+      aboutByArea[areaId].lake.push(file);
+    }
+  }
+  for (const group of aboutData.tools) {
+    for (const tool of group.tools) {
+      const kindKey = tool.live ? "live" : "tools";
+      for (const areaId of tool.areas) {
+        aboutByArea[areaId][kindKey].push(tool);
+      }
+    }
+  }
+  for (const item of aboutData.software) {
+    for (const areaId of item.areas) {
+      aboutByArea[areaId].software.push(item);
+    }
+  }
+}
+
+// How many of each kind there are in all, counting an item once however many
+// areas it serves (the rows of the overview table can add up to more).
+function aboutTotals() {
+  const totals = {};
+  for (const kind of ABOUT_KINDS) {
+    totals[kind.key] = { available: 0, total: 0 };
+  }
+  const counted = [];
+  for (const file of aboutData.lake) {
+    counted.push({ kindKey: "lake", item: file });
+  }
+  for (const group of aboutData.tools) {
+    for (const tool of group.tools) {
+      counted.push({ kindKey: tool.live ? "live" : "tools", item: tool });
+    }
+  }
+  for (const item of aboutData.software) {
+    counted.push({ kindKey: "software", item });
+  }
+  for (const entry of counted) {
+    totals[entry.kindKey].total += 1;
+    if (isAboutItemAvailable(entry.kindKey, entry.item)) totals[entry.kindKey].available += 1;
+  }
+  return totals;
+}
+
+// Whether this install can use the item right now.
+function isAboutItemAvailable(kindKey, item) {
+  if (kindKey === "lake") return item.present;
+  if (kindKey === "software") return item.status !== "unavailable";
+  return !item.hidden;
+}
+
+function aboutAreaCounts(areaId, kindKey) {
+  const items = aboutByArea[areaId][kindKey];
+  let available = 0;
+  for (const item of items) {
+    if (isAboutItemAvailable(kindKey, item)) available += 1;
+  }
+  return { available, total: items.length };
+}
+
+function aboutMatches(query, ...texts) {
+  if (!query) return true;
+  for (const text of texts) {
+    if ((text || "").toLowerCase().includes(query)) return true;
+  }
+  return false;
+}
+
+function pluralize(count, singular, plural) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+// ---- one row of each kind ----
+
+// "also in <main area>", for an item listed under an area that isn't its main one.
+function alsoInTag(item, areaId) {
+  if (!areaId || item.area === areaId) return "";
+  return `<span class="about-tag">also in ${escapeHtml(aboutAreaTitles[item.area])}</span>`;
+}
+
+function renderLakeItem(file, areaId) {
+  let tag;
+  if (file.present) {
+    tag = `<span class="about-tag">${escapeHtml(formatBytes(file.size))}</span>`;
+  } else {
+    tag = '<span class="about-tag missing">not downloaded</span>';
+  }
+  const itemClass = file.present ? "about-item" : "about-item unavailable";
+  return `<li class="${itemClass}">
+    <div class="about-item-head"><code>${escapeHtml(file.name)}</code>${tag}${alsoInTag(file, areaId)}</div>
+    <p>${escapeHtml(file.description)}</p>
+  </li>`;
+}
+
+function renderToolItem(tool, areaId) {
+  const parameterNames = [];
+  for (const parameter of tool.parameters) {
+    const label = parameter.required ? parameter.name : `${parameter.name}?`;
+    parameterNames.push(escapeHtml(label));
+  }
+  let tag = "";
+  if (tool.hidden) {
+    tag = `<span class="about-tag hidden" title="${escapeHtml(tool.hidden)}">not available here</span>`;
+  }
+  let parameterLine = "";
+  if (parameterNames.length) {
+    parameterLine = `<div class="about-params">(${parameterNames.join(", ")})</div>`;
+  }
+  const itemClass = tool.hidden ? "about-item unavailable" : "about-item";
+  return `<li class="${itemClass}">
+    <div class="about-item-head"><code>${escapeHtml(tool.name)}</code>${tag}${alsoInTag(tool, areaId)}</div>
+    <p>${escapeHtml(tool.description)}</p>
+    ${parameterLine}
+  </li>`;
+}
+
+function renderSoftwareItem(item, areaId) {
+  const kindTag = `<span class="about-tag">${SOFTWARE_KIND_LABELS[item.kind]}</span>`;
+  let statusTag = "";
+  if (item.status === "installed") {
+    statusTag = '<span class="about-tag">installed</span>';
+  } else if (item.status === "on_request") {
+    statusTag = `<span class="about-tag" title="${escapeHtml(item.note)}">installs when needed</span>`;
+  } else if (item.status === "unavailable") {
+    statusTag = `<span class="about-tag hidden" title="${escapeHtml(item.note)}">not available here</span>`;
+  }
+  const itemClass = item.status === "unavailable" ? "about-item unavailable" : "about-item";
+  return `<li class="${itemClass}">
+    <div class="about-item-head"><code>${escapeHtml(item.name)}</code>${kindTag}${statusTag}${alsoInTag(item, areaId)}</div>
+    <p>${escapeHtml(item.description)}</p>
+  </li>`;
+}
+
+const ABOUT_ITEM_RENDERERS = {
+  live: renderToolItem,
+  lake: renderLakeItem,
+  tools: renderToolItem,
+  software: renderSoftwareItem,
+};
+
+// ---- tab 1: overview ----
+
+function renderOverviewTab() {
+  const totals = aboutTotals();
+  const largestInColumn = {};
+  for (const kind of ABOUT_KINDS) {
+    largestInColumn[kind.key] = 0;
+  }
+  for (const area of aboutData.areas) {
+    for (const kind of ABOUT_KINDS) {
+      const counts = aboutAreaCounts(area.id, kind.key);
+      if (counts.available > largestInColumn[kind.key]) largestInColumn[kind.key] = counts.available;
+    }
+  }
+
+  aboutContent.innerHTML = `
+    ${renderOverviewStats(totals)}
+    <h3 class="about-heading">What it has, by research area</h3>
+    <p class="about-note">Each number is how many this install can use. Darker means more. A dash means none are listed for that area (for example, protein structures are looked up live rather than stored). One item can serve several areas, so rows add up to more than the totals above. Click a number to see them, or an area name to see everything for it.</p>
+    ${renderOverviewMatrix(largestInColumn)}
+    ${renderOverviewLimits(totals)}`;
+}
+
+function renderOverviewStats(totals) {
+  let lakeBytes = 0;
+  for (const file of aboutData.lake) {
+    if (file.present) lakeBytes += file.size;
+  }
+  const lakeMissing = totals.lake.total - totals.lake.available;
+  let lakeDetail = `${formatBytes(lakeBytes)} on disk`;
+  if (lakeMissing) lakeDetail += `, ${lakeMissing} more not downloaded`;
+
+  const hiddenTools = totals.tools.total - totals.tools.available;
+  let toolDetail = "Statistics, assays, imaging, lab design and more.";
+  if (!aboutData.tool_availability_known) {
+    toolDetail = "Which of these this install switches off is only known after your first task.";
+  } else if (hiddenTools) {
+    toolDetail = `${hiddenTools} more are switched off on this computer.`;
+  }
+
+  const softwareCounts = { installed: 0, on_request: 0, unavailable: 0, unknown: 0 };
+  for (const item of aboutData.software) {
+    softwareCounts[item.status] += 1;
+  }
+  const softwareReady = softwareCounts.installed + softwareCounts.unknown;
+  const softwareDetail = `${softwareReady} installed now, ${softwareCounts.on_request} installed when a task needs them, ${softwareCounts.unavailable} not available here.`;
+
+  const tiles = [
+    { number: totals.live.available, label: "live databases", detail: "Looked up online, so they need an internet connection." },
+    { number: totals.lake.available, label: "data files on this computer", detail: lakeDetail },
+    { number: totals.tools.available, label: "tools", detail: toolDetail },
+    { number: totals.software.available, label: "packages and programs", detail: softwareDetail },
+  ];
+  const tileHtml = [];
+  for (const tile of tiles) {
+    tileHtml.push(`<div class="about-stat">
+      <div class="about-stat-number">${tile.number}</div>
+      <div class="about-stat-label">${escapeHtml(tile.label)}</div>
+      <div class="about-stat-detail">${escapeHtml(tile.detail)}</div>
+    </div>`);
+  }
+  return `<div class="about-stats">${tileHtml.join("")}</div>`;
+}
+
+function renderOverviewMatrix(largestInColumn) {
+  const headerCells = [];
+  for (const kind of ABOUT_KINDS) {
+    headerCells.push(`<th scope="col" class="num">${escapeHtml(kind.label)}<span class="sub">${escapeHtml(kind.where)}</span></th>`);
+  }
+  const rows = [];
+  for (const area of aboutData.areas) {
+    const cells = [];
+    for (const kind of ABOUT_KINDS) {
+      const counts = aboutAreaCounts(area.id, kind.key);
+      if (!counts.total) {
+        const emptyTooltip = `${area.title}: no ${kind.label.toLowerCase()} listed`;
+        cells.push(`<td><span class="about-matrix-empty" title="${escapeHtml(emptyTooltip)}" aria-label="none">–</span></td>`);
+        continue;
+      }
+      const share = largestInColumn[kind.key] ? counts.available / largestInColumn[kind.key] : 0;
+      const heat = (0.1 + 0.5 * share).toFixed(2);
+      let tooltip = `${area.title}: ${counts.available} ${kind.label.toLowerCase()} available`;
+      if (counts.available < counts.total) tooltip += ` (of ${counts.total} listed)`;
+      cells.push(`<td><button type="button" class="about-matrix-cell" style="--heat:${heat}" data-jump-area="${area.id}" data-jump-section="${kind.key}" title="${escapeHtml(tooltip)}">${counts.available}</button></td>`);
+    }
+    rows.push(`<tr>
+      <th scope="row"><button type="button" class="about-matrix-area" data-jump-area="${area.id}">${escapeHtml(area.title)}</button></th>
+      ${cells.join("")}
+    </tr>`);
+  }
+  return `<div class="about-matrix-wrap">
+    <table class="about-matrix">
+      <thead><tr><th scope="col">Research area</th>${headerCells.join("")}</tr></thead>
+      <tbody>${rows.join("")}</tbody>
+    </table>
+  </div>`;
+}
+
+// "a, b, c and 7 more" for the first few names of a longer list.
+function previewNames(names, limit) {
+  let text = names.slice(0, limit).join(", ");
+  const leftOver = names.length - limit;
+  if (leftOver > 0) text += ` and ${leftOver} more`;
+  return escapeHtml(text);
+}
+
+// What this install can't use, so a researcher isn't surprised mid-task.
+function renderOverviewLimits(totals) {
+  const limits = [];
+
+  const lakeMissing = totals.lake.total - totals.lake.available;
+  if (lakeMissing) {
+    limits.push(`${pluralize(lakeMissing, "data file isn't", "data files aren't")} downloaded yet. <span class="detail">Questions that need them can't use them until the data lake is downloaded.</span>`);
+  }
+
+  const unavailableByKind = { python: [], r: [], cli: [] };
+  for (const item of aboutData.software) {
+    if (item.status === "unavailable") unavailableByKind[item.kind].push(item.name);
+  }
+  if (unavailableByKind.r.length) {
+    limits.push(`R isn't installed, so ${pluralize(unavailableByKind.r.length, "R package", "R packages")} can't run. <span class="detail">${previewNames(unavailableByKind.r, 5)}. The agent uses Python equivalents instead.</span>`);
+  }
+  if (unavailableByKind.cli.length) {
+    limits.push(`${pluralize(unavailableByKind.cli.length, "command-line program isn't", "command-line programs aren't")} installed. <span class="detail">${previewNames(unavailableByKind.cli, 6)}. Tools that start them are switched off.</span>`);
+  }
+  if (unavailableByKind.python.length) {
+    limits.push(`${pluralize(unavailableByKind.python.length, "Python package is", "Python packages are")} neither installed nor on the list the agent may install by itself. <span class="detail">Heavy or GPU-based ones such as cellpose are left out on purpose.</span>`);
+  }
+
+  const hiddenTools = totals.tools.total - totals.tools.available;
+  if (hiddenTools) {
+    limits.push(`${pluralize(hiddenTools, "tool is", "tools are")} switched off on this computer. <span class="detail">Mostly genetics and genomics tools that need deep-learning libraries.</span>`);
+  }
+
+  if (!limits.length) return "";
+  const listItems = [];
+  for (const limit of limits) {
+    listItems.push(`<li>${limit}</li>`);
+  }
+  return `<h3 class="about-heading">What this computer can't use</h3>
+    <ul class="about-limits">${listItems.join("")}</ul>`;
+}
+
+// ---- tab 2: by research area ----
+
+function renderAreasTab() {
+  const blocks = [];
+  for (const area of aboutData.areas) {
+    const bucket = aboutByArea[area.id];
+    const countParts = [];
+    for (const kind of ABOUT_KINDS) {
+      const count = bucket[kind.key].length;
+      if (count) countParts.push(`${count} ${kind.label.toLowerCase()}`);
+    }
+    if (!countParts.length) continue;
+
+    const isTarget = aboutJump !== null && aboutJump.areaId === area.id;
+    const sections = [];
+    for (const kind of ABOUT_KINDS) {
+      const items = bucket[kind.key];
+      if (!items.length) continue;
+      const rendered = [];
+      for (const item of items) {
+        rendered.push(ABOUT_ITEM_RENDERERS[kind.key](item, area.id));
+      }
+      const openSection = isTarget && aboutJump.section === kind.key;
+      sections.push(`<details class="about-group"${openSection ? " open" : ""}>
+        <summary>${escapeHtml(kind.label)}<span class="count">${items.length}</span></summary>
+        <p class="about-note">${escapeHtml(kind.hint)}</p>
+        <ul class="about-list">${rendered.join("")}</ul>
+      </details>`);
+    }
+
+    blocks.push(`<details class="about-area" id="about-area-${area.id}"${isTarget ? " open" : ""}>
+      <summary>
+        <span class="about-area-title">${escapeHtml(area.title)}</span>
+        <span class="about-area-counts">${escapeHtml(countParts.join(" · "))}</span>
+      </summary>
+      <div class="about-area-body">
+        <p class="about-area-summary">${escapeHtml(area.summary)}</p>
+        <div class="about-example">
+          <span class="about-example-label">Try asking</span>
+          <span class="about-example-text">${escapeHtml(area.example)}</span>
+          <button type="button" data-use-example="${area.id}">Use as my question</button>
+        </div>
+        ${sections.join("")}
+      </div>
+    </details>`);
+  }
+  aboutContent.innerHTML = `<p class="about-note">Pick the kind of question you have. Each area gathers every database, data file, tool and package that helps with it.</p>
+    <div class="about-areas">${blocks.join("")}</div>`;
+
+  if (aboutJump) {
+    const target = document.getElementById(`about-area-${aboutJump.areaId}`);
+    aboutJump = null;
+    if (target) target.scrollIntoView({ block: "start" });
+  }
+}
+
+// Drops an area's example question into the message box and goes back to the task.
+function useAboutExample(areaId) {
+  let example = "";
+  for (const area of aboutData.areas) {
+    if (area.id === areaId) example = area.example;
+  }
+  if (!example) return;
+  const draft = promptEl.value.trim();
+  activateTab("task");
+  fillPrompt(draft ? `${draft}\n\n${example}` : example);
+}
+
+// ---- tab 3: data sources ----
+
+function renderDataTab() {
+  // Each file is counted once, under its main area, so the bars add up.
+  const sizeByArea = {};
+  for (const area of aboutData.areas) {
+    sizeByArea[area.id] = { title: area.title, bytes: 0, present: 0, total: 0 };
+  }
+  let totalBytes = 0;
+  let totalPresent = 0;
+  for (const file of aboutData.lake) {
+    const row = sizeByArea[file.area];
+    row.total += 1;
+    if (file.present) {
+      row.bytes += file.size;
+      row.present += 1;
+      totalBytes += file.size;
+      totalPresent += 1;
+    }
+  }
+  const totalFiles = aboutData.lake.length;
+  const sizeRows = [];
+  let largestBytes = 0;
+  for (const area of aboutData.areas) {
+    const row = sizeByArea[area.id];
+    if (!row.total) continue;
+    sizeRows.push(row);
+    if (row.bytes > largestBytes) largestBytes = row.bytes;
+  }
+  sizeRows.sort((first, second) => second.bytes - first.bytes);
+
+  const bars = [];
+  for (const row of sizeRows) {
+    const width = largestBytes ? ((row.bytes / largestBytes) * 100).toFixed(1) : 0;
+    const fileCount = row.present === row.total ? pluralize(row.total, "file", "files") : `${row.present} of ${row.total} files`;
+    const barFill = row.bytes ? `<span class="about-bar-fill" style="width:${width}%"></span>` : "";
+    bars.push(`<div class="about-bar-row">
+      <span class="about-bar-label">${escapeHtml(row.title)}</span>
+      <span class="about-bar-track">${barFill}</span>
+      <span class="about-bar-value">${escapeHtml(formatBytes(row.bytes))}<span class="count">${escapeHtml(fileCount)}</span></span>
+    </div>`);
+  }
+
+  let onDisk = `${formatBytes(totalBytes)} on this computer across ${pluralize(totalPresent, "file", "files")}`;
+  if (totalPresent < totalFiles) onDisk += `, with ${totalFiles - totalPresent} more not downloaded`;
+  const largestFirst = (first, second) => (second.size || 0) - (first.size || 0);
+  aboutContent.innerHTML = `
+    <h3 class="about-heading">Where the data lake's space goes</h3>
+    <p class="about-note">${escapeHtml(onDisk)}. A few large tables take most of the space.</p>
+    <div class="about-bars">${bars.join("")}</div>
+    <h3 class="about-heading">Data files on this computer</h3>
+    <p class="about-note">${escapeHtml(ABOUT_KIND_BY_KEY.lake.hint)} Biggest first. A file that helps in more than one area is listed under each.</p>
+    ${renderAreaGroups("lake", largestFirst)}
+    <h3 class="about-heading">Live databases</h3>
+    <p class="about-note">${escapeHtml(ABOUT_KIND_BY_KEY.live.hint)}</p>
+    ${renderAreaGroups("live", null)}`;
+}
+
+// One collapsible group per research area, for the items of one kind.
+function renderAreaGroups(kindKey, compare) {
+  const blocks = [];
+  for (const area of aboutData.areas) {
+    const items = aboutByArea[area.id][kindKey].slice();
+    if (!items.length) continue;
+    if (compare) items.sort(compare);
+    const rendered = [];
+    for (const item of items) {
+      rendered.push(ABOUT_ITEM_RENDERERS[kindKey](item, area.id));
+    }
+    blocks.push(`<details class="about-group">
+      <summary>${escapeHtml(area.title)}<span class="count">${items.length}</span></summary>
+      <ul class="about-list">${rendered.join("")}</ul>
+    </details>`);
+  }
+  return blocks.join("");
+}
+
+// ---- tab 4: full list (also what a search shows) ----
+
+function renderFullList(query) {
+  const isSearching = query !== "";
+
+  const lakeItems = [];
+  let lakePresent = 0;
+  for (const file of aboutData.lake) {
+    if (file.present) lakePresent += 1;
+    if (aboutMatches(query, file.name, file.description, aboutAreaTitles[file.area])) lakeItems.push(renderLakeItem(file));
+  }
+
+  const toolBlocks = [];
+  let toolCount = 0;
+  let toolMatches = 0;
+  for (const group of aboutData.tools) {
+    const items = [];
+    for (const tool of group.tools) {
+      toolCount += 1;
+      if (aboutMatches(query, tool.name, tool.description, group.field, aboutAreaTitles[tool.area])) items.push(renderToolItem(tool));
+    }
+    if (!items.length) continue;
+    toolMatches += items.length;
+    const title = group.field.replaceAll("_", " ");
+    toolBlocks.push(`<details class="about-group"${isSearching ? " open" : ""}>
+      <summary>${escapeHtml(title)}<span class="count">${items.length}</span></summary>
+      <ul class="about-list">${items.join("")}</ul>
+    </details>`);
+  }
+
+  const softwareBlocks = [];
+  let softwareMatches = 0;
+  for (const kind of ["python", "r", "cli"]) {
+    const items = [];
+    for (const item of aboutData.software) {
+      if (item.kind !== kind) continue;
+      if (aboutMatches(query, item.name, item.description, aboutAreaTitles[item.area])) items.push(renderSoftwareItem(item));
+    }
+    if (!items.length) continue;
+    softwareMatches += items.length;
+    softwareBlocks.push(`<details class="about-group"${isSearching ? " open" : ""}>
+      <summary>${escapeHtml(SOFTWARE_KIND_HEADINGS[kind])}<span class="count">${items.length}</span></summary>
+      <ul class="about-list">${items.join("")}</ul>
+    </details>`);
+  }
+
+  const lakeCount = isSearching ? pluralize(lakeItems.length, "match", "matches") : `${lakePresent} of ${aboutData.lake.length} downloaded`;
+  const toolCountText = isSearching ? pluralize(toolMatches, "match", "matches") : `${toolCount}`;
+  const softwareCountText = isSearching ? pluralize(softwareMatches, "match", "matches") : `${aboutData.software.length}`;
+  aboutContent.innerHTML = `
+    <details class="about-section"${isSearching ? " open" : ""}>
+      <summary>Data lake<span class="count">${lakeCount}</span></summary>
+      <ul class="about-list">${lakeItems.join("")}</ul>
+    </details>
+    <details class="about-section" open>
+      <summary>Tools and live databases<span class="count">${toolCountText}</span></summary>
+      ${toolBlocks.join("")}
+    </details>
+    <details class="about-section"${isSearching ? " open" : ""}>
+      <summary>Software<span class="count">${softwareCountText}</span></summary>
+      ${softwareBlocks.join("")}
+    </details>`;
+
+  if (isSearching && !lakeItems.length && !toolMatches && !softwareMatches) {
+    aboutStatus.textContent = "Nothing in Biomni matches that.";
+  }
+}
+
+// ---- wiring ----
+
+function renderAbout() {
+  if (!aboutData) return;
+  const query = aboutSearch.value.trim().toLowerCase();
+  const isSearching = query !== "";
+  aboutTabsEl.classList.toggle("searching", isSearching);
+  for (const button of aboutTabsEl.querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.aboutTab === aboutTab));
+  }
+  aboutStatus.textContent = "";
+
+  if (isSearching) {
+    renderFullList(query);
+  } else if (aboutTab === "areas") {
+    renderAreasTab();
+  } else if (aboutTab === "data") {
+    renderDataTab();
+  } else if (aboutTab === "list") {
+    renderFullList("");
+  } else {
+    renderOverviewTab();
+  }
+}
+
+function showAboutTab(name) {
+  aboutTab = name;
+  aboutSearch.value = ""; // choosing a tab ends a search
+  renderAbout();
+}
+
+aboutTabsEl.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-about-tab]");
+  if (button) showAboutTab(button.dataset.aboutTab);
+});
+
+aboutContent.addEventListener("click", (event) => {
+  const exampleButton = event.target.closest("[data-use-example]");
+  if (exampleButton) {
+    useAboutExample(exampleButton.dataset.useExample);
+    return;
+  }
+  const jumpButton = event.target.closest("[data-jump-area]");
+  if (jumpButton) {
+    aboutJump = { areaId: jumpButton.dataset.jumpArea, section: jumpButton.dataset.jumpSection || null };
+    showAboutTab("areas");
+  }
+});
+
+aboutSearch.addEventListener("input", renderAbout);
+document.getElementById("about-btn").addEventListener("click", () => toggleAppPanel("about"));
+
 document.getElementById("leads-btn").addEventListener("click", () => toggleAppPanel("leads"));
 document.getElementById("files-btn").addEventListener("click", () => toggleAppPanel("files"));
 document.getElementById("integrity-btn").addEventListener("click", () => toggleAppPanel("integrity"));
@@ -4802,4 +6203,24 @@ document.getElementById("account-spend-btn").addEventListener("click", () => tog
 document.getElementById("user-link")?.addEventListener("click", (e) => {
   e.preventDefault();
   toggleAppPanel("settings");
+});
+
+// Cmd+, (Ctrl+, on Windows) opens settings, as in most desktop apps.
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const settingsLink = document.getElementById("user-link");
+if (settingsLink) settingsLink.title = `Settings (${isMac ? "⌘," : "Ctrl+,"})`;
+document.addEventListener("keydown", (e) => {
+  const platformKey = isMac ? e.metaKey : e.ctrlKey;
+  const isSettingsKey = e.key === "," && platformKey && !e.altKey && !e.shiftKey;
+  if (!isSettingsKey || e.repeat || !settingsLink) return;
+  e.preventDefault();
+  toggleAppPanel("settings");
+});
+
+// In the macOS app window (pywebview), a key the page doesn't mark as
+// handled goes on to the system, which plays its "can't do that" sound.
+// Every Escape is ours to handle, so claim it once the page's own handlers
+// have run.
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") e.preventDefault();
 });

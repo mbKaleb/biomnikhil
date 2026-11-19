@@ -36,6 +36,15 @@ def _db() -> sqlite3.Connection:
                 content TEXT NOT NULL,
                 created REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS run_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                user TEXT NOT NULL,
+                model TEXT,
+                at REAL NOT NULL,
+                stages TEXT NOT NULL
+            );
             """
         )
         _conn.execute("PRAGMA foreign_keys = ON")
@@ -170,3 +179,44 @@ def add_message(
         _db().execute("UPDATE chats SET updated = ? WHERE id = ?", (now, chat_id))
         _db().commit()
     return True
+
+
+def add_run_usage(chat_id: str, task_id: str, user: str, model: str | None, stages: dict) -> None:
+    """Saves what a run used, by stage, so the chat's spending outlives the
+    app and says who ran it."""
+    with _lock:
+        _db().execute(
+            "INSERT INTO run_usage (chat_id, task_id, user, model, at, stages)"
+            " SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM chats WHERE id = ?)",
+            (chat_id, task_id, user, model, time.time(), json.dumps(stages), chat_id),
+        )
+        _db().commit()
+
+
+def _usage_rows(rows) -> list[dict]:
+    runs = []
+    for row in rows:
+        run = dict(row)
+        run["stages"] = json.loads(run["stages"])
+        runs.append(run)
+    return runs
+
+
+def chat_run_usage(chat_id: str) -> list[dict]:
+    """The runs of a chat, oldest first."""
+    with _lock:
+        rows = _db().execute(
+            "SELECT task_id, user, model, at, stages FROM run_usage"
+            " WHERE chat_id = ? ORDER BY id",
+            (chat_id,),
+        ).fetchall()
+    return _usage_rows(rows)
+
+
+def all_run_usage() -> list[dict]:
+    """Every saved run, oldest first, for the per-user totals."""
+    with _lock:
+        rows = _db().execute(
+            "SELECT task_id, user, model, at, stages FROM run_usage ORDER BY id"
+        ).fetchall()
+    return _usage_rows(rows)

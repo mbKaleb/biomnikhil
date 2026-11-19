@@ -16,7 +16,8 @@ from werkzeug.utils import secure_filename
 from .. import auth
 from ..config import Config
 from ..services import (
-    biomni_runner, chat_store, citations, datalake, leads, maintenance, settings, spending, workflow,
+    biomni_runner, chat_store, citations, datalake, leads, library, maintenance, settings, spending,
+    workflow,
 )
 from ..services.tasks import registry
 
@@ -231,6 +232,16 @@ def datalake_status():
     return jsonify(datalake.status())
 
 
+@bp.get("/about")
+def about_route():
+    from ..services import about
+
+    try:
+        return jsonify(about.summary())
+    except ImportError as exc:
+        return jsonify(error=f"Biomni isn't installed yet ({exc})"), 503
+
+
 @bp.post("/datalake/download")
 def datalake_download():
     started = datalake.start_download()
@@ -386,13 +397,20 @@ def spending_route():
 
 @bp.get("/spending/stages")
 def spending_stages():
-    """Token use of the latest run, split by stage (main, preprocess, assay,
-    review, revision), so the Spending tab can show what each stage cost."""
-    usage = biomni_runner.last_run_usage
-    if not usage or not usage.get("stages"):
-        return jsonify(stages=[])
-    rows = biomni_runner.stage_breakdown(usage["stages"])
-    return jsonify(stages=rows, task_id=usage["task_id"], at=usage["at"])
+    """Token use of one chat's runs, split by stage (main, preprocess, assay,
+    review, revision) and by run with who ran each, for the chat's Spending
+    tab. Saved per run, so it survives restarts and other users' runs."""
+    chat_id = request.args.get("chat", "")
+    runs = chat_store.chat_run_usage(chat_id) if chat_id else []
+    stages = biomni_runner.stage_breakdown(biomni_runner.sum_stages(runs))
+    return jsonify(stages=stages, runs=biomni_runner.run_breakdown(runs))
+
+
+@bp.get("/spending/users")
+def spending_users():
+    """Every saved run's relative cost, by the user who ran it, so the
+    account-wide figures can be told apart from this app's own use."""
+    return jsonify(users=biomni_runner.user_breakdown(chat_store.all_run_usage()))
 
 
 @bp.get("/integrity")
@@ -501,16 +519,7 @@ def fork_chat(chat_id: str):
 
 @bp.get("/files")
 def list_files():
-    Config.UPLOAD_PATH.mkdir(parents=True, exist_ok=True)
-    files = sorted(
-        (
-            {"name": p.name, "size": p.stat().st_size}
-            for p in Config.UPLOAD_PATH.iterdir()
-            if p.is_file()
-        ),
-        key=lambda f: f["name"].lower(),
-    )
-    return jsonify(files=files)
+    return jsonify(files=library.list_files())
 
 
 @bp.post("/files")
@@ -525,6 +534,7 @@ def upload_files():
         if not name:
             continue
         f.save(Config.UPLOAD_PATH / name)
+        library.record_upload(name)
         saved.append(name)
     if not saved:
         return jsonify(error="no valid filenames"), 400
@@ -538,7 +548,65 @@ def delete_file(name: str):
     if not safe or not path.is_file():
         return jsonify(error="unknown file"), 404
     path.unlink()
+    library.forget(safe)
     return jsonify(ok=True)
+
+
+@bp.put("/files/<name>/tags")
+def set_file_tags(name: str):
+    safe = secure_filename(name)
+    body = request.get_json(silent=True) or {}
+    try:
+        tags = library.set_tags(safe, body.get("tags"))
+    except library.LibraryError as exc:
+        return jsonify(error=str(exc)), 400
+    if tags is None:
+        return jsonify(error="unknown file"), 404
+    return jsonify(tags=tags)
+
+
+def _output_file(task_id, relpath) -> Path | None:
+    """A file a run wrote, or None if it isn't there. The resolve-and-check
+    keeps a path with ../ inside the run's own folder."""
+    task_id = secure_filename(str(task_id or ""))
+    relpath = str(relpath or "")
+    if not task_id or not relpath:
+        return None
+    task_dir = Config.OUTPUT_PATH / task_id
+    candidate = (task_dir / relpath).resolve()
+    try:
+        candidate.relative_to(task_dir.resolve())
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+@bp.post("/files/from-outputs")
+def save_outputs_to_library():
+    """Copy files a run produced into User Files. Takes {task_id, path} pairs,
+    like /outputs/zip, and the chat they came from."""
+    body = request.get_json(silent=True) or {}
+    entries = body.get("files") or []
+    chat_id = body.get("chat_id")
+    if not isinstance(chat_id, str):
+        chat_id = None
+    if not entries:
+        return jsonify(error="no files given"), 400
+
+    saved = []
+    for entry in entries:
+        task_id = secure_filename(str(entry.get("task_id") or ""))
+        relpath = str(entry.get("path") or "")
+        source = _output_file(task_id, relpath)
+        if source is None:
+            continue
+        name, is_new = library.save_output(source, chat_id, task_id, relpath)
+        saved.append({"task_id": task_id, "path": relpath, "name": name, "new": is_new})
+    if not saved:
+        return jsonify(error="none of the requested files exist"), 404
+    return jsonify(saved=saved), 201
 
 
 @bp.get("/tasks/<task_id>")

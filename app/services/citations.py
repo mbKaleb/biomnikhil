@@ -1,9 +1,11 @@
 """The sources a chat's runs may have used, for the Citations tab. Pulled from
 the stored answers and traces rather than asked of the model, so it also works
 on old chats and can't cite something that never appeared in a run. It shows
-that a source appeared and where, not that the agent relied on it."""
+that a source appeared and where, not that the agent relied on it. Data lake
+files count as sources too, found by name from biomni's manifest."""
 from __future__ import annotations
 
+import functools
 import re
 from urllib.parse import urlsplit
 
@@ -108,14 +110,46 @@ def _section(text: str, pos: int) -> str:
     return open_tag if open_tag in ("execute", "observation") else "reasoning"
 
 
+@functools.cache
+def _lake_files() -> tuple[dict[str, str], re.Pattern | None]:
+    """The data lake's files and what each holds, from biomni's manifest, and
+    a pattern that finds their names. Empty if biomni isn't installed."""
+    try:
+        from biomni.env_desc import data_lake_dict
+    except ImportError:
+        return {}, None
+    descriptions = {}
+    for name, description in data_lake_dict.items():
+        descriptions[name.rstrip("/").rsplit("/", 1)[-1]] = description
+    if not descriptions:
+        return {}, None
+    # Longest first, so a name that contains another is found whole; the
+    # lookarounds keep "x.csv" from matching inside "old_x.csv.bak".
+    alternatives = "|".join(re.escape(name) for name in sorted(descriptions, key=len, reverse=True))
+    return descriptions, re.compile(rf"(?<![\w.-])(?:{alternatives})(?![\w-]|\.\w)")
+
+
+def _lake_citation(name: str, description: str) -> dict:
+    return {"id": f"lake:{name}", "kind": "Data lake", "label": name, "url": None, "description": description}
+
+
 def _scan(text: str, where: str | None):
+    """(citation, where, excerpt) for every source in text, in text order."""
+    found_at = []
+    descriptions, lake_re = _lake_files()
+    if lake_re:
+        for m in lake_re.finditer(text):
+            citation = _lake_citation(m[0], descriptions[m[0]])
+            found_at.append((m.start(), m.end(), citation))
     for m in _FOUND_RE.finditer(text):
         kind = m.lastgroup
         found = _clean(m[kind])
         citation = _from_url(found) if kind == "url" else _identifier(kind, found)
         if citation:
-            end = m.start(kind) + len(found)
-            yield citation, where or _section(text, m.start()), _excerpt(text, m.start(), end)
+            found_at.append((m.start(), m.start(kind) + len(found), citation))
+    found_at.sort(key=lambda item: item[0])
+    for start, end, citation in found_at:
+        yield citation, where or _section(text, start), _excerpt(text, start, end)
 
 
 def collect(messages: list[dict]) -> list[dict]:

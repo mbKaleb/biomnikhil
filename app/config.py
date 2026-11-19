@@ -61,6 +61,9 @@ class Config:
     # The leads board, beside the chat history; its own file, so deleting a
     # chat never deletes a lead.
     LEADS_DB: Path = CHAT_DB.with_name("leads.db")
+    # What the app knows about each user file: where it came from and its tags
+    # (see services/library.py). The files themselves stay in UPLOAD_PATH.
+    FILES_DB: Path = CHAT_DB.with_name("files.db")
 
     # Files the agent generates during a run (reports, CSVs, plots) — each
     # task gets its own subfolder, named by task id, so outputs from

@@ -60,10 +60,9 @@
     .model-select:disabled { opacity: .75; cursor: default; }
     .model-select:disabled:hover { border-color: #2c3f63; color: #cdd6e4; }
     .model-select.saving { opacity: .5; cursor: wait; }
-    .model-select option,
-    #file-sort option { background: #0e1729; color: #dbe4f3; }
+    .model-select option { background: #0e1729; color: #dbe4f3; }
     .content { flex: 1; display: flex; justify-content: center; padding: 1.5rem 1rem; }
-    main { width: min(760px, 100%); display: flex; flex-direction: column; }
+    main { width: min(var(--task-width, 760px), 100%); display: flex; flex-direction: column; }
     main > .panel { min-width: 0; }
     textarea {
       margin-top: 1rem; width: 100%; min-height: 90px; box-sizing: border-box; resize: vertical;
@@ -126,8 +125,54 @@
     #steps::-webkit-scrollbar { width: 6px; }
     #steps::-webkit-scrollbar-thumb { background: #1c2a2a; border-radius: 3px; }
     #steps .ln { display: block; margin-bottom: .7rem; }
-    #steps .ln .k { color: #4a6b5c; user-select: none; }
-    #steps .ln.system { color: #6b93b8; }
+    /* Notices from the app (tool selection, slow model calls, usage): quiet
+       one-liners, so the agent's own steps stay what you read. */
+    #steps .ln.system {
+      display: flex; align-items: baseline; gap: .5rem;
+      margin-bottom: .5rem; font-size: .68rem; font-style: italic; color: #5c7a6e;
+    }
+    #steps .ln.system::before { content: "•"; color: #2a4437; font-style: normal; }
+    #steps .ln.system .notice-text { flex: 1; min-width: 0; }
+    #steps .ln.system .ts {
+      font-size: .62rem; color: #33473d; font-style: normal; white-space: nowrap;
+    }
+    /* The user's message and the text the app wraps around it: one folded
+       row until opened. */
+    #steps .ctx-head {
+      display: flex; align-items: baseline; gap: .55rem; width: 100%;
+      margin: 0; padding: .4rem .6rem; box-sizing: border-box;
+      background: #0a1118; border: 1px solid #16222c; border-radius: 6px;
+      color: #5c7a6e; font: inherit; font-size: .72rem; text-align: left;
+      cursor: pointer;
+    }
+    #steps .ctx-head:hover { background: #0e1822; border-color: #1c2a2a; }
+    #steps .ctx-head:focus-visible { outline: 1px solid #2a4437; }
+    #steps .ctx-arrow {
+      flex: none; width: .8em; font-size: .65rem; transition: transform .15s;
+    }
+    #steps .ln.context.open .ctx-arrow { transform: rotate(90deg); }
+    #steps .ctx-title {
+      flex: none; font-size: .62rem; text-transform: uppercase; letter-spacing: .12em;
+    }
+    #steps .ctx-preview {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: #9db1cc;
+    }
+    #steps .ctx-count { flex: none; font-size: .62rem; color: #4a6b5c; }
+    #steps .ctx-head .ts { flex: none; font-size: .62rem; color: #33473d; }
+    #steps .ctx-body { display: none; margin-top: .5rem; }
+    #steps .ln.context.open .ctx-body, #trace.copying #steps .ctx-body { display: block; }
+    #steps .seg-user {
+      background: #0d1522; border: 1px solid #1a2a40;
+      border-left: 2px solid #9db1cc; border-radius: 6px;
+      padding: .5rem .6rem; color: #dbe4f3;
+    }
+    #steps .seg-user .seg-label { color: #9db1cc; }
+    #steps .seg-note {
+      padding: .1rem .6rem; border-left: 2px dashed #1c2a2a;
+      font-size: .7rem; color: #5c7a6e;
+    }
+    #steps .seg-note .seg-label { color: #3a5a4b; }
     #steps .ln-head {
       display: flex; align-items: baseline; gap: .5rem;
       margin-bottom: .3rem; user-select: none;
@@ -159,7 +204,7 @@
       font-size: .7rem; color: #6b93b8;
     }
     #steps .ln.run_start:first-child { margin-top: 0; border-top: none; padding-top: 0; }
-    #steps .ln.run_end { border-top: none; margin-top: .2rem; padding-top: 0; }
+    #steps .ln.run_end { border-top: none; margin-top: .2rem; margin-bottom: 1.6rem; padding-top: 0; }
     #steps .ln.run_start .run-icon { color: #3b82f6; }
     #steps .ln.run_end.done { color: #4ade80; }
     #steps .ln.run_end.failed { color: #f87171; }
@@ -272,7 +317,8 @@
        page below doesn't jump when you move between the task and a back room. */
     #app-bar {
       display: flex; align-items: center; gap: .8rem; box-sizing: border-box;
-      height: 40px; margin: 0 0 1rem; border-bottom: 1px solid #2c3f63;
+      height: calc(40px + .4rem); margin: 0 0 1rem; padding-top: .4rem;
+      border-bottom: 1px solid #2c3f63;
     }
     #app-bar[hidden] { display: none; }
     #back-to-task {
@@ -294,7 +340,7 @@
     .header-btn:hover, #user-link:hover, #trace-btn:hover {
       background: #1a2a4c; color: #dbe4f3; border-color: #3b5bdb;
     }
-    #spending-sections-task { margin-top: .9rem; }
+    #spending-sections-task { display: flex; flex-direction: column; gap: .9rem; margin-top: .9rem; }
 
     /* ---- Leads: candidate findings to follow up, from the header ---- */
     #leads-btn {
@@ -400,22 +446,21 @@
     /* The data lake popup waits for the tour to close. */
     body:has(#tour) #dl-modal { display: none; }
     #tour svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-    #tour path { fill: none; stroke: #5b7fe8; stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 600; animation: tour-draw .7s ease-out forwards; }
+    #tour path { fill: none; stroke: #5b7fe8; stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: tour-draw .7s ease-out forwards; }
     #tour circle { fill: #5b7fe8; }
     @keyframes tour-draw { to { stroke-dashoffset: 0; } }
     .tour-label {
-      position: absolute; box-sizing: border-box; width: 272px; padding: .35rem .7rem; background: #131f38;
+      position: absolute; box-sizing: border-box; width: max-content; max-width: 260px; padding: .35rem .7rem; background: #131f38;
       border: 1px solid #2c3f63; border-radius: 10px; font-size: .8rem; color: #a9bce0;
       opacity: 0; animation: tour-fade .4s .35s ease-out forwards;
     }
-    .tour-label.narrow { width: auto; }
     .tour-label b { display: block; color: #dbe4f3; font-size: .85rem; }
     @keyframes tour-fade { to { opacity: 1; } }
     .tour-list {
       position: absolute; top: 4.5rem; left: 16px; right: 16px;
       display: flex; flex-direction: column; gap: .5rem;
     }
-    .tour-list .tour-label { position: static; width: auto; }
+    .tour-list .tour-label { position: static; width: auto; max-width: none; }
     #tour-controls {
       position: absolute; right: 1.5rem; bottom: 1.5rem; z-index: 102;
       display: flex; align-items: center; gap: .6rem;
@@ -443,6 +488,9 @@
     /* sticky would trap the lifted icons below the dim, so only they rise above it */
     #composer-dock:has(.tour-lifted) { position: relative; z-index: auto; }
     @media (prefers-reduced-motion: reduce) { #tour path, .tour-label, .tour-lifted { animation: none; opacity: 1; stroke-dashoffset: 0; } }
+    /* A redraw of the page already shown (after a resize) appears in place, without animating in again. */
+    #tour.settled path, #tour.settled .tour-label { animation: none; opacity: 1; stroke-dashoffset: 0; }
+    body:has(#tour.settled) .tour-lifted, body:has(#tour.measuring) .tour-lifted { animation: none; }
     /* ---- sidebar ---- */
     /* The app's sans, set quietly: two type sizes, hairlines, no boxes. */
     #sidebar {
@@ -687,7 +735,7 @@
     }
     .copy-btn:hover { background: #1d2f55; border-color: #5b7fe8; color: #dbe4f3; }
     .copy-btn.copied { border-color: #2a6e4a; color: #4ade80; }
-    .copy-btn::after { content: "Copy"; }
+    .copy-btn::after { content: "Copy text"; }
     .copy-btn.copied::after { content: "Copied"; }
     .msg-actions { display: flex; justify-content: flex-end; gap: .4rem; margin-top: .7rem; }
     .msg-actions .copy-btn { margin: 0; }
@@ -699,35 +747,53 @@
 
     /* ---- output files attached to an assistant message ---- */
     .msg-files {
-      margin-top: .7rem; padding-top: .6rem; border-top: 1px solid #24365a;
-      display: flex; flex-direction: column; gap: .4rem;
-      white-space: normal;
+      margin-top: 1rem; padding-top: .8rem; border-top: 1px solid #24365a;
+      white-space: normal; font-size: .8rem;
     }
+    .msg-files-head {
+      display: flex; align-items: center; gap: .5rem; padding: 0 .25rem .3rem;
+      color: #7c90b4; font-size: .74rem;
+    }
+    .msg-files-title { flex: 1; min-width: 0; font-size: .84rem; }
     .msg-file {
-      display: flex; align-items: center; gap: .55rem; padding: .4rem .6rem;
-      background: #0e1729; border: 1px solid #24365a; border-radius: 9px;
-      font-size: .8rem; transition: border-color .15s, background .15s;
+      display: flex; align-items: center; gap: .45rem; margin: 0 .6rem; padding: .18rem .25rem;
+      border-radius: 7px; transition: background .15s;
     }
-    .msg-file:hover { border-color: #3a5590; background: #14213d; }
-    .msg-file-icon {
-      width: 24px; height: 24px; border-radius: 7px; flex: none;
-      display: grid; place-items: center; font-size: .82rem;
-      background: #1d2f55; border: 1px solid #2c4a74;
+    .msg-file:hover { background: #14213d; }
+    .msg-files.collapsed .msg-file.extra { display: none; }
+    .msg-file-icon { width: 1.1rem; flex: none; text-align: center; color: #8fb0ff; font-size: .8rem; }
+    .msg-file-label {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .msg-file-info { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-    .msg-file-name {
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      color: #dbe4f3;
-    }
-    .msg-file-size { color: #7c90b4; font-size: .72rem; }
+    .msg-file-name { color: #dbe4f3; }
+    .msg-file-dir { margin-left: .45rem; color: #56688c; font-size: .72rem; }
+    .msg-file-size { flex: none; color: #7c90b4; font-size: .72rem; }
     .msg-file-btn {
       flex: none; width: 1.9rem; height: 1.9rem; border-radius: 8px;
       display: grid; place-items: center; text-decoration: none;
       border: 1px solid #2c4a74; background: transparent; font-size: .82rem;
-      color: inherit; font-family: inherit; cursor: pointer; padding: 0;
+      color: inherit; font-family: inherit; cursor: pointer; padding: 0; margin: 0;
       transition: background .15s, border-color .15s;
     }
+    .msg-file .msg-file-btn { width: 1.6rem; height: 1.6rem; font-size: .75rem; }
     .msg-file-btn:hover { background: #1d2f55; border-color: #5b7fe8; }
+    .msg-files-more {
+      margin: .2rem 0 0 .25rem; padding: .1rem .3rem; background: none; border: 0;
+      color: #8fb0ff; font-size: .76rem;
+    }
+    .msg-files-more:hover { text-decoration: underline; }
+    .save-app-btn {
+      flex: none; display: inline-flex; align-items: center; gap: .3rem;
+      height: 1.6rem; margin: 0; padding: 0 .6rem; box-sizing: border-box;
+      border-radius: 999px; border: 1px solid #35507f; background: transparent;
+      color: #a9bce0; font: inherit; font-size: .72rem; white-space: nowrap;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .save-app-btn:hover:not(:disabled) { border-color: #5b7fe8; color: #dbe4f3; background: #1d2f55; }
+    .save-app-btn.saved { border-color: #2a6e4a; color: #4ade80; }
+    .save-app-btn.failed { border-color: #6e2438; color: #f87171; }
+    .save-app-btn:disabled { opacity: .6; cursor: default; }
+    @media (max-width: 520px) { .msg-file-size { display: none; } }
 
     /* ---- outputs tab: every file this chat's runs have produced ---- */
     #output-toolbar { display: flex; align-items: stretch; gap: .5rem; margin-top: .9rem; }
@@ -770,6 +836,7 @@
     .citation-link { color: #8fb0f5; font-size: .85rem; overflow-wrap: anywhere; }
     .citation-kind { color: #7c90b4; font-size: .72rem; }
     .citation-cited { color: #6fcf97; font-size: .72rem; }
+    .citation-description { margin-top: .25rem; font-size: .76rem; color: #7c90b4; }
     .citation-use { margin-top: .45rem; font-size: .76rem; color: #a9b8d3; overflow-wrap: anywhere; }
     .citation-use b { font-weight: 600; color: #cdd6e4; }
     .citation-use q { display: block; margin-top: .15rem; color: #7c90b4; quotes: none; }
@@ -975,8 +1042,15 @@
     }
     .tabs {
       display: flex; gap: .25rem; margin-bottom: 1rem;
+      /* A small gap under the header, filled with the bar's background so
+         scrolled content doesn't show through it. */
+      padding-top: .4rem;
       border-bottom: 1px solid #2c3f63;
+      /* Stays under the header while the chat scrolls. */
+      position: sticky; top: var(--header-height, 0px); z-index: 7;
+      background: #0d1526;
     }
+    body.back-room .tabs { background: #080d18; }
     .tabs button {
       margin: 0; padding: .5rem 1rem; background: none; color: #7c90b4;
       border-radius: 8px 8px 0 0; cursor: pointer;
@@ -1023,6 +1097,13 @@
       border: 1px solid #24365a; border-radius: 9px; background: #fff;
     }
     #viewer-frame[hidden] { display: none; }
+    #viewer-md {
+      height: calc(100vh - 13rem); min-height: 420px; overflow: auto;
+      margin-top: .7rem; padding: 1rem 1.4rem; box-sizing: border-box;
+      border: 1px solid #24365a; border-radius: 9px;
+    }
+    #viewer-md[hidden] { display: none; }
+    #viewer-md img { max-width: 100%; }
     /* ---- Spending tab ---- */
     #spending-summary {
       display: flex; align-items: center; gap: .6rem;
@@ -1050,7 +1131,7 @@
     .spend-message .refresh:hover { border-color: #5b7fe8; color: #dbe4f3; }
     .spend-footnote { color: #7c90b4; font-size: .76rem; margin: .9rem 0 0; line-height: 1.5; }
     #spending-sections { display: flex; flex-direction: column; gap: .9rem; margin-top: .9rem; }
-    #spending-body, #spending-stages { display: contents; }
+    #spending-body, #spending-stages, #spending-users { display: contents; }
     .spend-section { position: relative; }
     .spend-handle {
       position: absolute; left: 0; top: 0; z-index: 1; width: 1.5rem; height: 2rem;
@@ -1218,7 +1299,7 @@
     @keyframes panel-in { from { opacity: 0; } }
     @media (prefers-reduced-motion: reduce) { .panel.active { animation: none; } }
     #dropzone {
-      border: 1.5px dashed #35507f; border-radius: 12px; padding: 2rem 1rem;
+      border: 1.5px dashed #35507f; border-radius: 12px; padding: 1rem;
       text-align: center; color: #7c90b4; cursor: pointer;
       background: linear-gradient(180deg, #111c33, #0e1729);
       transition: border-color .15s, background .15s, transform .1s;
@@ -1229,13 +1310,13 @@
     #tab-task.dragover {
       outline: 1.5px dashed #5b7fe8; outline-offset: 6px; border-radius: 8px;
     }
-    #dropzone .dz-icon { font-size: 1.6rem; display: block; margin-bottom: .35rem; }
+    #dropzone .dz-icon { font-size: 1.1rem; margin-right: .5rem; }
     #dropzone .dz-hint { font-size: .78rem; opacity: .75; }
     #file-list { list-style: none; margin: 1.1rem 0 0; padding: 0; }
     #file-list li {
-      display: flex; align-items: center; gap: .7rem; padding: .6rem .8rem;
+      display: flex; align-items: center; gap: .65rem; padding: .5rem .7rem;
       background: #131f38; border: 1px solid #24365a; border-radius: 10px;
-      margin-bottom: .45rem; font-size: .86rem;
+      margin-bottom: .35rem; font-size: .86rem;
       transition: border-color .15s, background .15s;
     }
     #file-list li:hover { border-color: #3a5590; background: #162442; }
@@ -1253,7 +1334,35 @@
       display: block; overflow: hidden; text-overflow: ellipsis;
       white-space: nowrap;
     }
-    #file-list .size { display: block; color: #7c90b4; font-size: .74rem; }
+    #file-list .meta { flex: 1; }
+    #file-list .size {
+      display: flex; align-items: center; gap: .5rem; color: #7c90b4; font-size: .74rem;
+    }
+    #file-list .size-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #file-list .size .tag-edit-btn { flex: none; }
+    .file-tags { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; margin-top: .3rem; }
+    .tag-pill {
+      display: inline-flex; align-items: center; gap: .25rem; margin: 0;
+      padding: .05rem .5rem; border-radius: 999px; border: 1px solid #2c4a74;
+      background: #1d2f55; color: #a9bce0; font: inherit; font-size: .7rem; line-height: 1.5;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .tag-pill:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .tag-pill.on { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
+    .tag-pill i { font-size: .62rem; opacity: .75; }
+    .tag-count { opacity: .65; }
+    .tag-edit-btn {
+      margin: 0; padding: .05rem .5rem; border-radius: 999px;
+      border: 1px dashed #35507f; background: transparent; color: #7c90b4;
+      font: inherit; font-size: .7rem; line-height: 1.5;
+    }
+    .tag-edit-btn:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .tag-input {
+      width: 8.5rem; box-sizing: border-box; padding: .1rem .55rem; margin: 0;
+      border-radius: 999px; border: 1px solid #35507f; background: #0e1729;
+      color: #dbe4f3; font: inherit; font-size: .74rem;
+    }
+    .tag-input:focus { outline: none; border-color: #5b7fe8; }
     .attach-toggle {
       margin-left: auto; flex: none; padding: .28rem .75rem; font-size: .74rem;
       border-radius: 999px; border: 1px solid #35507f; background: transparent;
@@ -1320,15 +1429,31 @@
     }
     #file-search::placeholder { color: #56688c; }
     #file-search:focus { outline: none; border-color: #5b7fe8; }
-    #file-sort {
-      flex: none; width: 9.5rem; padding: 0 2rem 0 .8rem; color: #a9bce0;
+    #file-filters {
+      display: flex; gap: .5rem; margin-top: .5rem; flex-wrap: wrap;
+    }
+    #file-filters select {
+      flex: 1 1 8rem; min-width: 0; height: 2.35rem; font-size: .82rem;
+      border-radius: 9px; font-family: inherit; margin: 0;
+      padding: 0 2rem 0 .8rem; color: #a9bce0;
       border: 1px solid #24365a; background-color: #0e1729;
       appearance: none; -webkit-appearance: none; cursor: pointer;
       background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%237c90b4' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
       background-repeat: no-repeat; background-position: right .8rem center;
     }
-    #file-sort:focus { outline: none; border-color: #5b7fe8; }
-    #file-count { margin-top: .55rem; font-size: .76rem; color: #56688c; }
+    #file-filters select:focus { outline: none; border-color: #5b7fe8; }
+    #file-filters select option { background: #0e1729; color: #dbe4f3; }
+    #file-tag-filters { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .6rem; }
+    #file-tag-filters[hidden] { display: none; }
+    #file-count-row {
+      display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+      margin-top: .55rem; font-size: .76rem; color: #56688c;
+    }
+    #file-clear-filters {
+      margin: 0; padding: .1rem .3rem; background: none; border: 0;
+      color: #8fb0ff; font-size: .76rem; text-decoration: underline;
+    }
+    #file-clear-filters[hidden] { display: none; }
       /* ---- Task tab: chat layout with a composer docked to the window ---- */
     #tab-task.active {
       display: flex; flex-direction: column; flex: 1;
@@ -1723,13 +1848,145 @@
       .msg.user { max-width: 88%; }
       .empty-state { font-size: 1.3rem; }
     }
+    /* ---- page scroll buttons: a column beside the composer ---- */
+    #scroll-buttons {
+      position: absolute; left: calc(100% + .6rem); top: 1.5rem; /* level with the composer's top */
+      display: flex; flex-direction: column; gap: .4rem;
+    }
+    #scroll-buttons button {
+      display: grid; place-items: center;
+      width: 2rem; height: 2rem; margin: 0; padding: 0; border-radius: 10px;
+      background: #182440; border: 1px solid #2c3f63; color: #7c90b4;
+      font-size: .8rem; cursor: pointer;
+      transition: opacity .15s, color .15s, border-color .15s, background-color .15s;
+    }
+    #scroll-buttons button:hover { background: #1f2f52; border-color: #5b7fe8; color: #dbe4f3; }
+    #scroll-buttons button:focus-visible { outline: none; border-color: #5b7fe8; color: #dbe4f3; }
+    /* No room beside the chat on narrow screens: sit just above the composer. */
+    @media (max-width: 1100px) {
+      #scroll-buttons { left: auto; top: auto; right: .4rem; bottom: calc(100% - 1.2rem); flex-direction: row; }
+    }
+    #scroll-buttons button.hidden-by-scroll { opacity: 0; pointer-events: none; }
+    #about-btn {
+      margin: 0; padding: .15rem .4rem; background: transparent; color: inherit;
+      border: 1px solid transparent; border-radius: 8px; font: inherit; cursor: pointer;
+    }
+    #about-btn:hover, #about-btn.active { border-color: #2c3f63; background: #131f38; }
+    #about-btn:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+    #about-intro { margin: 0 0 .9rem; color: #c6d3ec; font-size: .95rem; line-height: 1.5; }
+    #about-toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+    #about-search {
+      flex: 1; min-width: 12rem; margin: 0; padding: .5rem .7rem; box-sizing: border-box;
+      background: #131f38; color: inherit; border: 1px solid #2c3f63; border-radius: 8px; font: inherit;
+    }
+    #about-status { margin: .9rem 0 0; color: #a3b3d1; font-size: .95rem; }
+    #about-status:empty { display: none; }
+    .about-section { margin-top: 1.2rem; }
+    .about-section > summary {
+      cursor: pointer; font-weight: 600; color: #dbe4f3; font-size: 1rem; padding: .3rem 0;
+    }
+    .about-section .count, .about-group .count { color: #a3b3d1; font-weight: 400; margin-left: .35rem; }
+    .about-group { margin: .6rem 0 0 .2rem; }
+    .about-group > summary { cursor: pointer; color: #c6d3ec; font-size: .95rem; padding: .25rem 0; }
+    .about-list { list-style: none; margin: .4rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+    .about-item {
+      padding: .6rem .8rem; border: 1px solid #24365a; border-radius: 10px;
+      background: linear-gradient(180deg, #111c33, #0e1729); font-size: .92rem; line-height: 1.55;
+    }
+    .about-item-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; }
+    .about-item code { color: #dbe4f3; font-size: .92rem; overflow-wrap: anywhere; }
+    .about-item p { margin: .25rem 0 0; color: #c6d3ec; }
+    .about-tag { font-size: .82rem; padding: .05rem .45rem; border-radius: 999px; border: 1px solid #35507f; color: #c6d3ec; }
+    .about-tag.missing, .about-tag.hidden { border-color: #8a5a2b; color: #e0b37c; }
+    .about-params { color: #a3b3d1; font-size: .86rem; overflow-wrap: anywhere; }
+    .about-item.unavailable { opacity: .8; }
+
+    /* The tabs under the search box: the same pill look as the Leads filters. */
+    #about-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem; }
+    .about-tab {
+      margin: 0; padding: .35rem .85rem; background: #131f38; color: #c6d3ec;
+      border: 1px solid #2c3f63; border-radius: 999px; font-size: .92rem; cursor: pointer;
+    }
+    .about-tab:hover { border-color: #5b7fe8; color: #dbe4f3; }
+    .about-tab[aria-pressed="true"] { background: #1a2a4c; border-color: #3b5bdb; color: #dbe4f3; }
+    .about-tab:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+    #about-tabs.searching .about-tab[aria-pressed="true"] { background: #131f38; border-color: #2c3f63; color: #c6d3ec; }
+
+    .about-heading { margin: 1.4rem 0 .2rem; font-size: 1rem; font-weight: 600; color: #dbe4f3; }
+    .about-note { margin: .2rem 0 .6rem; color: #a3b3d1; font-size: .9rem; line-height: 1.55; }
+
+    /* Overview: four headline numbers, then areas against kinds of thing. */
+    .about-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .6rem; margin-top: 1rem; }
+    .about-stat { padding: .7rem .85rem; border: 1px solid #24365a; border-radius: 10px; background: linear-gradient(180deg, #111c33, #0e1729); }
+    .about-stat-number { font-size: 1.7rem; line-height: 1.1; font-weight: 600; color: #eaf0ff; }
+    .about-stat-label { margin-top: .15rem; color: #c6d3ec; font-size: .92rem; }
+    .about-stat-detail { margin-top: .25rem; color: #a3b3d1; font-size: .86rem; line-height: 1.35; }
+    .about-matrix-wrap { overflow-x: auto; margin-top: .4rem; }
+    .about-matrix { border-collapse: separate; border-spacing: 2px; width: 100%; min-width: 34rem; }
+    .about-matrix th { font-weight: 400; text-align: left; padding: .1rem .3rem; color: #c6d3ec; font-size: .86rem; vertical-align: bottom; }
+    .about-matrix th .sub { display: block; color: #8a9cc0; font-size: .82rem; }
+    .about-matrix th.num, .about-matrix td { text-align: center; }
+    .about-matrix td { padding: 0; }
+    .about-matrix-area, .about-matrix-cell {
+      display: block; width: 100%; margin: 0; font: inherit; cursor: pointer; border: 0; color: inherit;
+    }
+    .about-matrix-area { padding: .45rem .5rem; text-align: left; font-size: .92rem; color: #dbe4f3; background: transparent; border-radius: 6px; }
+    .about-matrix-area:hover { background: #131f38; }
+    .about-matrix-cell { padding: .45rem .3rem; border-radius: 4px; font-size: .95rem; color: #eaf0ff; background: rgba(91, 127, 232, var(--heat, .1)); }
+    .about-matrix-cell:hover { outline: 1px solid #c6d3ec; }
+    .about-matrix-area:focus-visible, .about-matrix-cell:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+    .about-matrix-empty { display: block; padding: .45rem .3rem; color: #8a9cc0; }
+    @media (max-width: 560px) {
+      .about-matrix { min-width: 0; table-layout: fixed; }
+      .about-matrix th:first-child { width: 34%; }
+      .about-matrix th.num { font-size: .72rem; }
+      .about-matrix th .sub { display: none; }
+      .about-matrix-area { padding: .35rem .3rem; font-size: .88rem; }
+    }
+    .about-limits { margin: .4rem 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .35rem; }
+    .about-limits li { color: #e0b37c; font-size: .92rem; line-height: 1.4; padding-left: .65rem; border-left: 2px solid #8a5a2b; }
+    .about-limits .detail { color: #c6d3ec; }
+
+    /* By research area */
+    .about-areas { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
+    .about-area { scroll-margin-top: calc(var(--header-height, 4rem) + 3.5rem); border: 1px solid #24365a; border-radius: 10px; background: linear-gradient(180deg, #111c33, #0e1729); }
+    .about-area > summary { cursor: pointer; padding: .7rem .85rem; }
+    .about-area-title { font-weight: 600; color: #dbe4f3; }
+    .about-area-counts { color: #a3b3d1; font-size: .88rem; margin-left: .8rem; }
+    .about-area-body { padding: 0 .85rem .8rem; }
+    .about-area-summary { margin: 0 0 .6rem; color: #c6d3ec; font-size: .95rem; line-height: 1.55; }
+    .about-example {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; padding: .55rem .7rem;
+      border: 1px dashed #35507f; border-radius: 8px; background: #0e1729;
+    }
+    .about-example-label { color: #a3b3d1; font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+    .about-example-text { flex: 1 1 16rem; color: #dbe4f3; font-size: .92rem; line-height: 1.55; }
+    .about-example button {
+      margin: 0; padding: .3rem .8rem; border-radius: 999px; font-size: .88rem; cursor: pointer;
+      background: #1a2a4c; color: #dbe4f3; border: 1px solid #3b5bdb;
+    }
+    .about-example button:hover { background: #22366a; }
+    .about-example button:focus-visible { outline: 2px solid #5b7fe8; outline-offset: 1px; }
+
+    /* Data sources: where the data lake's space goes. */
+    .about-bars { display: flex; flex-direction: column; gap: 6px; margin-top: .6rem; }
+    .about-bar-row { display: grid; grid-template-columns: minmax(8rem, 14rem) 1fr minmax(6.5rem, auto); align-items: center; gap: .6rem; font-size: .9rem; }
+    .about-bar-label { color: #c6d3ec; overflow-wrap: anywhere; }
+    .about-bar-track { display: block; height: 14px; }
+    .about-bar-fill { display: block; height: 100%; min-width: 3px; background: #5b7fe8; border-radius: 0 4px 4px 0; }
+    .about-bar-value { color: #dbe4f3; text-align: right; white-space: nowrap; }
+    .about-bar-value .count { color: #a3b3d1; margin-left: .35rem; }
+    @media (max-width: 560px) {
+      .about-bar-row { grid-template-columns: 1fr auto; }
+      .about-bar-track { grid-column: 1 / -1; grid-row: 2; }
+    }
   </style>
 </head>
 <body{% if always_show_tour %} data-always-tour{% endif %}>
   <header>
     <button id="menu-btn" title="Chats (⌘B)"><i class="fa-solid fa-bars"></i></button>
     <button id="header-new-chat" title="New chat (N)" aria-label="New chat"><i class="fa-solid fa-pen-to-square"></i></button>
-    <h1>biomnikhil</h1>
+    <h1><button id="about-btn" type="button" title="About Biomni: its data lake and tools">biomnikhil</button></h1>
     <span id="chat-name"></span>
     <button id="leads-btn" class="header-btn" title="Leads: findings to follow up" aria-label="Leads"><i class="fa-solid fa-flask"></i><span class="header-btn-label">Leads</span><span id="leads-badge"></span></button>
     <button id="files-btn" class="header-btn" title="User files" aria-label="User files"><i class="fa-solid fa-folder-open"></i></button>
@@ -1850,6 +2107,10 @@
     <section id="tab-task" class="panel active">
       <div id="messages"></div>
       <div id="composer-dock">
+        <div id="scroll-buttons">
+          <button id="scroll-top" title="Scroll to top" aria-label="Scroll to top"><i class="fa-solid fa-arrow-up"></i></button>
+          <button id="scroll-bottom" title="Scroll to bottom" aria-label="Scroll to bottom"><i class="fa-solid fa-arrow-down"></i></button>
+        </div>
         <div id="composer">
           <div class="attach-hint" id="attach-hint" hidden></div>
           <div class="task-upload-status" id="task-upload-status" hidden></div>
@@ -1950,6 +2211,7 @@
       <div id="output-toolbar">
         <input type="search" id="output-search" placeholder="Search generated files…">
         <button id="output-download-all"></button>
+        <span id="output-save-all"></span>
       </div>
       <div id="output-count"></div>
       <ul id="output-list"></ul>
@@ -1979,8 +2241,28 @@
         <button id="viewer-reload" title="Reload page"><i class="fa-solid fa-rotate-right"></i></button>
         <a id="viewer-open" target="_blank" rel="noopener" title="Open in a new tab"><i class="fa-solid fa-up-right-from-square"></i></a>
       </div>
-      <div id="viewer-empty">No webpage generated in this chat yet — ask the agent to build one (an <code>index.html</code> in its output folder).</div>
+      <div id="viewer-empty">No webpage or Markdown file generated in this chat yet — ask the agent to build one (an <code>index.html</code> or <code>.md</code> in its output folder).</div>
+      <div id="viewer-md" hidden></div>
       <iframe id="viewer-frame" sandbox="allow-scripts" title="Generated webpage" hidden></iframe>
+    </section>
+
+    <!-- About Biomni: what the agent can draw on (live databases, data files,
+         tools, software), from GET /api/about. Opened by clicking the app name
+         in the header. The four tabs are the same things at different levels
+         of detail; typing in the search box replaces them with matches. -->
+    <section id="tab-about" class="panel">
+      <p id="about-intro">Biomni is the agent behind every task. Ask it a question in plain language and it picks from live databases, data files on this computer, analysis tools and software, then writes code to answer. Look at what it has by research area, or search for something specific.</p>
+      <div id="about-toolbar">
+        <input id="about-search" type="search" placeholder="Search everything, e.g. uniprot, gwas or DESeq2" aria-label="Search the databases, data files, tools and software">
+      </div>
+      <div id="about-tabs" role="group" aria-label="Ways to look at what Biomni has">
+        <button type="button" class="about-tab" aria-pressed="false" data-about-tab="overview" title="How much Biomni has for each research area">Overview</button>
+        <button type="button" class="about-tab" aria-pressed="false" data-about-tab="areas" title="Everything Biomni has for one kind of question, with a question to start from">By research area</button>
+        <button type="button" class="about-tab" aria-pressed="false" data-about-tab="data" title="The data: how big it is, what is on this computer and what is looked up online">Data sources</button>
+        <button type="button" class="about-tab" aria-pressed="false" data-about-tab="list" title="Every database, file, tool and package, grouped the way Biomni lists them">Full list</button>
+      </div>
+      <p id="about-status" role="status"></p>
+      <div id="about-content"></div>
     </section>
 
     <!-- Leads: candidate findings to follow up, saved from answers or added by
@@ -2020,6 +2302,7 @@
       <div id="spending-summary"></div>
       <div id="spending-sections">
         <div id="spending-body"></div>
+        <div id="spending-users"></div>
       </div>
       <p class="spend-footnote">
         How fresh is this? AWS Cost Explorer updates its data up to three times a day,
@@ -2042,6 +2325,18 @@
           <span>Sign out of biomnikhil on this computer.</span>
           <a class="button-link" href="/logout">Sign out</a>
         </div>
+      </div>
+      <div class="settings-card">
+        <h2>Appearance</h2>
+        <label class="settings-row">
+          <span>Task view width
+            <span class="hint">How wide the chat and its tabs are on this computer.</span>
+          </span>
+          <select id="settings-task-width" class="model-select">
+            <option value="760">Narrow</option>
+            <option value="960">Wide</option>
+          </select>
+        </label>
       </div>
       <div class="settings-card">
         <h2>Updates</h2>
@@ -2088,16 +2383,32 @@
       <div id="upload-status"></div>
 
       <div id="file-toolbar">
+        <input type="search" id="file-search" placeholder="Search name, tag or chat…">
         <button id="attach-all"></button>
-        <input type="search" id="file-search" placeholder="Search files…">
-        <select id="file-sort">
+      </div>
+      <div id="file-filters">
+        <select id="file-scope" aria-label="Show">
+          <option value="all">All files</option>
+          <option value="attached">Attached to this chat</option>
+          <option value="upload">Uploaded by me</option>
+          <option value="chat">Saved from chats</option>
+        </select>
+        <select id="file-kind" aria-label="Type"></select>
+        <select id="file-sort" aria-label="Sort">
+          <option value="date-desc">Newest first</option>
+          <option value="date-asc">Oldest first</option>
           <option value="name-asc">Name A–Z</option>
           <option value="name-desc">Name Z–A</option>
           <option value="size-desc">Largest first</option>
           <option value="size-asc">Smallest first</option>
         </select>
       </div>
-      <div id="file-count"></div>
+      <div id="file-tag-filters" hidden></div>
+      <div id="file-count-row">
+        <span id="file-count"></span>
+        <button type="button" id="file-clear-filters" hidden>Clear filters</button>
+      </div>
+      <datalist id="file-tag-options"></datalist>
 
       <ul id="file-list"></ul>
     </section>
@@ -2136,6 +2447,7 @@
   <script src="{{ url_for('static', filename='vendor/marked.umd.js') }}"></script>
   <script src="{{ url_for('static', filename='vendor/purify.min.js') }}"></script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='tour_layout.js') }}"></script>
   <script src="{{ url_for('static', filename='tour.js') }}"></script>
 </body>
 </html>

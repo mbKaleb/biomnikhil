@@ -25,14 +25,14 @@ class ScriptedAgent:
             yield {"output": output}
 
 
-def _run(monkeypatch, agent):
+def _run(monkeypatch, agent, user=None):
     monkeypatch.setattr(biomni_runner, "_get_agent", lambda: agent)
     chat_id = chat_store.create_chat("test")["id"]
     task = registry.create("a prompt", chat_id=chat_id)
     output_dir = Config.OUTPUT_PATH / task.id
     output_dir.mkdir(parents=True)
     agent.writes = output_dir / "table.csv" if agent.writes is True else None
-    biomni_runner._run(task.id, "a prompt", chat_id, "a prompt", output_dir, user=None)
+    biomni_runner._run(task.id, "a prompt", chat_id, "a prompt", output_dir, user=user)
     return registry.get(task.id), chat_store.get_chat(chat_id)
 
 
@@ -81,3 +81,48 @@ def test_rejects_sampling_params(model, rejects):
     from app.providers import rejects_sampling_params
 
     assert rejects_sampling_params(model) is rejects
+
+
+def test_overloaded_model_suggests_fork_or_another_model():
+    class OverloadedError(Exception):
+        pass
+
+    error = OverloadedError("Error code: 529 - {'type': 'overloaded_error', 'message': 'Overloaded'}")
+    message = biomni_runner._friendly_error(error)
+    assert "529" in message
+    assert "Fork" in message
+    assert "new chat" in message
+
+
+class MeteredAgent(ScriptedAgent):
+    """Counts model usage the way the agent LLM's callback does."""
+
+    def go_stream(self, prompt):
+        for output in self.outputs:
+            biomni_runner._record_usage({"input_tokens": 100, "output_tokens": 10})
+            yield {"output": output}
+
+
+def test_finished_run_saves_its_usage_to_the_chat_under_the_user(monkeypatch):
+    from tests.conftest import FakeUser
+
+    agent = MeteredAgent(["<execute>x</execute>", "<solution>the answer</solution>"])
+    task, chat = _run(monkeypatch, agent, user=FakeUser())
+
+    runs = chat_store.chat_run_usage(chat["id"])
+
+    assert len(runs) == 1
+    assert runs[0]["user"] == "tester@example.org"
+    assert runs[0]["task_id"] == task["id"]
+    assert runs[0]["stages"]["main"]["calls"] == 2
+    assert runs[0]["stages"]["main"]["input_tokens"] == 200
+
+
+def test_failed_run_still_saves_its_usage(monkeypatch):
+    from tests.conftest import FakeUser
+
+    agent = MeteredAgent(["<execute>same</execute>"] * 5)
+    task, chat = _run(monkeypatch, agent, user=FakeUser())
+
+    assert task["status"] == "error"
+    assert len(chat_store.chat_run_usage(chat["id"])) == 1

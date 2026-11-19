@@ -40,3 +40,25 @@ def test_noise_is_left_out():
 def test_repeats_in_one_run_keep_one_note():
     found = collect([_msg("user", "q")] + [_msg("trace", "PMC12345") for _ in range(5)])
     assert len(found[0]["uses"]) == 1
+
+
+def test_data_lake_files_are_sources(monkeypatch):
+    import app.services.citations as citations
+
+    lake = {"DepMap_CRISPRGeneDependency.csv": "Gene dependency", "gene_info.parquet": "Gene info"}
+    monkeypatch.setattr("biomni.env_desc.data_lake_dict", lake)
+    citations._lake_files.cache_clear()
+    try:
+        found = collect([
+            _msg("user", "Which genes are essential?"),
+            _msg("trace", "<execute>pd.read_csv(f'{path}/data_lake/DepMap_CRISPRGeneDependency.csv')</execute>"),
+            _msg("trace", "old_gene_info.parquet and gene_info.parquet.bak are other files"),
+            _msg("assistant", "From DepMap_CRISPRGeneDependency.csv, KRAS is essential."),
+        ])
+    finally:
+        citations._lake_files.cache_clear()
+    assert [c["id"] for c in found] == ["lake:DepMap_CRISPRGeneDependency.csv"]
+    depmap = found[0]
+    assert depmap["kind"] == "Data lake" and depmap["url"] is None
+    assert depmap["description"] == "Gene dependency" and depmap["in_answer"]
+    assert [u["where"] for u in depmap["uses"]] == ["Used in the agent's code", "Cited in the answer"]

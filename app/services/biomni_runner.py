@@ -265,6 +265,68 @@ def stage_breakdown(stages: dict) -> list[dict]:
         rows.append({"name": name, **counts, "share": share})
     return rows
 
+
+def sum_stages(runs: list[dict]) -> dict:
+    """The stages of several saved runs added together, in first-seen order."""
+    totals: dict[str, dict] = {}
+    for run in runs:
+        for name, counts in run["stages"].items():
+            mine = totals.setdefault(
+                name, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0},
+            )
+            for key in mine:
+                mine[key] += counts.get(key, 0)
+    return totals
+
+
+def run_weight(run: dict) -> float:
+    """A saved run's relative cost, the same measure as the stage shares."""
+    total = 0.0
+    for counts in run["stages"].values():
+        total += _cost_weight(counts)
+    return total
+
+
+def run_breakdown(runs: list[dict]) -> list[dict]:
+    """Each run with its share (0 to 1) of the runs' relative cost."""
+    total_weight = 0.0
+    for run in runs:
+        total_weight += run_weight(run)
+    rows = []
+    for run in runs:
+        share = 0.0
+        if total_weight > 0:
+            share = run_weight(run) / total_weight
+        rows.append({
+            "task_id": run["task_id"], "user": run["user"], "model": run["model"],
+            "at": run["at"], "share": share,
+        })
+    return rows
+
+
+def user_breakdown(runs: list[dict]) -> list[dict]:
+    """Each user's runs, model calls and share (0 to 1) of the runs' relative
+    cost, largest first."""
+    users: dict[str, dict] = {}
+    total_weight = 0.0
+    for run in runs:
+        weight = run_weight(run)
+        total_weight += weight
+        mine = users.setdefault(run["user"], {"user": run["user"], "runs": 0, "calls": 0, "weight": 0.0})
+        mine["runs"] += 1
+        mine["weight"] += weight
+        for counts in run["stages"].values():
+            mine["calls"] += counts["calls"]
+    rows = []
+    for mine in users.values():
+        share = 0.0
+        if total_weight > 0:
+            share = mine["weight"] / total_weight
+        rows.append({"user": mine["user"], "runs": mine["runs"], "calls": mine["calls"], "share": share})
+    rows.sort(key=lambda row: row["share"], reverse=True)
+    return rows
+
+
 # The latest run's usage summary, for the Integrity tab.
 last_run_usage: dict | None = None
 
@@ -1281,6 +1343,9 @@ def _run(
             registry.append_step(task_id, "system", line)
             if chat_id:
                 chat_store.add_message(chat_id, "trace", line)
+                if last_run_usage["stages"]:
+                    who = user.email if user else "unknown"
+                    chat_store.add_run_usage(chat_id, task_id, who, run_model, last_run_usage["stages"])
         except Exception:  # noqa: BLE001 — stats never break a run
             logger.exception("usage summary failed")
     try:
@@ -1644,6 +1709,14 @@ def _friendly_error(exc: Exception) -> str:
             "Bedrock refused the signed request. Sign out and back in; if it "
             "persists, check that the bedrock-app-access role allows "
             f"bedrock-mantle:CreateInference. ({name}: {text})"
+        )
+    if "Overloaded" in name or " 529" in text or "overloaded_error" in text:
+        return (
+            "This model is overloaded right now (error 529), so Anthropic turned "
+            "the request away. This is temporary and not a problem with your "
+            "prompt. Use Fork to change to copy this chat with a different "
+            "model, or start a new chat and pick another model in the menu at "
+            "the top."
         )
     if "RateLimit" in name or " 429" in text:
         return "Bedrock is rate-limiting requests. Wait a moment and retry."

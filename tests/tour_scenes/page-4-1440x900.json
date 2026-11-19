@@ -1,0 +1,412 @@
+{
+ "viewport": {
+  "left": 0,
+  "top": 0,
+  "right": 1440,
+  "bottom": 900
+ },
+ "controls": [
+  {
+   "left": 1294.65625,
+   "top": 837.5,
+   "right": 1416,
+   "bottom": 876
+  }
+ ],
+ "salient": [
+  {
+   "rect": {
+    "left": 61.984375,
+    "top": 10.203125,
+    "right": 103.171875,
+    "bottom": 40.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 115.96875,
+    "top": 9.609375,
+    "right": 214.34375,
+    "bottom": 41.578125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1347.203125,
+    "top": 9.59375,
+    "right": 1379.203125,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 340,
+    "top": 82.578125,
+    "right": 415.84375,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 419.84375,
+    "top": 82.578125,
+    "right": 499.703125,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 503.703125,
+    "top": 82.578125,
+    "right": 607.421875,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 611.421875,
+    "top": 82.578125,
+    "right": 720.625,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 724.625,
+    "top": 82.578125,
+    "right": 815.75,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 819.75,
+    "top": 82.578125,
+    "right": 929.265625,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 398.3125,
+    "top": 327.78125,
+    "right": 811.515625,
+    "bottom": 366.171875
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 817.90625,
+    "top": 327.78125,
+    "right": 1041.671875,
+    "bottom": 366.171875
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 574.53125,
+    "top": 372.5625,
+    "right": 865.453125,
+    "bottom": 410.953125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1109.59375,
+    "top": 716.78125,
+    "right": 1141.59375,
+    "bottom": 748.78125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1109.59375,
+    "top": 755.171875,
+    "right": 1141.59375,
+    "bottom": 787.171875
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 355.59375,
+    "top": 730.765625,
+    "right": 462.828125,
+    "bottom": 761.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 457.234375,
+    "top": 730.765625,
+    "right": 487.625,
+    "bottom": 761.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 497.625,
+    "top": 730.765625,
+    "right": 609.890625,
+    "bottom": 761.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 619.890625,
+    "top": 730.765625,
+    "right": 744.71875,
+    "bottom": 761.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 754.71875,
+    "top": 730.765625,
+    "right": 891.5,
+    "bottom": 761.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 354.59375,
+    "top": 777.828125,
+    "right": 384.59375,
+    "bottom": 807.828125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 390.984375,
+    "top": 770.953125,
+    "right": 1043.015625,
+    "bottom": 807.828125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1049.40625,
+    "top": 771.828125,
+    "right": 1085.40625,
+    "bottom": 807.828125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 349.59375,
+    "top": 832.8125,
+    "right": 476.65625,
+    "bottom": 860
+   },
+   "kind": "control"
+  }
+ ],
+ "raised": [
+  {
+   "left": 0,
+   "top": 0,
+   "right": 1440,
+   "bottom": 52.1875
+  },
+  {
+   "left": 340,
+   "top": 76.1875,
+   "right": 1100,
+   "bottom": 122.078125
+  }
+ ],
+ "steps": [
+  {
+   "id": "Chats",
+   "anchors": [
+    {
+     "left": 16,
+     "top": 10.203125,
+     "right": 57.1875,
+     "bottom": 40.984375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 184.8125,
+     "height": 52.765625
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Leads",
+   "anchors": [
+    {
+     "left": 1116.65625,
+     "top": 9.59375,
+     "right": 1200.015625,
+     "bottom": 41.59375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 229.765625,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "User files",
+   "anchors": [
+    {
+     "left": 1212.8125,
+     "top": 9.59375,
+     "right": 1244.8125,
+     "bottom": 41.59375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 260,
+     "height": 71.953125
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 91.140625
+    }
+   ]
+  },
+  {
+   "id": "Integrity",
+   "anchors": [
+    {
+     "left": 1257.609375,
+     "top": 9.59375,
+     "right": 1289.609375,
+     "bottom": 41.59375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 226.171875,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Account spending",
+   "anchors": [
+    {
+     "left": 1302.40625,
+     "top": 9.59375,
+     "right": 1334.40625,
+     "bottom": 41.59375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 225.59375,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Settings",
+   "anchors": [
+    {
+     "left": 1392,
+     "top": 9.59375,
+     "right": 1424,
+     "bottom": 41.59375
+    }
+   ],
+   "sizes": [
+    {
+     "width": 245.484375,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Agent trace",
+   "anchors": [
+    {
+     "left": 1018.9375,
+     "top": 85.828125,
+     "right": 1100,
+     "bottom": 117.828125
+    }
+   ],
+   "sizes": [
+    {
+     "width": 260,
+     "height": 71.953125
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 91.140625
+    }
+   ]
+  }
+ ]
+}

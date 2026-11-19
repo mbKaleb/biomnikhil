@@ -1,0 +1,351 @@
+{
+ "viewport": {
+  "left": 0,
+  "top": 0,
+  "right": 1100,
+  "bottom": 800
+ },
+ "controls": [
+  {
+   "left": 954.65625,
+   "top": 737.5,
+   "right": 1076,
+   "bottom": 776
+  }
+ ],
+ "salient": [
+  {
+   "rect": {
+    "left": 16,
+    "top": 10.203125,
+    "right": 57.1875,
+    "bottom": 40.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 61.984375,
+    "top": 10.203125,
+    "right": 103.171875,
+    "bottom": 40.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 115.96875,
+    "top": 9.609375,
+    "right": 214.34375,
+    "bottom": 41.578125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 776.65625,
+    "top": 9.59375,
+    "right": 860.015625,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 872.8125,
+    "top": 9.59375,
+    "right": 904.8125,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 917.609375,
+    "top": 9.59375,
+    "right": 949.609375,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 962.40625,
+    "top": 9.59375,
+    "right": 994.40625,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1007.203125,
+    "top": 9.59375,
+    "right": 1039.203125,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1052,
+    "top": 9.59375,
+    "right": 1084,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 170,
+    "top": 82.578125,
+    "right": 245.84375,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 249.84375,
+    "top": 82.578125,
+    "right": 329.703125,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 333.703125,
+    "top": 82.578125,
+    "right": 437.421875,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 441.421875,
+    "top": 82.578125,
+    "right": 550.625,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 554.625,
+    "top": 82.578125,
+    "right": 645.75,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 649.75,
+    "top": 82.578125,
+    "right": 759.265625,
+    "bottom": 121.078125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 848.9375,
+    "top": 85.828125,
+    "right": 930,
+    "bottom": 117.828125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 228.3125,
+    "top": 305.28125,
+    "right": 641.515625,
+    "bottom": 343.671875
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 647.90625,
+    "top": 305.28125,
+    "right": 871.671875,
+    "bottom": 343.671875
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 404.53125,
+    "top": 350.0625,
+    "right": 695.453125,
+    "bottom": 388.453125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 853.21875,
+    "top": 579.984375,
+    "right": 885.21875,
+    "bottom": 611.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 891.609375,
+    "top": 579.984375,
+    "right": 923.609375,
+    "bottom": 611.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 185.59375,
+    "top": 630.765625,
+    "right": 292.828125,
+    "bottom": 661.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 287.234375,
+    "top": 630.765625,
+    "right": 317.625,
+    "bottom": 661.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 327.625,
+    "top": 630.765625,
+    "right": 439.890625,
+    "bottom": 661.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 449.890625,
+    "top": 630.765625,
+    "right": 574.71875,
+    "bottom": 661.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 584.71875,
+    "top": 630.765625,
+    "right": 721.5,
+    "bottom": 661.15625
+   },
+   "kind": "control"
+  }
+ ],
+ "raised": [],
+ "steps": [
+  {
+   "id": "Attach",
+   "anchors": [
+    {
+     "left": 184.59375,
+     "top": 677.828125,
+     "right": 214.59375,
+     "bottom": 707.828125
+    }
+   ],
+   "sizes": [
+    {
+     "width": 260,
+     "height": 71.953125
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 91.140625
+    }
+   ]
+  },
+  {
+   "id": "Your task",
+   "anchors": [
+    {
+     "left": 220.984375,
+     "top": 670.953125,
+     "right": 873.015625,
+     "bottom": 707.828125
+    }
+   ],
+   "sizes": [
+    {
+     "width": 260,
+     "height": 71.953125
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 91.140625
+    }
+   ]
+  },
+  {
+   "id": "Models",
+   "anchors": [
+    {
+     "left": 179.59375,
+     "top": 732.8125,
+     "right": 306.65625,
+     "bottom": 760
+    }
+   ],
+   "sizes": [
+    {
+     "width": 233.8125,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Run",
+   "anchors": [
+    {
+     "left": 879.40625,
+     "top": 671.828125,
+     "right": 915.40625,
+     "bottom": 707.828125
+    }
+   ],
+   "sizes": [
+    {
+     "width": 186.125,
+     "height": 52.765625
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,521 @@
+{
+ "viewport": {
+  "left": 0,
+  "top": 0,
+  "right": 1440,
+  "bottom": 900
+ },
+ "controls": [
+  {
+   "left": 1294.65625,
+   "top": 837.5,
+   "right": 1416,
+   "bottom": 876
+  }
+ ],
+ "salient": [
+  {
+   "rect": {
+    "left": 16,
+    "top": 10.203125,
+    "right": 57.1875,
+    "bottom": 40.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 61.984375,
+    "top": 10.203125,
+    "right": 103.171875,
+    "bottom": 40.984375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 115.96875,
+    "top": 9.609375,
+    "right": 214.34375,
+    "bottom": 41.578125
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1116.65625,
+    "top": 9.59375,
+    "right": 1200.015625,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1212.8125,
+    "top": 9.59375,
+    "right": 1244.8125,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1257.609375,
+    "top": 9.59375,
+    "right": 1289.609375,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1302.40625,
+    "top": 9.59375,
+    "right": 1334.40625,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1347.203125,
+    "top": 9.59375,
+    "right": 1379.203125,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1392,
+    "top": 9.59375,
+    "right": 1424,
+    "bottom": 41.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1018.9375,
+    "top": 61.640625,
+    "right": 1100,
+    "bottom": 93.640625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 890.65625,
+    "top": 535.5,
+    "right": 984.171875,
+    "bottom": 564.5
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 990.5625,
+    "top": 535.5,
+    "right": 1100,
+    "bottom": 564.5
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 975.828125,
+    "top": 594.296875,
+    "right": 1096,
+    "bottom": 619.890625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 914.234375,
+    "top": 628.5625,
+    "right": 939.828125,
+    "bottom": 654.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 947.015625,
+    "top": 627.5625,
+    "right": 974.609375,
+    "bottom": 655.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 981.796875,
+    "top": 628.5625,
+    "right": 1086.40625,
+    "bottom": 654.15625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 947.015625,
+    "top": 660.90625,
+    "right": 974.609375,
+    "bottom": 688.5
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 981.796875,
+    "top": 661.90625,
+    "right": 1086.40625,
+    "bottom": 687.5
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1109.59375,
+    "top": 731.375,
+    "right": 1141.59375,
+    "bottom": 763.375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1109.59375,
+    "top": 769.765625,
+    "right": 1141.59375,
+    "bottom": 801.765625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 354.59375,
+    "top": 744.359375,
+    "right": 430.109375,
+    "bottom": 762.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 999.703125,
+    "top": 744.359375,
+    "right": 1085.40625,
+    "bottom": 762.59375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 354.59375,
+    "top": 778.265625,
+    "right": 384.59375,
+    "bottom": 808.265625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 390.984375,
+    "top": 771.390625,
+    "right": 1043.015625,
+    "bottom": 808.265625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 1049.40625,
+    "top": 772.265625,
+    "right": 1085.40625,
+    "bottom": 808.265625
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 349.59375,
+    "top": 833.25,
+    "right": 458.265625,
+    "bottom": 860.4375
+   },
+   "kind": "control"
+  },
+  {
+   "rect": {
+    "left": 340,
+    "top": 1.453125,
+    "right": 1100,
+    "bottom": 24.3125
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 33.90625,
+    "right": 1100,
+    "bottom": 59.5
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 59.5,
+    "right": 1100,
+    "bottom": 85.09375
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 85.09375,
+    "right": 1100,
+    "bottom": 110.6875
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 110.6875,
+    "right": 1100,
+    "bottom": 136.28125
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 136.28125,
+    "right": 1100,
+    "bottom": 187.46875
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 340,
+    "top": 203.46875,
+    "right": 1100,
+    "bottom": 226.328125
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 340,
+    "top": 235.921875,
+    "right": 1100,
+    "bottom": 261.515625
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 271.109375,
+    "right": 1100,
+    "bottom": 296.703125
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 296.703125,
+    "right": 1100,
+    "bottom": 322.296875
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 340,
+    "top": 338.296875,
+    "right": 1100,
+    "bottom": 361.15625
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 370.75,
+    "right": 1100,
+    "bottom": 447.53125
+   },
+   "kind": "content"
+  },
+  {
+   "rect": {
+    "left": 362.390625,
+    "top": 447.53125,
+    "right": 1100,
+    "bottom": 524.3125
+   },
+   "kind": "content"
+  }
+ ],
+ "raised": [
+  {
+   "left": 340,
+   "top": 52,
+   "right": 1100,
+   "bottom": 97.890625
+  }
+ ],
+ "steps": [
+  {
+   "id": "Task (\u23181)",
+   "anchors": [
+    {
+     "left": 340,
+     "top": 58.390625,
+     "right": 415.84375,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 173.765625,
+     "height": 52.765625
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Files (\u23182)",
+   "anchors": [
+    {
+     "left": 419.84375,
+     "top": 58.390625,
+     "right": 499.703125,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 260,
+     "height": 71.953125
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 91.140625
+    }
+   ]
+  },
+  {
+   "id": "Outputs (\u23183)",
+   "anchors": [
+    {
+     "left": 503.703125,
+     "top": 58.390625,
+     "right": 616.25,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 221.71875,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Citations (\u23184)",
+   "anchors": [
+    {
+     "left": 620.25,
+     "top": 58.390625,
+     "right": 729.453125,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 213.015625,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Viewer (\u23185)",
+   "anchors": [
+    {
+     "left": 733.453125,
+     "top": 58.390625,
+     "right": 824.578125,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 221.578125,
+     "height": 52.765625
+    },
+    {
+     "width": 200,
+     "height": 71.953125
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  },
+  {
+   "id": "Spending (\u23186)",
+   "anchors": [
+    {
+     "left": 828.578125,
+     "top": 58.390625,
+     "right": 938.09375,
+     "bottom": 96.890625
+    }
+   ],
+   "sizes": [
+    {
+     "width": 168.53125,
+     "height": 52.765625
+    },
+    {
+     "width": 150,
+     "height": 71.953125
+    }
+   ]
+  }
+ ]
+}
